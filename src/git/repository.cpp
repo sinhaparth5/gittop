@@ -114,6 +114,35 @@ std::string Repository::WorkdirPath() const {
   return wd != nullptr ? std::string(wd) : std::string{};
 }
 
+std::vector<std::pair<std::string, std::string>> Repository::ReadRemotes() const {
+  std::vector<std::pair<std::string, std::string>> remotes;
+
+  git_strarray names{};
+  if (git_remote_list(&names, repo_.get()) != 0) {
+    return remotes;
+  }
+
+  for (std::size_t i = 0; i < names.count; ++i) {
+    const char* name = names.strings[i];
+    if (name == nullptr) {
+      continue;
+    }
+    git_remote* remote = nullptr;
+    if (git_remote_lookup(&remote, repo_.get(), name) != 0) {
+      continue;
+    }
+    const char* url = git_remote_url(remote);
+    // A remote with no fetch URL is push-only; there is nothing to query.
+    if (url != nullptr) {
+      remotes.emplace_back(name, url);
+    }
+    git_remote_free(remote);
+  }
+
+  git_strarray_dispose(&names);
+  return remotes;
+}
+
 model::StatusSnapshot Repository::ReadStatus() const {
   model::StatusSnapshot snap;
   git_repository* repo = repo_.get();

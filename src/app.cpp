@@ -12,8 +12,11 @@
 #include <cmath>
 #include <utility>
 
+#include "remote/provider.hpp"
+#include "remote/token.hpp"
 #include "ui/history_panel.hpp"
 #include "ui/panels.hpp"
+#include "ui/remote_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -21,7 +24,10 @@ namespace gittop {
 
 using namespace ftxui;  // NOLINT: the component DSL reads badly when qualified.
 
-App::App(git::Repository repo) : repo_(std::move(repo)) {}
+App::App(git::Repository repo, config::Config config, std::string config_path)
+    : repo_(std::move(repo)),
+      config_(std::move(config)),
+      config_path_(std::move(config_path)) {}
 
 void App::Refresh() {
   snapshot_ = repo_.ReadStatus();
@@ -77,6 +83,16 @@ void App::Tick() {
   approach(bars_.unstaged, target.unstaged);
   approach(bars_.untracked, target.untracked);
   approach(bars_.conflicted, target.conflicted);
+
+  // Advanced on wall time rather than per frame, so the spinner turns at the
+  // same speed whatever the frame rate happens to be. Ten frames at 90ms is a
+  // full turn just under a second, which reads as working rather than frantic.
+  constexpr float kSpinnerStep = 0.09F;
+  spinner_accum_ += dt;
+  while (spinner_accum_ >= kSpinnerStep) {
+    spinner_accum_ -= kSpinnerStep;
+    ++spinner_;
+  }
 }
 
 float App::ToastFade() const {
@@ -105,6 +121,11 @@ bool App::Animating() const {
       moving(bars_.conflicted, target.conflicted)) {
     return true;
   }
+  // A fetch in flight keeps the spinner turning. It stops the moment the
+  // request lands, so this is bounded by the HTTP timeout rather than open.
+  if (fetcher_.Running()) {
+    return true;
+  }
   // Keeps frames coming through the toast's hold so the fade actually starts
   // when it should. Bounded at a few seconds, then the screen goes quiet again.
   return !message_.empty() && ToastFade() > 0.0F;
@@ -124,6 +145,7 @@ int& App::ActiveSelection() {
     case ui::View::Branches:
       return branch_selected_;
     case ui::View::Graph:
+    case ui::View::Remote:
     case ui::View::Status:
       break;
   }
@@ -138,6 +160,8 @@ int App::ActiveCount() const {
       return static_cast<int>(history_.branches.size());
     case ui::View::Graph:
       return 0;  // the graph pans instead of selecting
+    case ui::View::Remote:
+      return 0;  // one repository, nothing to move between
     case ui::View::Status:
       break;
   }
@@ -160,6 +184,65 @@ void App::SetBucket(ui::Bucket bucket) {
   // raw offset would drop you somewhere unrelated at the new granularity.
   graph_.offset = 0;
   Note("bucket: " + ui::BucketName(bucket), false);
+}
+
+void App::DiscoverRemotes() {
+  if (remotes_discovered_) {
+    return;
+  }
+  remotes_discovered_ = true;
+
+  for (const auto& [name, url] : repo_.ReadRemotes()) {
+    model::RemoteRef ref = remote::ParseRemote(name, url);
+    remote::ApplyHostOverrides(ref, config_);
+    remotes_.push_back(std::move(ref));
+  }
+  remote_.ref = remote::ChooseRemote(remotes_);
+}
+
+void App::StartFetch() {
+  DiscoverRemotes();
+  if (!remote_.ref.valid() || fetcher_.Running()) {
+    return;
+  }
+
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  // Recorded now so the identity block can say "authenticated" while the
+  // request is still in flight, rather than only once it comes back.
+  remote_.token_source = token.source;
+  remote_.token_origin = token.origin;
+  remote_.state = model::FetchState::Loading;
+  remote_.error.clear();
+  remote_.hint.clear();
+
+  fetcher_.Start(remote_.ref, token);
+}
+
+void App::EnsureRemote() {
+  DiscoverRemotes();
+  if (remote_.state == model::FetchState::Idle) {
+    StartFetch();
+  }
+}
+
+void App::CollectFetch() {
+  model::RemoteSnapshot result;
+  if (!fetcher_.Consume(&result)) {
+    return;
+  }
+  // A cancelled fetch is the shutdown path; there is nothing to show and
+  // nothing to complain about.
+  if (result.error == "cancelled") {
+    return;
+  }
+
+  remote_ = std::move(result);
+  if (remote_.state == model::FetchState::Failed) {
+    Note(remote_.error, true);
+  } else if (view_ != ui::View::Remote) {
+    // Only worth a toast when it landed somewhere the user is not looking.
+    Note("remote: " + remote_.info.full_name, false);
+  }
 }
 
 void App::Move(int delta) {
@@ -199,12 +282,32 @@ void App::EnsureHistory() {
 
 void App::SetView(ui::View view) {
   view_ = view;
+  if (view == ui::View::Remote) {
+    EnsureRemote();
+    return;
+  }
   if (view != ui::View::Status) {
     EnsureHistory();
   }
 }
 
 void App::Reload() {
+  // On the remote view `r` means the network, everywhere else it means the
+  // repository. Refreshing whichever one is not on screen would be a surprise.
+  if (view_ == ui::View::Remote) {
+    if (fetcher_.Running()) {
+      Note("already fetching", false);
+      return;
+    }
+    if (!remote_.ref.valid()) {
+      Note("no remote to fetch", true);
+      return;
+    }
+    StartFetch();
+    Note("fetching " + remote_.ref.full_name(), false);
+    return;
+  }
+
   Refresh();
   history_loaded_ = false;
   if (view_ != ui::View::Status) {
@@ -320,10 +423,16 @@ void App::CloseOverlay() {
   overlay_open_ = false;
 }
 
+// Posted from the fetch worker to wake the event loop. A named special event
+// rather than a keystroke, so nothing in the key routing can collide with it.
+const Event kRemoteReady = Event::Special("gittop:remote-ready");
+
 int App::Run() {
   Refresh();
 
   auto screen = ScreenInteractive::Fullscreen();
+
+  fetcher_.SetNotifier([&screen] { screen.PostEvent(kRemoteReady); });
 
   // ---------------------------------------------------------- commit overlay
   InputOption input_option;
@@ -416,6 +525,10 @@ int App::Run() {
         }
         break;
       }
+
+      case ui::View::Remote:
+        body.push_back(ui::RemotePanel(remote_, width, height, spinner_));
+        break;
     }
 
     body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_));
@@ -439,6 +552,14 @@ int App::Run() {
   // wrapped around it. Returning false while an overlay is open lets the event
   // fall through to that overlay.
   root |= CatchEvent([this, &screen](const Event& event) {
+    // The worker thread posts this after a fetch finishes. It carries no data
+    // itself — it only wakes the loop so the result can be picked up here, on
+    // the UI thread, where every other piece of state is touched.
+    if (event == kRemoteReady) {
+      CollectFetch();
+      return true;
+    }
+
     // Overlay routing lives here rather than on the panes themselves.
     // Container::Tab drops events unless it is focused, and the confirm and
     // help panes are plain Renderers with nothing focusable inside them, so
@@ -546,6 +667,10 @@ int App::Run() {
       SetView(ui::View::Graph);
       return true;
     }
+    if (event == Event::Character('5')) {
+      SetView(ui::View::Remote);
+      return true;
+    }
     if (event == Event::Tab) {
       switch (view_) {
         case ui::View::Status:
@@ -558,6 +683,9 @@ int App::Run() {
           SetView(ui::View::Graph);
           break;
         case ui::View::Graph:
+          SetView(ui::View::Remote);
+          break;
+        case ui::View::Remote:
           SetView(ui::View::Status);
           break;
       }
@@ -605,6 +733,11 @@ int App::Run() {
   });
 
   screen.Loop(root);
+
+  // Before `screen` goes out of scope, because the notifier captured it by
+  // reference. A worker still in a ten-second timeout would otherwise post an
+  // event into a destroyed screen on its way out.
+  fetcher_.Shutdown();
   return 0;
 }
 

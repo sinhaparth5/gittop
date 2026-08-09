@@ -44,17 +44,43 @@ FetchContent_Declare(libgit2
   GIT_TAG        v1.9.6
   GIT_SHALLOW    TRUE)
 
-FetchContent_MakeAvailable(ftxui libgit2)
+# ---------------------------------------------------------- nlohmann/json
+# The release tarball rather than the git repository: it is a couple of hundred
+# kilobytes against a clone that is three orders of magnitude larger, and the
+# test suite is the bulk of what the clone would bring.
+set(JSON_BuildTests     OFF CACHE BOOL "" FORCE)
+set(JSON_Install        OFF CACHE BOOL "" FORCE)
+set(JSON_MultipleHeaders OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(nlohmann_json
+  URL      https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+  URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa)
+
+FetchContent_MakeAvailable(ftxui libgit2 nlohmann_json)
+
+# ------------------------------------------------------------------ curl
+# Taken from the system rather than vendored. libcurl is one of the very few
+# libraries where the distribution's build is the one you want: it carries the
+# platform's CA bundle and its TLS backend, and a self-built copy would have to
+# be told where the system's certificates live before it could verify anything.
+find_package(CURL 7.68 REQUIRED)
 
 # ---------------------------------------------------------------- gittop
 add_executable(gittop
   src/main.cpp
   src/app.cpp
+  src/config/config.cpp
   src/git/graph.cpp
   src/git/repository.cpp
+  src/remote/client.cpp
+  src/remote/fetcher.cpp
+  src/remote/http.cpp
+  src/remote/provider.cpp
+  src/remote/token.cpp
   src/ui/graph_panel.cpp
   src/ui/history_panel.cpp
   src/ui/panels.cpp
+  src/ui/remote_panel.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp
 )
@@ -66,11 +92,16 @@ target_include_directories(gittop PRIVATE
   ${libgit2_SOURCE_DIR}/include
 )
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(gittop PRIVATE
   ftxui::component
   ftxui::dom
   ftxui::screen
   libgit2package
+  CURL::libcurl
+  nlohmann_json::nlohmann_json
+  Threads::Threads
 )
 
 target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)

@@ -33,12 +33,13 @@ GitHub and GitLab REST APIs and degrades to the local view when there is no toke
 connection.
 
 > [!NOTE]
-> The local half runs today. Remote pipelines, pull requests, history graphs, and themes are
-> not built yet. See [Current status](#current-status) for what exists and what does not.
+> The local half runs today, and so does reading repository state from GitHub and GitLab.
+> Pipelines, pull requests, and themes are not built yet. See
+> [Current status](#current-status) for what exists and what does not.
 
 ## What works today
 
-Four views, switched with `1` `2` `3` `4` or cycled with `tab`.
+Five views, switched with `1` through `5` or cycled with `tab`.
 
 **Status.**
 
@@ -73,8 +74,45 @@ able to separate green from amber.
 - A scroll handle shows where the visible window sits in the full timeline
 - Top authors, weekday distribution, and a commits-by-hour sparkline in the author's own timezone
 
-The layout adapts: stat cards stack two-by-two below 84 columns, and the heatmap yields to the
-log on terminals shorter than 30 rows.
+**Remote.**
+
+- Reads the repository from GitHub or GitLab: description, default branch, visibility, last push
+- Stars, forks, open issues, and watchers
+- Remaining API budget as a bar, so you can see a throttle coming rather than hit it
+- Works anonymously on public repositories; a token raises the limit and opens private ones
+- Self-hosted GitHub Enterprise and GitLab are detected from the hostname, and a host that gives
+  nothing away can be named in the config
+
+The fetch runs on a worker thread. The dashboard keeps drawing while it is in flight, and quitting
+mid-request does not wait for it. Every failure has its own screen: a rejected token says which
+variable or file it came from, a 404 while anonymous points out that private repositories need
+one, and no network at all is reported as the ordinary thing it is.
+
+The layout adapts: stat cards stack two-by-two below 84 columns, the heatmap yields to the log
+on terminals shorter than 30 rows, and the remote view folds its count tiles into a single line
+when there is no room for four.
+
+## Tokens
+
+Public repositories need no token. GitHub allows 60 anonymous requests an hour; a token raises
+that to 5000 and lets gittop read private repositories.
+
+The environment is checked first, so a shell or a CI job never has to write a secret to disk:
+
+```bash
+export GITHUB_TOKEN=ghp_...      # or GH_TOKEN, or GITTOP_TOKEN for either provider
+export GITLAB_TOKEN=glpat-...    # or CI_JOB_TOKEN
+```
+
+Otherwise gittop reads `~/.config/gittop/config.toml`, which it creates `0600`:
+
+```bash
+gittop --init-config    # writes a commented starter
+gittop --config-path    # prints where it looks
+```
+
+A token is never printed back to you, masked or otherwise. The remote panel names the variable or
+the file it came from and nothing else.
 
 ## Planned
 
@@ -88,14 +126,10 @@ log on terminals shorter than 30 rows.
 - Live status per job: passing, failing, running, queued, cancelled
 - Open pull requests and merge requests
 - Push and pull with progress, plus remote tracking state
-- Remaining API rate limit, so you can see when you are about to get throttled
-
-Every network call will happen off the UI thread. A slow API response should slow down one panel,
-not the whole dashboard.
 
 ## Current status
 
-Two phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
+Four phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
 the source layout, per-task checkboxes, known risks, and a work log.
 
 | Phase | Scope | State |
@@ -103,8 +137,8 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | 0 | CMake, FTXUI window, libgit2 linked, repo detection | Done |
 | 1 | Local status dashboard, staging, discard, commit | Done |
 | 2 | History, commit graph, activity heatmap, branches | Done |
-| 3 | Config, tokens, provider detection, async HTTP | Next |
-| 4 | Pipelines and CI panels | Planned |
+| 3 | Config, tokens, provider detection, async HTTP | Done |
+| 4 | Pipelines and CI panels | Next |
 | 5 | Pull requests, push/pull, themes, mouse | Planned |
 | 6 | Diff viewer, stash, rebase helpers, search | Planned |
 | 7 | Visual design pass | Partly landed early |
@@ -113,7 +147,7 @@ the source layout, per-task checkboxes, known risks, and a work log.
 
 | Key | Action |
 |---|---|
-| `1` `2` `3` `4` | Status / History / Branches / Graph |
+| `1` … `5` | Status / History / Branches / Graph / Remote |
 | `tab` | Cycle through the views |
 | `j` `k` or arrows | Move the selection |
 | `g` `G` | First / last, or oldest / newest on the graph |
@@ -124,7 +158,7 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | `a` | Stage everything |
 | `d` | Discard the selection, after a confirm |
 | `c` | Write a commit |
-| `r` | Re-read the repository |
+| `r` | Re-read the repository, or re-fetch on the remote view |
 | `?` | Help |
 | `q` | Quit |
 
@@ -141,19 +175,28 @@ the source layout, per-task checkboxes, known risks, and a work log.
 
 ## Building it
 
-Needs a C++20 compiler, CMake 3.24 or newer, and zlib. FTXUI and libgit2 are fetched and built
-by CMake, so there is nothing to install first.
+Needs a C++20 compiler, CMake 3.24 or newer, zlib, and libcurl. FTXUI, libgit2, and nlohmann/json
+are fetched and built by CMake.
 
 ```bash
+sudo apt install libcurl4-openssl-dev     # or libcurl-devel, or curl on Homebrew
+
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/gittop            # reads the repository containing the current directory
 ./build/gittop /some/repo # or one you name
 ```
 
-The first configure downloads both dependencies, so it takes a few minutes. After that, builds
-are quick. libgit2 is compiled with its HTTPS and SSH transports off, since nothing here touches
-the network yet; Phase 5 turns them back on.
+The first configure downloads the fetched dependencies, so it takes a few minutes. After that,
+builds are quick.
+
+libcurl is the one dependency taken from the system rather than built here, because the
+distribution's copy comes configured for the platform's CA bundle and TLS backend. A vendored one
+would have to be told where the machine keeps its certificates before it could verify a request.
+
+libgit2 is compiled with its own HTTPS and SSH transports off: gittop talks to the REST APIs
+through libcurl, and nothing yet asks libgit2 to reach the network. Phase 5 adds push and pull,
+which is where they come back on.
 
 ## License
 

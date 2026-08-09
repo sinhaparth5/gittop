@@ -3,6 +3,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "model/history.hpp"
 #include "model/status.hpp"
@@ -62,6 +64,11 @@ class Repository {
   OpResult Commit(const std::string& message);
 
   std::string WorkdirPath() const;
+
+  // Configured remotes as (name, fetch URL), in libgit2's order. Parsing a URL
+  // into a provider is remote/provider.cpp's job, not this file's: git has no
+  // opinion about what is on the other end and neither does this wrapper.
+  std::vector<std::pair<std::string, std::string>> ReadRemotes() const;
 
  private:
   explicit Repository(git_repository* repo);

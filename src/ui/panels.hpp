@@ -22,6 +22,7 @@ enum class View {
   History,
   Branches,
   Graph,
+  Remote,
 };
 
 ftxui::Element Header(const model::StatusSnapshot& snapshot);

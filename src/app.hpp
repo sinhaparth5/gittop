@@ -2,10 +2,14 @@
 
 #include <chrono>
 #include <string>
+#include <vector>
 
+#include "config/config.hpp"
 #include "git/repository.hpp"
 #include "model/history.hpp"
+#include "model/remote.hpp"
 #include "model/status.hpp"
+#include "remote/fetcher.hpp"
 #include "ui/graph_panel.hpp"
 #include "ui/panels.hpp"
 
@@ -13,7 +17,7 @@ namespace gittop {
 
 class App {
  public:
-  explicit App(git::Repository repo);
+  App(git::Repository repo, config::Config config, std::string config_path);
 
   int Run();
 
@@ -52,6 +56,14 @@ class App {
   void PanGraph(int buckets);
   void SetBucket(ui::Bucket bucket);
 
+  // The remote is read on the same lazy terms as the history, except that it
+  // goes to a worker thread: the fetch is the one thing here that can take
+  // seconds, and the UI thread is never allowed to wait on it.
+  void DiscoverRemotes();
+  void EnsureRemote();
+  void StartFetch();
+  void CollectFetch();
+
   const model::StatusEntry* Selected() const;
 
   void ToggleStage();
@@ -77,9 +89,19 @@ class App {
   float ToastFade() const;
 
   git::Repository repo_;
+  config::Config config_;
+  std::string config_path_;
+
   model::StatusSnapshot snapshot_;
   model::HistorySnapshot history_;
   bool history_loaded_ = false;
+
+  std::vector<model::RemoteRef> remotes_;
+  model::RemoteSnapshot remote_;
+  remote::Fetcher fetcher_;
+  bool remotes_discovered_ = false;
+  int spinner_ = 0;
+  float spinner_accum_ = 0.0F;
 
   ui::View view_ = ui::View::Status;
 

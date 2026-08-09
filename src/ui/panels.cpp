@@ -236,6 +236,8 @@ Element TabBar(View active) {
              tab(View::Branches, "3", "Branches"),
              text(" "),
              tab(View::Graph, "4", "Graph"),
+             text(" "),
+             tab(View::Remote, "5", "Remote"),
              filler(),
          }) |
          bgcolor(t.surface);
@@ -345,6 +347,9 @@ Element Footer(const std::string& message, bool is_error, float fade, View view)
     chips.push_back(Chip("h/l", "pan"));
     chips.push_back(Chip("d/w/m", "bucket"));
     chips.push_back(Chip("tab", "switch view"));
+  } else if (view == View::Remote) {
+    chips.push_back(Chip("r", "fetch"));
+    chips.push_back(Chip("tab", "switch view"));
   } else {
     chips.push_back(Chip("j/k", "move"));
     chips.push_back(Chip("tab", "switch view"));
@@ -372,7 +377,7 @@ Element HelpPane() {
   return vbox({
              hbox({text(" Keys") | bold | color(t.text), filler()}),
              separator() | color(t.border),
-             line("1 … 4", "status / history / branches / graph"),
+             line("1 … 5", "status / history / branches / graph / remote"),
              line("tab", "cycle through the views"),
              line("j / ↓", "move down"),
              line("k / ↑", "move up"),
@@ -384,7 +389,7 @@ Element HelpPane() {
              line("a", "stage everything"),
              line("d", "discard the selection, after a confirm"),
              line("c", "write a commit"),
-             line("r", "re-read the repository"),
+             line("r", "re-read the repository, or re-fetch the remote"),
              line("q", "quit"),
              separator() | color(t.border),
              hbox({

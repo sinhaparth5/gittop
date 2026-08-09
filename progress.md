@@ -3,7 +3,7 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phases 0, 1 and 2 complete and running. Next: Phase 3 (remote foundation).
+**Status:** Phases 0–3 complete and running. Next: Phase 4 (pipelines & CI).
 **Started:** 2026-08-09
 **Last updated:** 2026-08-09
 
@@ -19,8 +19,10 @@ remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 | Local Git | libgit2 | No shell dependency, no output-format churn across git versions |
 | HTTP | libcurl | |
 | JSON | nlohmann/json | |
-| Auth | Personal Access Tokens | Env var first, config file second — see "Auth" below |
-| Build | CMake + FetchContent | |
+| Auth | Personal Access Tokens | Env var first, config file second |
+| Config | `$XDG_CONFIG_HOME/gittop/config.toml` | `$GITTOP_CONFIG` overrides; `--config` overrides that. Created 0600 |
+| Config format | A strict TOML subset | Comments, tables, string/int/bool. Files it reads are valid TOML, so a real parser drops in later without migrating anyone |
+| Build | CMake + FetchContent | libcurl comes from the system; see the note under Phase 3 |
 | License | GPL-3.0 | Already in repo; new sources get GPL-3.0 headers |
 
 Anything not in this table is still open — see [Open questions](#open-questions).
@@ -109,13 +111,42 @@ case. It reads correctly for the common shapes and gets terse for octopus merges
 a repository never pays for a revwalk nobody looked at. Committing invalidates the cache, and
 `r` forces a reload.
 
-### Phase 3 — Remote foundation
-- [ ] Config file (location TBD — see open questions) with load/save
-- [ ] Token resolution: env var → config file → unauthenticated
-- [ ] Parse remote URL → detect GitHub vs GitLab vs self-hosted vs unknown
-- [ ] libcurl client with timeout, retry, and error surfacing
-- [ ] Async fetch layer — **UI thread never blocks on network**
-- [ ] Fetch + display basic repo info
+### Phase 3 — Remote foundation ✅
+- [x] Config file at `$XDG_CONFIG_HOME/gittop/config.toml`, load and save, 0600
+- [x] `--init-config` writes a commented starter; `--config-path` prints where it looks
+- [x] Token resolution: env var → config file → unauthenticated
+- [x] Parse remote URL → GitHub / GitLab / self-hosted / unknown, with a config override
+      for a host whose name gives nothing away
+- [x] libcurl client with timeouts, retry with backoff, and cancellation
+- [x] Async fetch layer — the UI thread never blocks on the network
+- [x] Remote view (tab `5`): identity, star/fork/issue counts, API budget, details
+
+**libcurl is taken from the system, not vendored.** It is the one dependency where the
+distribution's build is the one to want: it ships configured for the platform's CA bundle and TLS
+backend, and a self-built copy would have to be told where the system's certificates live before
+it could verify a single request. `find_package(CURL 7.68 REQUIRED)`. nlohmann/json comes from the
+release tarball rather than a clone — a few hundred kilobytes against three orders of magnitude
+more, nearly all of it test suite.
+
+**The async seam held.** The thing the Phase 0 note warned about did not happen: `ReadStatus` and
+`ReadHistory` stayed synchronous and nothing about them had to change, because the fetch that
+actually needed a thread was new code written against the seam rather than retrofitted through it.
+The worker posts `Event::Special("gittop:remote-ready")` and the result is picked up in the root
+`CatchEvent`, on the UI thread, where every other piece of state is already touched.
+
+**Verified against a stub API as well as the real one:** the GitHub path against
+`api.github.com` (anonymous, 60/hour budget shown correctly), and the authenticated GitLab path
+against a local stub, which confirmed the `PRIVATE-TOKEN` header rather than `Authorization`, the
+project path encoded as one segment (`/projects/eng%2Fpayments-service`), GitLab's field names
+normalized into the same `RepoInfo` GitHub fills, and `RateLimit-*` headers read. A 503 stub
+confirmed three attempts at 300ms and 600ms; a 401 stub confirmed one attempt and no retry.
+Quitting mid-fetch exits in about half a second rather than waiting out the ten-second timeout.
+
+**Token discipline, enforced not just intended:** the token lives in `remote::Token`, which
+nothing under `ui/` takes. The panel names the variable or the file it came from and there is no
+code path that prints the value, masked or otherwise — checked by grepping a full session capture
+for the test token. A remote configured as `https://user:token@host/...` has its userinfo replaced
+before the URL reaches the screen.
 
 ### Phase 4 — Pipelines & CI
 - [ ] GitHub: list workflow runs for current branch
@@ -211,10 +242,11 @@ Phase 5 needs SSH support compiled in — that's a build-config decision to make
 Phase 5. Alternative: find_package a system libgit2 and only FetchContent the header-only-ish
 deps. Decide early; retrofitting is painful.
 
-**Async is a Phase 3 problem but a Phase 0 design constraint.** FTXUI's event loop needs
-`ScreenInteractive::PostEvent` (or a custom loop) to be woken from a worker thread. If Phase 1's
-UI is written assuming synchronous data, Phase 3 becomes a rewrite. Sketch the data-refresh
-seam before writing the first panel.
+**Async is a Phase 3 problem but a Phase 0 design constraint.** *Settled in Phase 3, and the
+warning turned out to be worth heeding.* The one thing to remember for Phase 4: the notifier
+captures the `ScreenInteractive` by reference, so `Fetcher::Shutdown()` has to run before that
+screen is destroyed. `App::Run` calls it straight after `Loop()` returns. Any future worker that
+posts events needs the same treatment.
 
 **Destructive operations need guardrails.** Discard, force-push, and rebase helpers can lose
 work. Every one of them gets an explicit confirm step, and nothing gets a single-keystroke path.
@@ -232,8 +264,6 @@ not designed for GitHub and then patched for GitLab.
 
 ## Open questions
 
-- Config file location — `~/.config/gittop/config.toml` (XDG) vs `~/.gittoprc`? Format: TOML, JSON, or INI?
-- Self-hosted GitLab / GitHub Enterprise: support custom base URLs from the start, or defer?
 - Minimum terminal size to support, and behavior below it
 - Test strategy: unit tests against fixture repos created at test time? Which framework (Catch2 / doctest / GoogleTest)?
 - Target platforms — Linux only initially, or macOS too?
@@ -244,6 +274,12 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-09** — Phase 3 done. Config, tokens, provider detection, a libcurl client with
+  retry and cancellation, the async fetch layer, and the Remote view on tab 5. Two things
+  learned: FTXUI's `flex` has to go on the panel itself rather than a `vbox` wrapped around
+  it, or the container stretches and the box keeps its content size; and the token's origin
+  is a whole config path long, which will push a hostname clean off its own header if it is
+  put there — it belongs in the details list. Next: Phase 4.
 - **2026-08-09** — Added the Graph view (tab 4): braille area chart over the full commit
   timeline, pannable and bucketable. The daily series is now built across all walked history
   rather than only the heatmap window. Two things worth remembering: FTXUI's `canvas(fn)`
