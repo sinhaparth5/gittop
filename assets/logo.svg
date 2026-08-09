@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="gittop logo">
+  <title>gittop</title>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2231"/>
+      <stop offset="1" stop-color="#11151f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- terminal panel -->
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#panel)" stroke="#333e58" stroke-width="2.5"/>
+
+  <!-- title bar -->
+  <circle cx="26" cy="27" r="3.5" fill="#f0883e"/>
+  <circle cx="38" cy="27" r="3.5" fill="#3fb950"/>
+  <circle cx="50" cy="27" r="3.5" fill="#2f4470"/>
+
+  <!-- activity bars -->
+  <g fill="#2a3450">
+    <rect x="24" y="76" width="14" height="26" rx="4"/>
+    <rect x="43" y="58" width="14" height="44" rx="4"/>
+    <rect x="62" y="68" width="14" height="34" rx="4"/>
+    <rect x="81" y="44" width="14" height="58" rx="4"/>
+  </g>
+  <line x1="22" y1="106" x2="106" y2="106" stroke="#333e58" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- commit graph -->
+  <path d="M31 88 L50 70 L69 78 L88 54" fill="none" stroke="#3fb950" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M50 70 L64 94" fill="none" stroke="#2d7d43" stroke-width="4" stroke-linecap="round"/>
+
+  <g fill="#11151f" stroke="#3fb950" stroke-width="3.5">
+    <circle cx="31" cy="88" r="5.5"/>
+    <circle cx="50" cy="70" r="5.5"/>
+    <circle cx="69" cy="78" r="5.5"/>
+  </g>
+  <circle cx="64" cy="94" r="4.5" fill="#11151f" stroke="#2d7d43" stroke-width="3.5"/>
+  <circle cx="88" cy="54" r="7" fill="#f0883e"/>
+</svg>
