@@ -1,9 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 
 #include "git/repository.hpp"
 #include "model/status.hpp"
+#include "ui/panels.hpp"
 
 namespace gittop {
 
@@ -51,12 +53,24 @@ class App {
   void OpenOverlay(Overlay which);
   void CloseOverlay();
 
+  // Advances the eased bar levels by the wall time since the previous frame,
+  // then reports whether anything is still in motion. The renderer asks for
+  // another frame only while this is true, so an idle dashboard costs nothing.
+  void Tick();
+  bool Animating() const;
+  ui::StatBars TargetBars() const;
+  float ToastFade() const;
+
   git::Repository repo_;
   model::StatusSnapshot snapshot_;
 
   int selected_ = 0;
   std::string message_;
   bool message_is_error_ = false;
+
+  ui::StatBars bars_;
+  std::chrono::steady_clock::time_point last_frame_{};
+  std::chrono::steady_clock::time_point message_at_{};
 
   std::string commit_message_;
   model::StatusEntry discard_target_;

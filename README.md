@@ -33,19 +33,32 @@ GitHub and GitLab REST APIs and degrades to the local view when there is no toke
 connection.
 
 > [!NOTE]
-> There is no code in this repository yet. The stack is decided and the roadmap is written, but
-> nothing builds and nothing runs. If you cloned this expecting a binary, come back later.
+> The local half runs today. Remote pipelines, pull requests, history graphs, and themes are
+> not built yet. See [Current status](#current-status) for what exists and what does not.
 
-## What it will show
+## What works today
+
+- Status cards for staged, unstaged, untracked, and conflicted counts, with gradient fill bars
+  that ease to their new value when something changes
+- A file list grouped by state, with the directory dimmed and the filename bright so long lists
+  scan by name
+- Stage and unstage per file (`space`, or `s` and `u`), or stage everything with `a`
+- Discard, behind a confirm dialog. Tracked files restore from the index, matching `git restore`;
+  untracked files are deleted, and the dialog says which of the two is about to happen
+- Commit from an overlay, written through `git_commit_create`
+- Keybinding help on `?`
+
+Status is conveyed by glyph and letter as well as color, so a row reads correctly without being
+able to separate green from amber.
+
+## Planned
 
 **Locally, offline:**
 
-- Working tree status: staged, unstaged, untracked, and conflicted counts with fill bars
-- A file list you can move through to stage, unstage, or discard
-- Commit from inside the dashboard
 - Commit history as a lane graph drawn in box-drawing characters
 - A commit activity heatmap over the last 30 or 90 days
 - Branches with ahead/behind counts against their upstream
+- Diff viewer, stash management, rebase helpers
 
 **From GitHub and GitLab:**
 
@@ -55,25 +68,39 @@ connection.
 - Push and pull with progress, plus remote tracking state
 - Remaining API rate limit, so you can see when you are about to get throttled
 
-Every network call happens off the UI thread. A slow API response slows down one panel, not the
-whole dashboard.
+Every network call will happen off the UI thread. A slow API response should slow down one panel,
+not the whole dashboard.
 
 ## Current status
 
-Phase 0 of seven, and Phase 0 has not started. [`progress.md`](progress.md) holds the full plan:
-locked stack decisions, the target source layout, per-task checkboxes for each phase, known risks,
-and a work log.
+Two phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
+the source layout, per-task checkboxes, known risks, and a work log.
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | CMake, FTXUI window, libgit2 linked, repo detection | Not started |
-| 1 | Local status dashboard, staging, commit | Not started |
-| 2 | History, commit graph, activity heatmap, branches | Not started |
-| 3 | Config, tokens, provider detection, async HTTP | Not started |
-| 4 | Pipelines and CI panels | Not started |
-| 5 | Pull requests, push/pull, themes, mouse | Not started |
-| 6 | Diff viewer, stash, rebase helpers, search | Not started |
-| 7 | Visual design pass | Not started |
+| 0 | CMake, FTXUI window, libgit2 linked, repo detection | Done |
+| 1 | Local status dashboard, staging, discard, commit | Done |
+| 2 | History, commit graph, activity heatmap, branches | Next |
+| 3 | Config, tokens, provider detection, async HTTP | Planned |
+| 4 | Pipelines and CI panels | Planned |
+| 5 | Pull requests, push/pull, themes, mouse | Planned |
+| 6 | Diff viewer, stash, rebase helpers, search | Planned |
+| 7 | Visual design pass | Partly landed early |
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `j` `k` or arrows | Move the selection |
+| `g` `G` | First / last |
+| `space` | Stage or unstage the selection |
+| `s` `u` | Stage / unstage explicitly |
+| `a` | Stage everything |
+| `d` | Discard the selection, after a confirm |
+| `c` | Write a commit |
+| `r` | Re-read the repository |
+| `?` | Help |
+| `q` | Quit |
 
 ## Built with
 
@@ -88,13 +115,19 @@ and a work log.
 
 ## Building it
 
-Not yet possible. Once `CMakeLists.txt` lands in Phase 0, the build is the CMake standard:
+Needs a C++20 compiler, CMake 3.24 or newer, and zlib. FTXUI and libgit2 are fetched and built
+by CMake, so there is nothing to install first.
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-./build/gittop
+./build/gittop            # reads the repository containing the current directory
+./build/gittop /some/repo # or one you name
 ```
+
+The first configure downloads both dependencies, so it takes a few minutes. After that, builds
+are quick. libgit2 is compiled with its HTTPS and SSH transports off, since nothing here touches
+the network yet; Phase 5 turns them back on.
 
 ## License
 

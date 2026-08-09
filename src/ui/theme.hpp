@@ -1,36 +1,66 @@
 #pragma once
 
+#include <cstdint>
 #include <ftxui/screen/color.hpp>
 
 namespace gittop::ui {
 
-// Semantic tokens. Panels name roles, never colors, so the Phase 7 visual pass
-// swaps palettes by editing this one file instead of every panel. A raw
-// ftxui::Color literal anywhere under src/ui/ outside theme.cpp is a bug.
+struct Rgb {
+  std::uint8_t r = 0;
+  std::uint8_t g = 0;
+  std::uint8_t b = 0;
+};
+
+ftxui::Color ToColor(Rgb c);
+
+// Linear blend, t clamped to [0, 1]. Used for bar gradients and for fading a
+// toast toward its background instead of snapping it off the screen.
+Rgb Mix(Rgb a, Rgb b, float t);
+
+// Converts implicitly, so panels keep writing color(theme().text) while the
+// interpolating widgets reach the raw channels through .rgb.
+struct Swatch {
+  Rgb rgb;
+  operator ftxui::Color() const { return ToColor(rgb); }  // NOLINT: intentional
+};
+
+// Two-stop ramp for bar fills. Hue travels with length the way btop shades a
+// load bar, so a bar carries its reading before the number is parsed.
+struct Ramp {
+  Rgb from;
+  Rgb to;
+};
+
+// Semantic tokens. Panels name roles, never colors, so a new palette is an edit
+// to theme.cpp alone. A raw literal anywhere else under src/ui/ is a bug.
 struct Theme {
-  ftxui::Color bg;
-  ftxui::Color surface;
-  ftxui::Color surface_alt;
+  Swatch bg;
+  Swatch surface;
+  Swatch surface_alt;     // selected row
+  Swatch surface_raised;  // key chips, input field
 
-  ftxui::Color border;
-  ftxui::Color border_focus;
+  Swatch border;
+  Swatch border_focus;
 
-  ftxui::Color text;
-  ftxui::Color text_dim;
-  ftxui::Color text_faint;
+  Swatch text;
+  Swatch text_dim;
+  Swatch text_faint;
 
-  ftxui::Color accent;
+  Swatch accent;
 
-  // Git-specific roles, kept separate from the generic status roles below so a
-  // theme can tint "staged" without also changing every success message.
-  ftxui::Color staged;
-  ftxui::Color unstaged;
-  ftxui::Color untracked;
-  ftxui::Color conflict;
+  Swatch staged;
+  Swatch unstaged;
+  Swatch untracked;
+  Swatch conflict;
 
-  ftxui::Color success;
-  ftxui::Color warning;
-  ftxui::Color danger;
+  Swatch success;
+  Swatch warning;
+  Swatch danger;
+
+  Ramp staged_ramp;
+  Ramp unstaged_ramp;
+  Ramp untracked_ramp;
+  Ramp conflict_ramp;
 };
 
 const Theme& theme();

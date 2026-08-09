@@ -53,6 +53,7 @@ add_executable(gittop
   src/git/repository.cpp
   src/ui/panels.cpp
   src/ui/theme.cpp
+  src/ui/widgets.cpp
 )
 
 # libgit2package only exports its include path for installed consumers, so an

@@ -3,7 +3,7 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phase 0 — not started
+**Status:** Phases 0 and 1 complete and running. Next: Phase 2 (history and graphs).
 **Started:** 2026-08-09
 **Last updated:** 2026-08-09
 
@@ -60,22 +60,30 @@ ever needs to know which provider it's talking to, the abstraction leaked.
 > token layer (`ui/theme.hpp`) and every panel pulls from it. Get that wrong and Phase 7 becomes
 > a rewrite of every file in `ui/` — the same trap as the async seam.
 
-### Phase 0 — Project setup
-- [ ] `CMakeLists.txt` with C++20, FetchContent for FTXUI
-- [ ] Hello-window: FTXUI screen that renders and exits cleanly on `q`
-- [ ] libgit2 wired in and linking
-- [ ] Detect whether cwd is inside a Git repo; friendly message if not
-- [ ] `.gitignore` already covers CMake output — verify `build/` is ignored
+### Phase 0 — Project setup ✅
+- [x] `CMakeLists.txt` with C++20, FetchContent for FTXUI v7.0.3 and libgit2 v1.9.6
+- [x] FTXUI screen that renders and exits cleanly on `q`
+- [x] libgit2 wired in and linking (in-tree target is `libgit2package`)
+- [x] Detect whether cwd is inside a Git repo; friendly message if not
+- [x] `build/` ignored
 
-### Phase 1 — Local status dashboard
-- [ ] Read status: staged / unstaged / untracked / conflicted
-- [ ] Status boxes with counts and btop-style progress bars
-- [ ] Scrollable file list with selection
-- [ ] Stage / unstage selected file
-- [ ] Discard changes (with confirmation — destructive)
-- [ ] Commit: message input popup → `git_commit_create`
-- [ ] Keybinding help overlay (`?`)
-- [ ] Minimal theme token layer — semantic names only, one hardcoded palette behind them
+**Decided here:** libgit2 is vendored rather than taken from the system, because
+`libgit2-dev` was not installed and installing it needs root. It builds with `USE_HTTPS=OFF`
+and `USE_SSH=OFF` since Phase 1 never touches the network; both flip on in Phase 5, and the
+SSH side is the one to budget time for. `GITTOP_SYSTEM_LIBGIT2` is not wired up yet.
+
+### Phase 1 — Local status dashboard ✅
+- [x] Read status: staged / unstaged / untracked / conflicted
+- [x] Status cards with counts and gradient fill bars
+- [x] Scrollable file list with selection, grouped by state
+- [x] Stage / unstage selected file (`space`, `s`, `u`), stage everything (`a`)
+- [x] Discard changes behind a confirm dialog; restores from the index, matching `git restore`
+- [x] Commit: message input overlay → `git_commit_create`
+- [x] Keybinding help overlay (`?`)
+- [x] Theme token layer — semantic names only, one palette behind them
+
+**Verified end to end:** stage-all then commit produces a real commit and leaves a clean tree;
+answering `n` to a discard keeps the file; a non-repository path exits 1 with a readable message.
 
 ### Phase 2 — History & visualization
 - [ ] Commit log panel (walk revwalk, paginated)
@@ -120,6 +128,13 @@ ever needs to know which provider it's talking to, the abstraction leaked.
 The phase where gittop stops looking like a functional TUI and starts looking like something
 people screenshot. Everything below is restyling, not rebuilding — which only holds if the
 token layer from Phase 1 was done properly (see note under the roadmap).
+
+**Landed early, during the Phase 1 polish pass:** semantic tokens with a three-step surface
+scale, gradient-ramped bars drawn with eighth-blocks in a custom FTXUI node, glyph-plus-letter
+status so rows read without color, grouped file list with per-group headers, dimmed scrim
+behind overlays, key chips, a designed empty state, dimmed directory / bright filename paths,
+eased bar animation on an 80ms time constant driven by `RequestAnimationFrame`, and a toast
+that fades on a reserved line so nothing reflows under the cursor. The rest below stands.
 
 **Design language**
 - [ ] Semantic color tokens finalized (`accent`, `success`, `danger`, `muted`, `surface`, `border`, …) — no raw colors at call sites
@@ -212,6 +227,14 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-09** — Visual pass over the Phase 1 screen: gradient bars, grouped list, eased
+  animation, toast fade, overlay scrim. Fixed two event-routing bugs along the way, both the
+  same root cause — `Container::Stacked` and `Container::Tab` only deliver events to a focused
+  child, and the only focusable component in the tree is the commit `Input`. All key routing
+  now lives in one handler on the root component. Next: Phase 2.
+- **2026-08-09** — Phases 0 and 1 done. C++20 / FTXUI v7.0.3 / libgit2 v1.9.6, building clean
+  under `-Wall -Wextra -Wpedantic`. Local staging, discard, and commit all work against a real
+  repository. Next: the visual pass.
 - **2026-08-09** — Added Phase 7 (visual design pass); Phase 6 renamed to "Power features" to
   keep functional work distinct from visual work. Theme token layer pulled forward into Phase 1
   so Phase 7 stays a restyle.
