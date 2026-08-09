@@ -1,0 +1,398 @@
+#include "git/repository.hpp"
+
+#include <git2.h>
+
+#include <filesystem>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace gittop::git {
+namespace {
+
+using model::Change;
+using model::Stage;
+using model::StatusEntry;
+
+std::string LastError() {
+  const git_error* e = git_error_last();
+  if (e != nullptr && e->message != nullptr) {
+    return e->message;
+  }
+  return "unknown libgit2 error";
+}
+
+// libgit2 returns the workdir with a trailing separator, which makes
+// std::filesystem::path::filename() come back empty.
+std::string BaseName(std::string path) {
+  while (path.size() > 1 && path.back() == '/') {
+    path.pop_back();
+  }
+  const auto slash = path.find_last_of('/');
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string PathOf(const git_status_entry* e) {
+  if (e->index_to_workdir != nullptr && e->index_to_workdir->new_file.path != nullptr) {
+    return e->index_to_workdir->new_file.path;
+  }
+  if (e->head_to_index != nullptr && e->head_to_index->new_file.path != nullptr) {
+    return e->head_to_index->new_file.path;
+  }
+  return {};
+}
+
+// Frees the index even when an operation bails out halfway through.
+struct IndexHandle {
+  git_index* index = nullptr;
+  ~IndexHandle() {
+    if (index != nullptr) {
+      git_index_free(index);
+    }
+  }
+};
+
+}  // namespace
+
+Library::Library() {
+  git_libgit2_init();
+}
+
+Library::~Library() {
+  git_libgit2_shutdown();
+}
+
+void Repository::Deleter::operator()(git_repository* r) const {
+  git_repository_free(r);
+}
+
+Repository::Repository(git_repository* repo) : repo_(repo) {}
+Repository::Repository(Repository&&) noexcept = default;
+Repository& Repository::operator=(Repository&&) noexcept = default;
+Repository::~Repository() = default;
+
+std::optional<Repository> Repository::Discover(const std::string& start_path, std::string* error) {
+  git_repository* raw = nullptr;
+  const int rc =
+      git_repository_open_ext(&raw, start_path.c_str(), GIT_REPOSITORY_OPEN_CROSS_FS, nullptr);
+
+  if (rc == GIT_ENOTFOUND) {
+    *error = "not a git repository (or any parent): " + start_path;
+    return std::nullopt;
+  }
+  if (rc != 0) {
+    *error = LastError();
+    return std::nullopt;
+  }
+  if (git_repository_is_bare(raw) != 0) {
+    git_repository_free(raw);
+    *error = "bare repository has no working tree to show";
+    return std::nullopt;
+  }
+  return Repository(raw);
+}
+
+std::string Repository::WorkdirPath() const {
+  const char* wd = git_repository_workdir(repo_.get());
+  return wd != nullptr ? std::string(wd) : std::string{};
+}
+
+model::StatusSnapshot Repository::ReadStatus() const {
+  model::StatusSnapshot snap;
+  git_repository* repo = repo_.get();
+
+  snap.repo_name = BaseName(WorkdirPath());
+
+  git_reference* head = nullptr;
+  const int head_rc = git_repository_head(&head, repo);
+  if (head_rc == 0) {
+    const char* name = git_reference_shorthand(head);
+    snap.branch = name != nullptr ? name : "HEAD";
+    snap.head_detached = git_repository_head_detached(repo) == 1;
+    git_reference_free(head);
+  } else if (head_rc == GIT_EUNBORNBRANCH) {
+    snap.head_unborn = true;
+    git_reference* sym = nullptr;
+    if (git_reference_lookup(&sym, repo, "HEAD") == 0) {
+      const char* target = git_reference_symbolic_target(sym);
+      constexpr std::string_view kPrefix = "refs/heads/";
+      const std::string t = target != nullptr ? target : "";
+      snap.branch = t.rfind(kPrefix, 0) == 0 ? t.substr(kPrefix.size()) : t;
+      git_reference_free(sym);
+    }
+    if (snap.branch.empty()) {
+      snap.branch = "(unborn)";
+    }
+  } else {
+    snap.branch = "(unknown)";
+  }
+
+  git_status_options opts;
+  git_status_options_init(&opts, GIT_STATUS_OPTIONS_VERSION);
+  opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+  opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS |
+               GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX | GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR |
+               GIT_STATUS_OPT_SORT_CASE_SENSITIVELY;
+
+  git_status_list* list = nullptr;
+  if (git_status_list_new(&list, repo, &opts) != 0) {
+    return snap;
+  }
+
+  std::vector<StatusEntry> conflicts;
+  std::vector<StatusEntry> staged;
+  std::vector<StatusEntry> unstaged;
+  std::vector<StatusEntry> untracked;
+
+  const std::size_t count = git_status_list_entrycount(list);
+  for (std::size_t i = 0; i < count; ++i) {
+    const git_status_entry* e = git_status_byindex(list, i);
+    if (e == nullptr) {
+      continue;
+    }
+    const unsigned int s = e->status;
+
+    if ((s & GIT_STATUS_CONFLICTED) != 0) {
+      StatusEntry entry;
+      entry.stage = Stage::Conflict;
+      entry.change = Change::Modified;
+      entry.path = PathOf(e);
+      conflicts.push_back(std::move(entry));
+      continue;
+    }
+
+    // One file can land in both buckets: staged rename plus a later edit, for
+    // instance. Listing it twice is what lets each half be staged separately.
+    Change index_change = Change::None;
+    if ((s & GIT_STATUS_INDEX_NEW) != 0) {
+      index_change = Change::Added;
+    } else if ((s & GIT_STATUS_INDEX_MODIFIED) != 0) {
+      index_change = Change::Modified;
+    } else if ((s & GIT_STATUS_INDEX_DELETED) != 0) {
+      index_change = Change::Deleted;
+    } else if ((s & GIT_STATUS_INDEX_RENAMED) != 0) {
+      index_change = Change::Renamed;
+    } else if ((s & GIT_STATUS_INDEX_TYPECHANGE) != 0) {
+      index_change = Change::TypeChange;
+    }
+
+    if (index_change != Change::None) {
+      StatusEntry entry;
+      entry.stage = Stage::Index;
+      entry.change = index_change;
+      const git_diff_delta* d = e->head_to_index;
+      entry.path = (d != nullptr && d->new_file.path != nullptr) ? d->new_file.path : PathOf(e);
+      if (index_change == Change::Renamed && d != nullptr && d->old_file.path != nullptr) {
+        entry.old_path = d->old_file.path;
+      }
+      staged.push_back(std::move(entry));
+    }
+
+    Change wt_change = Change::None;
+    if ((s & GIT_STATUS_WT_NEW) != 0) {
+      wt_change = Change::Untracked;
+    } else if ((s & GIT_STATUS_WT_MODIFIED) != 0) {
+      wt_change = Change::Modified;
+    } else if ((s & GIT_STATUS_WT_DELETED) != 0) {
+      wt_change = Change::Deleted;
+    } else if ((s & GIT_STATUS_WT_RENAMED) != 0) {
+      wt_change = Change::Renamed;
+    } else if ((s & GIT_STATUS_WT_TYPECHANGE) != 0) {
+      wt_change = Change::TypeChange;
+    }
+
+    if (wt_change != Change::None) {
+      StatusEntry entry;
+      entry.stage = Stage::Worktree;
+      entry.change = wt_change;
+      const git_diff_delta* d = e->index_to_workdir;
+      entry.path = (d != nullptr && d->new_file.path != nullptr) ? d->new_file.path : PathOf(e);
+      if (wt_change == Change::Renamed && d != nullptr && d->old_file.path != nullptr) {
+        entry.old_path = d->old_file.path;
+      }
+      if (wt_change == Change::Untracked) {
+        untracked.push_back(std::move(entry));
+      } else {
+        unstaged.push_back(std::move(entry));
+      }
+    }
+  }
+
+  git_status_list_free(list);
+
+  snap.conflicted = conflicts.size();
+  snap.staged = staged.size();
+  snap.unstaged = unstaged.size();
+  snap.untracked = untracked.size();
+
+  snap.entries.reserve(snap.total());
+  for (auto* bucket : {&conflicts, &staged, &unstaged, &untracked}) {
+    for (auto& entry : *bucket) {
+      snap.entries.push_back(std::move(entry));
+    }
+  }
+
+  return snap;
+}
+
+OpResult Repository::Stage(const StatusEntry& entry) {
+  IndexHandle h;
+  if (git_repository_index(&h.index, repo_.get()) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  // A file deleted in the working tree has to be removed from the index; adding
+  // it by path would fail because there is nothing on disk to read.
+  const bool deleted_on_disk = entry.change == Change::Deleted && entry.stage != Stage::Index;
+  const int rc = deleted_on_disk ? git_index_remove_bypath(h.index, entry.path.c_str())
+                                 : git_index_add_bypath(h.index, entry.path.c_str());
+  if (rc != 0) {
+    return OpResult::Fail(LastError());
+  }
+  if (git_index_write(h.index) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  if (entry.stage == Stage::Conflict) {
+    return OpResult::Ok("resolved and staged " + entry.path);
+  }
+  return OpResult::Ok("staged " + entry.path);
+}
+
+OpResult Repository::Unstage(const StatusEntry& entry) {
+  git_object* head_commit = nullptr;
+  if (git_revparse_single(&head_commit, repo_.get(), "HEAD") == 0) {
+    char* raw_path = const_cast<char*>(entry.path.c_str());
+    git_strarray paths{&raw_path, 1};
+    const int rc = git_reset_default(repo_.get(), head_commit, &paths);
+    git_object_free(head_commit);
+    if (rc != 0) {
+      return OpResult::Fail(LastError());
+    }
+    return OpResult::Ok("unstaged " + entry.path);
+  }
+
+  // Unborn HEAD: no commit to reset against, so drop the path from the index.
+  IndexHandle h;
+  if (git_repository_index(&h.index, repo_.get()) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  if (git_index_remove_bypath(h.index, entry.path.c_str()) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  if (git_index_write(h.index) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  return OpResult::Ok("unstaged " + entry.path);
+}
+
+OpResult Repository::StageAll() {
+  IndexHandle h;
+  if (git_repository_index(&h.index, repo_.get()) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  char* pattern = const_cast<char*>("*");
+  git_strarray paths{&pattern, 1};
+
+  if (git_index_add_all(h.index, &paths, GIT_INDEX_ADD_DEFAULT, nullptr, nullptr) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  // add_all skips files deleted from disk; update_all is what records those.
+  if (git_index_update_all(h.index, &paths, nullptr, nullptr) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  if (git_index_write(h.index) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  return OpResult::Ok("staged everything");
+}
+
+OpResult Repository::Discard(const StatusEntry& entry) {
+  if (entry.stage == Stage::Index) {
+    return OpResult::Fail("unstage this first, then discard");
+  }
+
+  if (entry.change == Change::Untracked) {
+    const std::filesystem::path target = std::filesystem::path(WorkdirPath()) / entry.path;
+    std::error_code ec;
+    std::filesystem::remove(target, ec);
+    if (ec) {
+      return OpResult::Fail("could not delete " + entry.path + ": " + ec.message());
+    }
+    return OpResult::Ok("deleted " + entry.path);
+  }
+
+  // Restores from the index rather than from HEAD, matching `git restore`. A
+  // file that is both staged and edited keeps its staged content.
+  git_checkout_options co;
+  git_checkout_options_init(&co, GIT_CHECKOUT_OPTIONS_VERSION);
+  co.checkout_strategy = GIT_CHECKOUT_FORCE | GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH;
+
+  char* raw_path = const_cast<char*>(entry.path.c_str());
+  co.paths.strings = &raw_path;
+  co.paths.count = 1;
+
+  if (git_checkout_index(repo_.get(), nullptr, &co) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  return OpResult::Ok("discarded changes in " + entry.path);
+}
+
+OpResult Repository::Commit(const std::string& message) {
+  if (message.empty()) {
+    return OpResult::Fail("commit message is empty");
+  }
+
+  git_repository* repo = repo_.get();
+  IndexHandle h;
+  if (git_repository_index(&h.index, repo) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  if (git_index_has_conflicts(h.index) == 1) {
+    return OpResult::Fail("resolve conflicts before committing");
+  }
+
+  git_oid tree_oid;
+  if (git_index_write_tree(&tree_oid, h.index) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  git_tree* tree = nullptr;
+  if (git_tree_lookup(&tree, repo, &tree_oid) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  git_signature* sig = nullptr;
+  if (git_signature_default(&sig, repo) != 0) {
+    git_tree_free(tree);
+    return OpResult::Fail("set user.name and user.email before committing");
+  }
+
+  git_commit* parent = nullptr;
+  git_oid parent_oid;
+  const bool has_parent = git_reference_name_to_id(&parent_oid, repo, "HEAD") == 0 &&
+                          git_commit_lookup(&parent, repo, &parent_oid) == 0;
+  const git_commit* parents[1] = {parent};
+
+  git_oid commit_oid;
+  const int rc = git_commit_create(&commit_oid, repo, "HEAD", sig, sig, nullptr, message.c_str(),
+                                   tree, has_parent ? 1 : 0, has_parent ? parents : nullptr);
+
+  if (parent != nullptr) {
+    git_commit_free(parent);
+  }
+  git_signature_free(sig);
+  git_tree_free(tree);
+
+  if (rc != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  char short_id[8] = {};
+  git_oid_tostr(short_id, sizeof(short_id), &commit_oid);
+  return OpResult::Ok(std::string("committed ") + short_id);
+}
+
+}  // namespace gittop::git
