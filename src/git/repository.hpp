@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 
+#include "model/history.hpp"
 #include "model/status.hpp"
 
 struct git_repository;
@@ -46,6 +47,11 @@ class Repository {
   // call it from a worker thread as long as one thread owns the Repository at a
   // time. libgit2 objects are not safe for concurrent use across threads.
   model::StatusSnapshot ReadStatus() const;
+
+  // The other pure read. Walks every local branch tip, capped so a repository
+  // with a hundred thousand commits still opens instantly; `truncated` says
+  // whether the cap was reached. Same threading rule as ReadStatus.
+  model::HistorySnapshot ReadHistory(std::size_t max_commits, int activity_days) const;
 
   OpResult Stage(const model::StatusEntry& entry);
   OpResult Unstage(const model::StatusEntry& entry);

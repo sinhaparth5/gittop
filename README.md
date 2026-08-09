@@ -38,6 +38,10 @@ connection.
 
 ## What works today
 
+Four views, switched with `1` `2` `3` `4` or cycled with `tab`.
+
+**Status.**
+
 - Status cards for staged, unstaged, untracked, and conflicted counts, with gradient fill bars
   that ease to their new value when something changes
 - A file list grouped by state, with the directory dimmed and the filename bright so long lists
@@ -51,14 +55,32 @@ connection.
 Status is conveyed by glyph and letter as well as color, so a row reads correctly without being
 able to separate green from amber.
 
+**History.**
+
+- Commit log with a box-drawing lane graph, branch and tag badges, author, and relative age
+- A 91-day activity heatmap, 13 weeks across by weekday down
+- HEAD marked distinctly from every other commit
+
+**Branches.**
+
+- Local branches with ahead/behind counts against their upstream, checked-out branch first
+
+**Graph.**
+
+- A braille area chart of commits over the whole history, gradient filled with a bright crest
+- Pan through time with `h` and `l`, jump to either end with `g` and `G`
+- Switch granularity between day, week, and month with `d`, `w`, and `m`
+- A scroll handle shows where the visible window sits in the full timeline
+- Top authors, weekday distribution, and a commits-by-hour sparkline in the author's own timezone
+
+The layout adapts: stat cards stack two-by-two below 84 columns, and the heatmap yields to the
+log on terminals shorter than 30 rows.
+
 ## Planned
 
 **Locally, offline:**
 
-- Commit history as a lane graph drawn in box-drawing characters
-- A commit activity heatmap over the last 30 or 90 days
-- Branches with ahead/behind counts against their upstream
-- Diff viewer, stash management, rebase helpers
+- Diff viewer, stash management, rebase helpers, search
 
 **From GitHub and GitLab:**
 
@@ -80,8 +102,8 @@ the source layout, per-task checkboxes, known risks, and a work log.
 |---|---|---|
 | 0 | CMake, FTXUI window, libgit2 linked, repo detection | Done |
 | 1 | Local status dashboard, staging, discard, commit | Done |
-| 2 | History, commit graph, activity heatmap, branches | Next |
-| 3 | Config, tokens, provider detection, async HTTP | Planned |
+| 2 | History, commit graph, activity heatmap, branches | Done |
+| 3 | Config, tokens, provider detection, async HTTP | Next |
 | 4 | Pipelines and CI panels | Planned |
 | 5 | Pull requests, push/pull, themes, mouse | Planned |
 | 6 | Diff viewer, stash, rebase helpers, search | Planned |
@@ -91,8 +113,12 @@ the source layout, per-task checkboxes, known risks, and a work log.
 
 | Key | Action |
 |---|---|
+| `1` `2` `3` `4` | Status / History / Branches / Graph |
+| `tab` | Cycle through the views |
 | `j` `k` or arrows | Move the selection |
-| `g` `G` | First / last |
+| `g` `G` | First / last, or oldest / newest on the graph |
+| `h` `l` | Pan the graph through time |
+| `d` `w` `m` | Graph bucket: day, week, month |
 | `space` | Stage or unstage the selection |
 | `s` `u` | Stage / unstage explicitly |
 | `a` | Stage everything |

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <ftxui/screen/color.hpp>
 
@@ -61,6 +62,11 @@ struct Theme {
   Ramp unstaged_ramp;
   Ramp untracked_ramp;
   Ramp conflict_ramp;
+
+  // Cycled by lane index in the commit graph. Six distinct hues is enough that
+  // adjacent lanes never collide in practice, and few enough that they all stay
+  // legible on the same background.
+  std::array<Swatch, 6> graph;
 };
 
 const Theme& theme();

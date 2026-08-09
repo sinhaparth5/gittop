@@ -2,11 +2,16 @@
 
 #include <git2.h>
 
+#include <algorithm>
+#include <ctime>
 #include <filesystem>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "git/graph.hpp"
 
 namespace gittop::git {
 namespace {
@@ -42,6 +47,17 @@ std::string PathOf(const git_status_entry* e) {
   }
   return {};
 }
+
+std::string OidToString(const git_oid* oid) {
+  if (oid == nullptr) {
+    return {};
+  }
+  char buffer[GIT_OID_MAX_HEXSIZE + 1] = {};
+  git_oid_tostr(buffer, sizeof(buffer), oid);
+  return buffer;
+}
+
+constexpr std::int64_t kSecondsPerDay = 86400;
 
 // Frees the index even when an operation bails out halfway through.
 struct IndexHandle {
@@ -232,6 +248,229 @@ model::StatusSnapshot Repository::ReadStatus() const {
       snap.entries.push_back(std::move(entry));
     }
   }
+
+  return snap;
+}
+
+model::HistorySnapshot Repository::ReadHistory(std::size_t max_commits,
+                                               int activity_days) const {
+  model::HistorySnapshot snap;
+  git_repository* repo = repo_.get();
+
+  if (activity_days > 0) {
+    snap.activity.assign(static_cast<std::size_t>(activity_days), 0);
+  }
+
+  // Which refs point where, so the log can badge a commit with its branch
+  // names. Collected once up front rather than per commit.
+  std::unordered_map<std::string, std::vector<std::string>> refs_at;
+  git_reference_iterator* ref_iter = nullptr;
+  if (git_reference_iterator_new(&ref_iter, repo) == 0) {
+    git_reference* ref = nullptr;
+    while (git_reference_next(&ref, ref_iter) == 0) {
+      git_object* peeled = nullptr;
+      if (git_reference_peel(&peeled, ref, GIT_OBJECT_COMMIT) == 0) {
+        const char* shorthand = git_reference_shorthand(ref);
+        if (shorthand != nullptr) {
+          refs_at[OidToString(git_object_id(peeled))].emplace_back(shorthand);
+        }
+        git_object_free(peeled);
+      }
+      git_reference_free(ref);
+    }
+    git_reference_iterator_free(ref_iter);
+  }
+
+  git_oid head_oid;
+  const std::string head_id =
+      git_reference_name_to_id(&head_oid, repo, "HEAD") == 0 ? OidToString(&head_oid) : "";
+
+  git_revwalk* walk = nullptr;
+  if (git_revwalk_new(&walk, repo) != 0) {
+    return snap;
+  }
+  git_revwalk_sorting(walk, GIT_SORT_TIME | GIT_SORT_TOPOLOGICAL);
+  // Push every local branch so side branches get lanes of their own, plus HEAD
+  // in case it is detached and therefore not on any branch.
+  git_revwalk_push_glob(walk, "refs/heads/*");
+  git_revwalk_push_head(walk);
+
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  const std::int64_t today = now / kSecondsPerDay;
+  snap.activity_start_day = today - static_cast<std::int64_t>(activity_days) + 1;
+
+  // Bounded so opening a large repository stays instant. The log itself is
+  // capped lower; the extra walk exists only to fill the activity window.
+  constexpr std::size_t kMaxWalk = 6000;
+  std::size_t walked = 0;
+  git_oid oid;
+
+  std::unordered_map<std::int64_t, int> per_day;
+  std::unordered_map<std::string, int> per_author;
+  std::int64_t oldest_day = today;
+  bool saw_any = false;
+
+  while (walked < kMaxWalk && git_revwalk_next(&oid, walk) == 0) {
+    ++walked;
+
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &oid) != 0) {
+      continue;
+    }
+
+    const auto when = static_cast<std::int64_t>(git_commit_time(commit));
+    const std::int64_t day = when / kSecondsPerDay;
+    if (day >= snap.activity_start_day && day <= today) {
+      const auto bucket = static_cast<std::size_t>(day - snap.activity_start_day);
+      if (bucket < snap.activity.size()) {
+        snap.activity[bucket]++;
+      }
+    }
+
+    const git_signature* author = git_commit_author(commit);
+
+    // Stats cover the whole walk, not only the rows the log kept.
+    if (day <= today) {
+      per_day[day]++;
+      oldest_day = saw_any ? std::min(oldest_day, day) : day;
+      saw_any = true;
+
+      snap.weekday[static_cast<std::size_t>((((day + 4) % 7) + 7) % 7)]++;
+
+      // Shift into the author's own timezone so "commits at 2am" means their
+      // 2am, not the reader's.
+      const auto offset_minutes = static_cast<std::int64_t>(git_commit_time_offset(commit));
+      const std::int64_t local = when + (offset_minutes * 60);
+      const std::int64_t seconds_into_day = (((local % kSecondsPerDay) + kSecondsPerDay) %
+                                             kSecondsPerDay);
+      snap.hour[static_cast<std::size_t>(seconds_into_day / 3600)]++;
+    }
+    if (author != nullptr && author->name != nullptr) {
+      per_author[author->name]++;
+    }
+
+    if (snap.commits.size() < max_commits) {
+      model::Commit entry;
+      entry.id = OidToString(&oid);
+      entry.short_id = entry.id.substr(0, 7);
+      entry.time = when;
+      entry.is_head = !head_id.empty() && entry.id == head_id;
+
+      const char* summary = git_commit_summary(commit);
+      entry.summary = summary != nullptr ? summary : "(no message)";
+
+      if (author != nullptr && author->name != nullptr) {
+        entry.author = author->name;
+      }
+
+      const unsigned int parents = git_commit_parentcount(commit);
+      entry.parents.reserve(parents);
+      for (unsigned int p = 0; p < parents; ++p) {
+        entry.parents.push_back(OidToString(git_commit_parent_id(commit, p)));
+      }
+
+      if (const auto found = refs_at.find(entry.id); found != refs_at.end()) {
+        entry.refs = found->second;
+      }
+
+      snap.commits.push_back(std::move(entry));
+    }
+
+    git_commit_free(commit);
+  }
+
+  git_revwalk_free(walk);
+
+  // Materialise the sparse day counts into a contiguous run so the chart can
+  // index straight into it. Quiet days have to exist as zeroes or the timeline
+  // would compress every gap out of the plot.
+  if (saw_any && oldest_day <= today) {
+    snap.daily_start_day = oldest_day;
+    snap.daily.assign(static_cast<std::size_t>(today - oldest_day + 1), 0);
+    for (const auto& [day, count] : per_day) {
+      const auto index = static_cast<std::size_t>(day - oldest_day);
+      if (index < snap.daily.size()) {
+        snap.daily[index] = count;
+      }
+    }
+  }
+
+  snap.authors.assign(per_author.begin(), per_author.end());
+  std::sort(snap.authors.begin(), snap.authors.end(),
+            [](const auto& a, const auto& b) {
+              if (a.second != b.second) {
+                return a.second > b.second;
+              }
+              return a.first < b.first;
+            });
+  constexpr std::size_t kMaxAuthors = 12;
+  if (snap.authors.size() > kMaxAuthors) {
+    snap.authors.resize(kMaxAuthors);
+  }
+
+  snap.walked = walked;
+  snap.truncated = walked >= kMaxWalk;
+  if (!snap.activity.empty()) {
+    snap.activity_max = *std::max_element(snap.activity.begin(), snap.activity.end());
+  }
+  AssignLanes(snap.commits);
+
+  // ------------------------------------------------------------- branches
+  git_branch_iterator* branch_iter = nullptr;
+  if (git_branch_iterator_new(&branch_iter, repo, GIT_BRANCH_LOCAL) == 0) {
+    git_reference* ref = nullptr;
+    git_branch_t branch_type = GIT_BRANCH_LOCAL;
+
+    while (git_branch_next(&ref, &branch_type, branch_iter) == 0) {
+      model::Branch branch;
+      const char* name = nullptr;
+      if (git_branch_name(&name, ref) == 0 && name != nullptr) {
+        branch.name = name;
+      }
+      branch.is_head = git_branch_is_head(ref) == 1;
+
+      git_reference* upstream = nullptr;
+      if (git_branch_upstream(&upstream, ref) == 0) {
+        branch.has_upstream = true;
+        const char* upstream_name = nullptr;
+        if (git_branch_name(&upstream_name, upstream) == 0 && upstream_name != nullptr) {
+          branch.upstream = upstream_name;
+        }
+        const git_oid* local_tip = git_reference_target(ref);
+        const git_oid* remote_tip = git_reference_target(upstream);
+        if (local_tip != nullptr && remote_tip != nullptr) {
+          std::size_t ahead = 0;
+          std::size_t behind = 0;
+          if (git_graph_ahead_behind(&ahead, &behind, repo, local_tip, remote_tip) == 0) {
+            branch.ahead = ahead;
+            branch.behind = behind;
+          }
+        }
+        git_reference_free(upstream);
+      }
+
+      if (const git_oid* tip = git_reference_target(ref); tip != nullptr) {
+        git_commit* tip_commit = nullptr;
+        if (git_commit_lookup(&tip_commit, repo, tip) == 0) {
+          branch.time = static_cast<std::int64_t>(git_commit_time(tip_commit));
+          git_commit_free(tip_commit);
+        }
+      }
+
+      snap.branches.push_back(std::move(branch));
+      git_reference_free(ref);
+    }
+    git_branch_iterator_free(branch_iter);
+  }
+
+  // Most recently touched first, with the checked-out branch pinned to the top.
+  std::sort(snap.branches.begin(), snap.branches.end(),
+            [](const model::Branch& a, const model::Branch& b) {
+              if (a.is_head != b.is_head) {
+                return a.is_head;
+              }
+              return a.time > b.time;
+            });
 
   return snap;
 }

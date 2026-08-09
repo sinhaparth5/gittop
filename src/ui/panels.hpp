@@ -17,12 +17,24 @@ struct StatBars {
   float conflicted = 0.0F;
 };
 
+enum class View {
+  Status,
+  History,
+  Branches,
+  Graph,
+};
+
 ftxui::Element Header(const model::StatusSnapshot& snapshot);
-ftxui::Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars);
+ftxui::Element TabBar(View active);
+
+// `compact` stacks the four cards two-by-two, for terminals too narrow to give
+// each one a readable bar side by side.
+ftxui::Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
+                          bool compact);
 ftxui::Element FileList(const model::StatusSnapshot& snapshot, int selected);
 
 // `fade` runs 1 down to 0 as a message ages out.
-ftxui::Element Footer(const std::string& message, bool is_error, float fade);
+ftxui::Element Footer(const std::string& message, bool is_error, float fade, View view);
 
 ftxui::Element HelpPane();
 ftxui::Element ConfirmPane(const std::string& question, const std::string& detail);

@@ -4,7 +4,9 @@
 #include <string>
 
 #include "git/repository.hpp"
+#include "model/history.hpp"
 #include "model/status.hpp"
+#include "ui/graph_panel.hpp"
 #include "ui/panels.hpp"
 
 namespace gittop {
@@ -37,6 +39,19 @@ class App {
   void SelectFirst();
   void SelectLast();
 
+  // History is read lazily and cached: opening a repository should not pay for
+  // a revwalk nobody asked to see. Committing invalidates it, and so does `r`.
+  void SetView(ui::View view);
+  void EnsureHistory();
+  void Reload();
+
+  int& ActiveSelection();
+  int ActiveCount() const;
+
+  int MaxGraphOffset() const;
+  void PanGraph(int buckets);
+  void SetBucket(ui::Bucket bucket);
+
   const model::StatusEntry* Selected() const;
 
   void ToggleStage();
@@ -63,8 +78,15 @@ class App {
 
   git::Repository repo_;
   model::StatusSnapshot snapshot_;
+  model::HistorySnapshot history_;
+  bool history_loaded_ = false;
+
+  ui::View view_ = ui::View::Status;
 
   int selected_ = 0;
+  int commit_selected_ = 0;
+  int branch_selected_ = 0;
+  ui::GraphView graph_;
   std::string message_;
   bool message_is_error_ = false;
 

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <utility>
 
+#include "ui/history_panel.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -116,20 +117,100 @@ void App::Apply(const git::OpResult& result) {
   }
 }
 
+int& App::ActiveSelection() {
+  switch (view_) {
+    case ui::View::History:
+      return commit_selected_;
+    case ui::View::Branches:
+      return branch_selected_;
+    case ui::View::Graph:
+    case ui::View::Status:
+      break;
+  }
+  return selected_;
+}
+
+int App::ActiveCount() const {
+  switch (view_) {
+    case ui::View::History:
+      return static_cast<int>(history_.commits.size());
+    case ui::View::Branches:
+      return static_cast<int>(history_.branches.size());
+    case ui::View::Graph:
+      return 0;  // the graph pans instead of selecting
+    case ui::View::Status:
+      break;
+  }
+  return static_cast<int>(snapshot_.entries.size());
+}
+
+int App::MaxGraphOffset() const {
+  const int size = ui::GraphSeriesSize(history_, graph_.bucket);
+  const int window = std::min(ui::GraphWindow(graph_.bucket), size);
+  return std::max(0, size - window);
+}
+
+void App::PanGraph(int buckets) {
+  graph_.offset = std::clamp(graph_.offset + buckets, 0, MaxGraphOffset());
+}
+
+void App::SetBucket(ui::Bucket bucket) {
+  graph_.bucket = bucket;
+  // Landing on "now" after a zoom is the predictable place to be; keeping a
+  // raw offset would drop you somewhere unrelated at the new granularity.
+  graph_.offset = 0;
+  Note("bucket: " + ui::BucketName(bucket), false);
+}
+
 void App::Move(int delta) {
-  const int count = static_cast<int>(snapshot_.entries.size());
+  const int count = ActiveCount();
   if (count == 0) {
     return;
   }
-  selected_ = std::clamp(selected_ + delta, 0, count - 1);
+  int& selection = ActiveSelection();
+  selection = std::clamp(selection + delta, 0, count - 1);
 }
 
 void App::SelectFirst() {
-  selected_ = 0;
+  ActiveSelection() = 0;
 }
 
 void App::SelectLast() {
-  selected_ = std::max(0, static_cast<int>(snapshot_.entries.size()) - 1);
+  ActiveSelection() = std::max(0, ActiveCount() - 1);
+}
+
+void App::EnsureHistory() {
+  if (history_loaded_) {
+    return;
+  }
+  // 400 rows is more log than anyone scrolls in a session, and the activity
+  // window is thirteen whole weeks so the heatmap grid comes out square.
+  constexpr std::size_t kMaxLogCommits = 400;
+  constexpr int kActivityDays = 91;
+
+  history_ = repo_.ReadHistory(kMaxLogCommits, kActivityDays);
+  history_loaded_ = true;
+
+  commit_selected_ =
+      std::clamp(commit_selected_, 0, std::max(0, static_cast<int>(history_.commits.size()) - 1));
+  branch_selected_ =
+      std::clamp(branch_selected_, 0, std::max(0, static_cast<int>(history_.branches.size()) - 1));
+}
+
+void App::SetView(ui::View view) {
+  view_ = view;
+  if (view != ui::View::Status) {
+    EnsureHistory();
+  }
+}
+
+void App::Reload() {
+  Refresh();
+  history_loaded_ = false;
+  if (view_ != ui::View::Status) {
+    EnsureHistory();
+  }
+  Note("re-read the repository", false);
 }
 
 const model::StatusEntry* App::Selected() const {
@@ -223,6 +304,9 @@ void App::PerformCommit() {
   if (result.ok) {
     commit_message_.clear();
     CloseOverlay();
+    // The log just gained a row, so the cached walk is stale.
+    history_loaded_ = false;
+    commit_selected_ = 0;
   }
   Apply(result);
 }
@@ -280,19 +364,63 @@ int App::Run() {
   auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane}, &overlay_index_);
 
   // --------------------------------------------------------------- main view
-  auto main_view = Renderer([this] {
+  auto main_view = Renderer([this, &screen] {
     Tick();
     if (Animating()) {
       animation::RequestAnimationFrame();
     }
 
-    Element view = vbox({
-                       ui::Header(snapshot_),
-                       ui::SummaryRow(snapshot_, bars_),
-                       ui::FileList(snapshot_, selected_) | flex,
-                       ui::Footer(message_, message_is_error_, ToastFade()),
-                   }) |
-                   bgcolor(ui::theme().bg);
+    // Reading the live terminal size here is what makes the layout responsive:
+    // the dom has no way to ask, but the screen does.
+    const int width = screen.dimx();
+    const int height = screen.dimy();
+
+    Elements body{ui::Header(snapshot_), ui::TabBar(view_)};
+
+    switch (view_) {
+      case ui::View::Status:
+        body.push_back(ui::SummaryRow(snapshot_, bars_, width < 84));
+        body.push_back(ui::FileList(snapshot_, selected_) | flex);
+        break;
+
+      case ui::View::History:
+        // The heatmap costs ten rows. On a short terminal the log is worth
+        // more than the graph, so it goes first and the heatmap steps aside.
+        if (height >= 30) {
+          body.push_back(window(text(" ACTIVITY ") | bold | color(ui::theme().text_dim),
+                                ui::ActivityPanel(history_)) |
+                         color(ui::theme().border) | bgcolor(ui::theme().surface));
+        }
+        body.push_back(window(text(" COMMITS ") | bold | color(ui::theme().text_dim),
+                              ui::CommitList(history_, commit_selected_)) |
+                       color(ui::theme().border) | bgcolor(ui::theme().surface) | flex);
+        break;
+
+      case ui::View::Branches:
+        body.push_back(window(text(" BRANCHES ") | bold | color(ui::theme().text_dim),
+                              ui::BranchList(history_, branch_selected_)) |
+                       color(ui::theme().border) | bgcolor(ui::theme().surface) | flex);
+        break;
+
+      case ui::View::Graph: {
+        // The canvas cannot flex, so its row count is worked out from what is
+        // left over. Chrome is header 1 + tabs 1 + footer 2, and the chart's
+        // own frame is 6 (two borders, x axis, spacer, scrollbar, range line).
+        const bool show_insights = height >= 30;
+        const int insights_rows = show_insights ? 9 : 0;
+        const int chart_rows = std::clamp(height - 10 - insights_rows, 4, 40);
+
+        body.push_back(ui::GraphPanel(history_, graph_, width, chart_rows));
+        if (show_insights) {
+          body.push_back(ui::InsightsRow(history_, width));
+        }
+        break;
+      }
+    }
+
+    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_));
+
+    Element view = vbox(std::move(body)) | bgcolor(ui::theme().bg);
 
     // Dimming the dashboard behind an overlay is the terminal's version of a
     // scrim: it stops the panels from competing with the dialog on top.
@@ -352,6 +480,40 @@ int App::Run() {
       screen.Exit();
       return true;
     }
+    // The graph pans along a timeline rather than selecting rows, so it claims
+    // the horizontal keys before the shared list movement below.
+    if (view_ == ui::View::Graph) {
+      const int step = std::max(1, ui::GraphWindow(graph_.bucket) / 8);
+      if (event == Event::Character('h') || event == Event::ArrowLeft) {
+        PanGraph(step);
+        return true;
+      }
+      if (event == Event::Character('l') || event == Event::ArrowRight) {
+        PanGraph(-step);
+        return true;
+      }
+      if (event == Event::Character('d')) {
+        SetBucket(ui::Bucket::Day);
+        return true;
+      }
+      if (event == Event::Character('w')) {
+        SetBucket(ui::Bucket::Week);
+        return true;
+      }
+      if (event == Event::Character('m')) {
+        SetBucket(ui::Bucket::Month);
+        return true;
+      }
+      if (event == Event::Character('g')) {
+        graph_.offset = MaxGraphOffset();
+        return true;
+      }
+      if (event == Event::Character('G')) {
+        graph_.offset = 0;
+        return true;
+      }
+    }
+
     if (event == Event::Character('j') || event == Event::ArrowDown) {
       Move(1);
       return true;
@@ -368,34 +530,72 @@ int App::Run() {
       SelectLast();
       return true;
     }
-    if (event == Event::Character(' ')) {
-      ToggleStage();
+    if (event == Event::Character('1')) {
+      SetView(ui::View::Status);
       return true;
     }
-    if (event == Event::Character('s')) {
-      StageSelected();
+    if (event == Event::Character('2')) {
+      SetView(ui::View::History);
       return true;
     }
-    if (event == Event::Character('u')) {
-      UnstageSelected();
+    if (event == Event::Character('3')) {
+      SetView(ui::View::Branches);
       return true;
     }
-    if (event == Event::Character('a')) {
-      StageEverything();
+    if (event == Event::Character('4')) {
+      SetView(ui::View::Graph);
       return true;
     }
-    if (event == Event::Character('d')) {
-      RequestDiscard();
-      return true;
-    }
-    if (event == Event::Character('c')) {
-      OpenCommit();
+    if (event == Event::Tab) {
+      switch (view_) {
+        case ui::View::Status:
+          SetView(ui::View::History);
+          break;
+        case ui::View::History:
+          SetView(ui::View::Branches);
+          break;
+        case ui::View::Branches:
+          SetView(ui::View::Graph);
+          break;
+        case ui::View::Graph:
+          SetView(ui::View::Status);
+          break;
+      }
       return true;
     }
     if (event == Event::Character('r')) {
-      Refresh();
-      Note("re-read the repository", false);
+      Reload();
       return true;
+    }
+
+    // Everything below acts on the working tree, so it only applies where the
+    // working tree is on screen. Pressing `d` while reading the log should not
+    // quietly discard whatever the status view happened to have selected.
+    if (view_ == ui::View::Status) {
+      if (event == Event::Character(' ')) {
+        ToggleStage();
+        return true;
+      }
+      if (event == Event::Character('s')) {
+        StageSelected();
+        return true;
+      }
+      if (event == Event::Character('u')) {
+        UnstageSelected();
+        return true;
+      }
+      if (event == Event::Character('a')) {
+        StageEverything();
+        return true;
+      }
+      if (event == Event::Character('d')) {
+        RequestDiscard();
+        return true;
+      }
+      if (event == Event::Character('c')) {
+        OpenCommit();
+        return true;
+      }
     }
     if (event == Event::Character('?')) {
       OpenOverlay(kHelp);

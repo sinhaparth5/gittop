@@ -214,29 +214,72 @@ Element Header(const model::StatusSnapshot& snapshot) {
   return hbox(std::move(parts)) | bgcolor(t.surface);
 }
 
-Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars) {
+Element TabBar(View active) {
+  const Theme& t = theme();
+
+  const auto tab = [&t, active](View view, const std::string& key, const std::string& label) {
+    const bool on = view == active;
+    return hbox({
+        text(" " + key + " ") | bold | color(on ? t.bg : t.text_faint) |
+            bgcolor(on ? t.accent : t.surface),
+        text(" " + label + "  ") | bold | color(on ? t.text : t.text_faint) |
+            bgcolor(on ? t.surface_alt : t.surface),
+    });
+  };
+
+  return hbox({
+             text(" "),
+             tab(View::Status, "1", "Status"),
+             text(" "),
+             tab(View::History, "2", "History"),
+             text(" "),
+             tab(View::Branches, "3", "Branches"),
+             text(" "),
+             tab(View::Graph, "4", "Graph"),
+             filler(),
+         }) |
+         bgcolor(t.surface);
+}
+
+Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
+                   bool compact) {
   const Theme& t = theme();
   const auto gap = [] { return text("  "); };
   const auto rule = [&t] { return separator() | color(t.border); };
 
+  Element staged = StatCard("STAGED", snapshot.staged, bars.staged, t.staged_ramp, t.staged);
+  Element unstaged =
+      StatCard("UNSTAGED", snapshot.unstaged, bars.unstaged, t.unstaged_ramp, t.unstaged);
+  Element untracked =
+      StatCard("UNTRACKED", snapshot.untracked, bars.untracked, t.untracked_ramp, t.untracked);
+  Element conflicts =
+      StatCard("CONFLICTS", snapshot.conflicted, bars.conflicted, t.conflict_ramp, t.conflict);
+
+  if (compact) {
+    return vbox({
+               hbox({gap(), std::move(staged), gap(), rule(), gap(), std::move(unstaged), gap()}),
+               separator() | color(t.border),
+               hbox({gap(), std::move(untracked), gap(), rule(), gap(), std::move(conflicts),
+                     gap()}),
+           }) |
+           borderRounded | color(t.border) | bgcolor(t.surface);
+  }
+
   return hbox({
              gap(),
-             StatCard("STAGED", snapshot.staged, bars.staged, t.staged_ramp, t.staged),
+             std::move(staged),
              gap(),
              rule(),
              gap(),
-             StatCard("UNSTAGED", snapshot.unstaged, bars.unstaged, t.unstaged_ramp,
-                      t.unstaged),
+             std::move(unstaged),
              gap(),
              rule(),
              gap(),
-             StatCard("UNTRACKED", snapshot.untracked, bars.untracked, t.untracked_ramp,
-                      t.untracked),
+             std::move(untracked),
              gap(),
              rule(),
              gap(),
-             StatCard("CONFLICTS", snapshot.conflicted, bars.conflicted, t.conflict_ramp,
-                      t.conflict),
+             std::move(conflicts),
              gap(),
          }) |
          borderRounded | color(t.border) | bgcolor(t.surface);
@@ -272,7 +315,7 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected) {
          bgcolor(t.surface);
 }
 
-Element Footer(const std::string& message, bool is_error, float fade) {
+Element Footer(const std::string& message, bool is_error, float fade, View view) {
   const Theme& t = theme();
 
   // The toast line is always drawn, blank or not, so the list above never
@@ -289,20 +332,29 @@ Element Footer(const std::string& message, bool is_error, float fade) {
             bgcolor(t.bg);
   }
 
-  // Six chips fit an 80-column terminal with room to spare. Refresh and the
-  // movement keys live in the help overlay rather than being clipped in half
-  // here, which is what the seventh chip was doing.
-  Element keys = hbox({
-                     text(" "),
-                     Chip("space", "stage"),
-                     Chip("a", "all"),
-                     Chip("d", "discard"),
-                     Chip("c", "commit"),
-                     filler(),
-                     Chip("?", "help"),
-                     Chip("q", "quit"),
-                 }) |
-                 bgcolor(t.surface);
+  // Six chips fit an 80-column terminal with room to spare. Everything else
+  // lives in the help overlay rather than being clipped in half here, which is
+  // what a seventh chip was doing.
+  Elements chips{text(" ")};
+  if (view == View::Status) {
+    chips.push_back(Chip("space", "stage"));
+    chips.push_back(Chip("a", "all"));
+    chips.push_back(Chip("d", "discard"));
+    chips.push_back(Chip("c", "commit"));
+  } else if (view == View::Graph) {
+    chips.push_back(Chip("h/l", "pan"));
+    chips.push_back(Chip("d/w/m", "bucket"));
+    chips.push_back(Chip("tab", "switch view"));
+  } else {
+    chips.push_back(Chip("j/k", "move"));
+    chips.push_back(Chip("tab", "switch view"));
+    chips.push_back(Chip("r", "reload"));
+  }
+  chips.push_back(filler());
+  chips.push_back(Chip("?", "help"));
+  chips.push_back(Chip("q", "quit"));
+
+  Element keys = hbox(std::move(chips)) | bgcolor(t.surface);
 
   return vbox({toast, keys});
 }
@@ -320,9 +372,13 @@ Element HelpPane() {
   return vbox({
              hbox({text(" Keys") | bold | color(t.text), filler()}),
              separator() | color(t.border),
+             line("1 … 4", "status / history / branches / graph"),
+             line("tab", "cycle through the views"),
              line("j / ↓", "move down"),
              line("k / ↑", "move up"),
-             line("g / G", "first / last"),
+             line("g / G", "first / last, or oldest / newest on the graph"),
+             line("h / l", "pan the graph through time"),
+             line("d / w / m", "graph bucket: day, week, month"),
              line("space", "stage or unstage the selection"),
              line("s / u", "stage / unstage explicitly"),
              line("a", "stage everything"),

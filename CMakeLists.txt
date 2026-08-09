@@ -50,7 +50,10 @@ FetchContent_MakeAvailable(ftxui libgit2)
 add_executable(gittop
   src/main.cpp
   src/app.cpp
+  src/git/graph.cpp
   src/git/repository.cpp
+  src/ui/graph_panel.cpp
+  src/ui/history_panel.cpp
   src/ui/panels.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp

@@ -1,0 +1,73 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace gittop::model {
+
+// One column of the graph gutter on one row. The UI maps these to box-drawing
+// characters; keeping them symbolic means the lane algorithm can be tested
+// without caring how a lane is eventually drawn.
+enum class GraphCell : std::uint8_t {
+  Empty,
+  Node,     // the commit itself
+  Through,  // a lane passing this row untouched
+  Merge,    // a lane that ends here because it was waiting on this commit
+  Branch,   // a lane opening here for a second or later parent
+};
+
+struct Commit {
+  std::string id;
+  std::string short_id;
+  std::string summary;
+  std::string author;
+  std::int64_t time = 0;
+  std::vector<std::string> parents;
+  std::vector<std::string> refs;  // branch and tag names pointing at this commit
+  bool is_head = false;
+
+  // Filled in by AssignLanes.
+  int lane = 0;
+  std::vector<GraphCell> row;
+};
+
+struct Branch {
+  std::string name;
+  std::string upstream;
+  bool is_head = false;
+  bool has_upstream = false;
+  std::size_t ahead = 0;
+  std::size_t behind = 0;
+  std::int64_t time = 0;
+};
+
+struct HistorySnapshot {
+  std::vector<Commit> commits;
+  std::vector<Branch> branches;
+
+  // One bucket per day, oldest first, covering the trailing window.
+  std::vector<int> activity;
+  int activity_max = 0;
+  std::int64_t activity_start_day = 0;  // epoch day of activity[0]
+
+  // The full daily series, from the oldest commit walked through to today, with
+  // gaps filled as zeroes. The chart view pans over this; the heatmap uses the
+  // short window above. Contiguous rather than sparse so a chart can index it
+  // by offset without searching.
+  std::vector<int> daily;
+  std::int64_t daily_start_day = 0;
+
+  std::vector<std::pair<std::string, int>> authors;  // most commits first
+  std::array<int, 7> weekday{};                      // index 0 is Sunday
+  std::array<int, 24> hour{};                        // commit's own timezone
+
+  std::size_t walked = 0;   // commits visited, which the log may have capped
+  bool truncated = false;   // the walk hit its ceiling before running out
+
+  bool empty() const { return commits.empty(); }
+};
+
+}  // namespace gittop::model

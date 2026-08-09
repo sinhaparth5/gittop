@@ -3,7 +3,7 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phases 0 and 1 complete and running. Next: Phase 2 (history and graphs).
+**Status:** Phases 0, 1 and 2 complete and running. Next: Phase 3 (remote foundation).
 **Started:** 2026-08-09
 **Last updated:** 2026-08-09
 
@@ -85,12 +85,29 @@ SSH side is the one to budget time for. `GITTOP_SYSTEM_LIBGIT2` is not wired up 
 **Verified end to end:** stage-all then commit produces a real commit and leaves a clean tree;
 answering `n` to a discard keeps the file; a non-repository path exits 1 with a readable message.
 
-### Phase 2 — History & visualization
-- [ ] Commit log panel (walk revwalk, paginated)
-- [ ] Commit graph rendering (braille/box-drawing lanes)
-- [ ] Activity heatmap — commits over last 30/90 days
-- [ ] Branch list with ahead/behind vs upstream
-- [ ] Responsive layout: panels reflow at narrow widths
+### Phase 2 — History & visualization ✅
+- [x] Commit log panel, capped at 400 rows from a walk bounded at 6000 commits
+- [x] Commit graph in box-drawing lanes, six cycling lane colors
+- [x] Activity heatmap over a 91-day window, laid out as 13 weeks by 7 weekdays
+- [x] Branch list with ahead/behind against upstream, HEAD pinned first
+- [x] Responsive layout: stat cards stack 2×2 under 84 columns, heatmap steps
+      aside under 30 rows
+- [x] Four views with a tab bar (`1`…`4`, or `tab` to cycle)
+- [x] Graph view: braille area chart of commits over time, pannable with `h`/`l` and
+      switchable between day, week and month buckets with `d`/`w`/`m`, plus panels for top
+      authors, weekday distribution, and a commits-by-hour sparkline
+
+**Verified against git itself:** the lane structure matches `git log --graph --all` on a repo
+with a feature branch, a merge, and a dangling branch; the branch panel matches
+`git for-each-ref` including `↑2` on an ahead branch.
+
+**Known simplification:** a lane that closes or opens more than one column away from its commit
+is drawn as a single `╯` or `╮` rather than a run of horizontals. Git draws `|_|_/` in that
+case. It reads correctly for the common shapes and gets terse for octopus merges.
+
+**Deliberate:** history is read lazily on first switch to a history view and cached, so opening
+a repository never pays for a revwalk nobody looked at. Committing invalidates the cache, and
+`r` forces a reload.
 
 ### Phase 3 — Remote foundation
 - [ ] Config file (location TBD — see open questions) with load/save
@@ -227,6 +244,16 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-09** — Added the Graph view (tab 4): braille area chart over the full commit
+  timeline, pannable and bucketable. The daily series is now built across all walked history
+  rather than only the heatmap window. Two things worth remembering: FTXUI's `canvas(fn)`
+  overload looks like it auto-fits its box but hardcodes 12×12, so the canvas is sized from
+  `screen.dimx()`; and the canvas callback runs during Render, after the building function has
+  returned, so anything it touches must be captured by value.
+- **2026-08-09** — Phase 2 done. Three views behind a tab bar, commit graph with lane
+  assignment split into `src/git/graph.cpp` as a pure function over the commit list, activity
+  heatmap, branch panel with ahead/behind. Responsive layout reads `screen.dimx()`/`dimy()` in
+  the render lambda, since the dom itself has no way to ask. Next: Phase 3.
 - **2026-08-09** — Visual pass over the Phase 1 screen: gradient bars, grouped list, eased
   animation, toast fade, overlay scrim. Fixed two event-routing bugs along the way, both the
   same root cause — `Container::Stacked` and `Container::Tab` only deliver events to a focused
