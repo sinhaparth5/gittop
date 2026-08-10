@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "config/config.hpp"
+#include "git/askpass.hpp"
 #include "git/repository.hpp"
 #include "git/transfer.hpp"
 #include "model/history.hpp"
@@ -39,6 +40,7 @@ class App {
     kConfirm = 1,
     kHelp = 2,
     kTransfer = 3,
+    kPassphrase = 4,
   };
 
   // What a `y` in the confirm overlay is agreeing to. One overlay rather than
@@ -135,6 +137,14 @@ class App {
   void CancelTransfer();
   ui::TransferView TransferViewState() const;
 
+  // An encrypted ssh key cannot be answered through libgit2: the exec transport
+  // spawns the system ssh, and ssh asks its own questions. The only channel in
+  // is SSH_ASKPASS, so gittop collects the passphrase in an overlay first and
+  // serves it to that child over a socket for as long as the transfer runs.
+  void RequestPassphrase(TransferKind kind);
+  void SubmitPassphrase();
+  void CancelPassphrase();
+
   const model::StatusEntry* Selected() const;
 
   void ToggleStage();
@@ -220,6 +230,23 @@ class App {
   // socket would hang the whole program on the way out — so the intent is
   // recorded and acted on when the cancelled transfer reports back.
   bool quit_after_transfer_ = false;
+
+  // The ssh key passphrase, kept for the life of the process so that a session
+  // asks once rather than once per transfer. It is never written anywhere, never
+  // rendered — the overlay's Input is in password mode — and never leaves the
+  // process except down the askpass socket to a child ssh spawned.
+  //
+  // Cleared the moment it is shown to be wrong, and also when a transfer
+  // succeeds without the askpass helper ever being consulted, which means no
+  // passphrase was needed and holding one would be keeping a secret for nothing.
+  std::string ssh_passphrase_;
+  std::string passphrase_input_;
+  // Which transfer the prompt is standing in front of, resumed on submit.
+  TransferKind pending_transfer_ = TransferKind::None;
+  bool passphrase_rejected_ = false;
+  // Alive only while a transfer is in flight; its destructor stops the listener
+  // thread and removes the socket.
+  std::unique_ptr<git::AskpassServer> askpass_;
 
   ui::View view_ = ui::View::Status;
 

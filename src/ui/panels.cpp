@@ -564,6 +564,44 @@ Element ConfirmPane(const std::string& question, const std::string& detail,
          size(WIDTH, GREATER_THAN, 54);
 }
 
+Element PassphrasePane(Element input, bool rejected) {
+  const Theme& t = theme();
+
+  Elements rows{
+      text(" ssh key passphrase") | bold | color(t.accent),
+      separator() | color(t.border),
+      // A box asking for a passphrase is indistinguishable from the thing you
+      // are told never to type into, so it says what it wants and where it goes.
+      // Anything vaguer would be teaching a habit worth not teaching.
+      hbox({text("  "),
+            text("Your ssh key is encrypted and no agent is holding it.") | color(t.text_dim)}),
+      hbox({text("  "),
+            text("This goes to ssh for this transfer only, and is never saved.") |
+                color(t.text_dim)}),
+      text(""),
+      hbox({
+          text("  ❯ ") | color(t.accent),
+          std::move(input) | flex,
+      }),
+  };
+
+  if (rejected) {
+    rows.push_back(text(""));
+    rows.push_back(
+        hbox({text("  "), text("ssh could not use the last one.") | color(t.danger)}));
+  }
+
+  rows.push_back(separator() | color(t.border));
+  rows.push_back(hbox({
+      text(" "),
+      Chip("enter", "unlock"),
+      filler(),
+      Chip("esc", "cancel"),
+  }));
+
+  return vbox(std::move(rows)) | PaneFrame() | size(WIDTH, GREATER_THAN, 62);
+}
+
 Element TransferPane(const TransferView& view, int frame) {
   const Theme& t = theme();
 

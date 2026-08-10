@@ -151,6 +151,42 @@ says nothing never fires one. `git::Library` sets `GIT_OPT_SET_SERVER_CONNECT_TI
 `GIT_OPT_SET_SERVER_TIMEOUT`; they are the only thing bounding how long quitting can block on a
 stalled socket. Any future long-running libgit2 call needs the same question asked of it.
 
+## ssh authentication and `git/askpass.cpp`
+
+**libgit2's credential callback is never consulted for an ssh remote on this build.** `USE_SSH=exec`
+means libgit2 builds an `ssh` command line and execs it; every credential decision happens inside
+that child. The `GIT_CREDENTIAL_SSH_KEY` branch in `transfer.cpp`'s `CredentialCb` is dead code here
+and only exists for a libssh2 build. Adding a passphrase prompt there does nothing — the question
+is not being asked there. This is not obvious and it is worth an hour of somebody's time.
+
+The one channel into that child is `SSH_ASKPASS`, and it is the whole of `git/askpass.cpp`. gittop
+points `SSH_ASKPASS` at its own binary and serves the passphrase to the copy of itself that ssh
+spawns. Four things that shape the file:
+
+- **`SSH_ASKPASS_REQUIRE=force` is load-bearing.** Without it ssh prefers the terminal, and the
+  terminal is the one place gittop cannot let it have — the TUI is holding it in raw mode on the
+  alternate screen. That is the whole reason the passphrase never reached the user before.
+- **The helper is chosen by the environment, not a flag**, and the check is the first thing in
+  `main` — ssh puts *its own prompt* in `argv[1]`, so the argument parser would otherwise try to
+  open a repository called `Enter passphrase for key '...':`.
+- **The passphrase travels over a unix socket**, not the environment, argv, or a file.
+  `/proc/<pid>/environ` and `/cmdline` are unprivileged reads for the same user, and a file would
+  put a private key's passphrase on disk. The socket sits in a 0700 `mkdtemp` directory and is
+  unlinked with the transfer. The listener needs its own thread because ssh asks while the transfer
+  worker is already blocked in libgit2 waiting for that same child.
+- **`InstallAskpassEnv` writes to gittop's own environment**, because the exec transport gives no
+  way to set the child's. That makes it process-global, so it is called from the UI thread with no
+  transfer in flight, and cleared in `CollectTransfer`.
+
+`NeedsPassphrase` requires all three of: an ssh URL, no agent holding an identity, and a default
+`~/.ssh` key that is actually encrypted. Prompting when the answer is not needed is its own bug —
+an unencrypted key with no agent authenticates perfectly well, and a box asking for a passphrase is
+indistinguishable from the thing users are told never to type into. It can still be wrong in both
+directions, because which key ssh picks depends on `~/.ssh/config` and gittop does not parse it;
+neither error is expensive. `AskpassServer::served()` is what makes a wrong passphrase distinct
+from an ordinary failure — and a success where nothing ever asked means the passphrase was not what
+authenticated, so it is dropped rather than held for a session that does not need it.
+
 Pull fast-forwards or refuses, push never forces, and push is the only operation that asks first —
 it is the only one that changes something other people can see. Keep it that way; the
 destructive-operations rule in `progress.md` is what these implement.
@@ -235,6 +271,13 @@ userinfo replaced before it reaches the screen (`SafeUrl` in `ui/remote_panel.cp
 where a token came from but never the value: `DiscoverRemotes` keeps `token_source` and
 `token_origin`, and each fetch resolves the secret again into a `Token` that lives no longer than
 the task holding it.
+
+The ssh key passphrase is the second exception and is handled the same way. `App::ssh_passphrase_`
+holds it for the process so a session is asked once, and it is cleared the moment it is shown to be
+wrong or shown to be unnecessary. `ui::PassphrasePane` takes the *already-rendered* `Element`
+rather than the string, so the rule that nothing under `ui/` handles a secret survives a panel
+whose entire job is collecting one — and the `Input` is in password mode, so the element carries
+asterisks and not the passphrase. It is never written to the config, the log, or the screen.
 
 ## FTXUI gotchas already paid for
 

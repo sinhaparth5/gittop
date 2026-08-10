@@ -80,6 +80,7 @@ add_executable(gittop
   src/main.cpp
   src/app.cpp
   src/config/config.cpp
+  src/git/askpass.cpp
   src/git/graph.cpp
   src/git/repository.cpp
   src/git/transfer.cpp

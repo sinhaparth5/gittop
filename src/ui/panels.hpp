@@ -77,6 +77,15 @@ struct TransferView {
 
 ftxui::Element TransferPane(const TransferView& view, int frame);
 
+// The ssh key passphrase prompt.
+//
+// Takes the already-rendered input rather than the string behind it, which is
+// how the rule that nothing under ui/ handles a secret survives a panel whose
+// entire job is to collect one: this function cannot read what was typed, only
+// place the box it was typed into. The Input itself is in password mode, so
+// what is on screen is asterisks in the first place.
+ftxui::Element PassphrasePane(ftxui::Element input, bool rejected);
+
 ftxui::Decorator PaneFrame();
 
 }  // namespace gittop::ui

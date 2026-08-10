@@ -6,6 +6,7 @@
 
 #include "app.hpp"
 #include "config/config.hpp"
+#include "git/askpass.hpp"
 #include "git/repository.hpp"
 #include "remote/http.hpp"
 
@@ -32,6 +33,16 @@ void PrintUsage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Before anything else, including argument parsing. When ssh needs a
+  // passphrase it runs SSH_ASKPASS — which gittop points at itself — and puts
+  // its own prompt in argv[1], so by the time the parser below saw it, it would
+  // be trying to open a repository called "Enter passphrase for key '...':".
+  // The environment decides this, not a flag, for the same reason: ssh chooses
+  // the child's arguments and gittop does not get a say.
+  if (gittop::git::RunningAsAskpassHelper()) {
+    return gittop::git::RunAskpassHelper();
+  }
+
   std::string start_path;
   std::string config_path;
   bool init_config = false;

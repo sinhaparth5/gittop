@@ -728,6 +728,16 @@ void App::StartTransfer(TransferKind kind) {
   // remote gittop cannot classify still pushes and pulls perfectly well, and
   // refusing one because its host is not GitHub or GitLab would be absurd.
   const std::string remote_name = remotes_[remote_index_].name;
+  const std::string remote_url = remotes_[remote_index_].url;
+
+  // An encrypted ssh key has to be answered before the worker starts, not
+  // during it: ssh asks its question from inside the transfer, at a point where
+  // the UI thread is free but the worker is already blocked in libgit2 waiting
+  // for that same answer. Asking first turns a deadlock into a dialog.
+  if (ssh_passphrase_.empty() && git::NeedsPassphrase(remote_url)) {
+    RequestPassphrase(kind);
+    return;
+  }
 
   // The token is resolved here and lives only inside the task, exactly as the
   // HTTP fetches do. It is never stored on App and never reaches ui/.
@@ -741,6 +751,23 @@ void App::StartTransfer(TransferKind kind) {
   const std::string path = repo_.WorkdirPath();
   std::shared_ptr<git::ProgressSink> sink = transfer_sink_;
   sink->Publish(git::TransferProgress{});
+
+  // The askpass channel belongs to exactly one transfer: opened here, closed in
+  // CollectTransfer. InstallAskpassEnv writes to gittop's own environment,
+  // because libgit2's exec transport offers no way to set the child's — which is
+  // why it happens here on the UI thread, before any worker exists to race it.
+  askpass_.reset();
+  if (!ssh_passphrase_.empty() && git::IsSshUrl(remote_url)) {
+    auto server = std::make_unique<git::AskpassServer>(ssh_passphrase_);
+    if (server->ok() && git::InstallAskpassEnv(*server)) {
+      askpass_ = std::move(server);
+    } else {
+      // Not worth refusing the transfer over. An agent or an unencrypted key
+      // still authenticates, and the failure if neither does is the same one
+      // that happened before any of this existed.
+      git::ClearAskpassEnv();
+    }
+  }
 
   transfer_kind_ = kind;
   transfer_cancelling_ = false;
@@ -788,6 +815,38 @@ void App::PerformPush() {
   StartTransfer(TransferKind::Push);
 }
 
+void App::RequestPassphrase(TransferKind kind) {
+  pending_transfer_ = kind;
+  passphrase_input_.clear();
+  OpenOverlay(kPassphrase);
+}
+
+void App::SubmitPassphrase() {
+  // Enter on an empty field is not an answer. Serving an empty passphrase would
+  // burn one of ssh's three attempts to say nothing.
+  if (passphrase_input_.empty()) {
+    return;
+  }
+  ssh_passphrase_ = passphrase_input_;
+  // The overlay's buffer is the only copy anything under ui/ ever sees, and it
+  // does not outlive the question being answered.
+  passphrase_input_.clear();
+  passphrase_rejected_ = false;
+
+  const TransferKind kind = pending_transfer_;
+  pending_transfer_ = TransferKind::None;
+  CloseOverlay();
+  StartTransfer(kind);
+}
+
+void App::CancelPassphrase() {
+  passphrase_input_.clear();
+  pending_transfer_ = TransferKind::None;
+  passphrase_rejected_ = false;
+  CloseOverlay();
+  Note("transfer cancelled", false);
+}
+
 void App::CancelTransfer() {
   if (!transfer_fetcher_.Running()) {
     CloseOverlay();
@@ -810,13 +869,35 @@ void App::CollectTransfer() {
   transfer_cancelling_ = false;
   CloseOverlay();
 
+  // Whether ssh actually came and collected the passphrase decides what a
+  // failure means, so it has to be read before the server is torn down.
+  const bool askpass_active = askpass_ != nullptr;
+  const bool askpass_used = askpass_active && askpass_->served();
+  askpass_.reset();
+  git::ClearAskpassEnv();
+
   if (!result.ok) {
     if (result.summary == "cancelled") {
       Note("transfer cancelled", false);
       return;
     }
+    // ssh asked for the passphrase, was given one, and still could not
+    // authenticate. Dropping it is what makes the next attempt ask again rather
+    // than fail the same way for the rest of the session.
+    if (askpass_used) {
+      ssh_passphrase_.clear();
+      passphrase_rejected_ = true;
+      Note("ssh could not use that passphrase", true);
+      return;
+    }
     Note(result.summary + (result.detail.empty() ? "" : " — " + result.detail), true);
     return;
+  }
+
+  // It worked and nothing ever asked for the passphrase, so it was not the
+  // thing that authenticated. Keeping a secret that buys nothing is not free.
+  if (askpass_active && !askpass_used) {
+    ssh_passphrase_.clear();
   }
 
   std::string note = result.summary;
@@ -1455,8 +1536,23 @@ int App::Run() {
   // -------------------------------------------------------- transfer overlay
   auto transfer_pane = Renderer([this] { return ui::TransferPane(TransferViewState(), spinner_); });
 
-  auto overlay =
-      Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane}, &overlay_index_);
+  // ------------------------------------------------------- passphrase overlay
+  InputOption passphrase_option;
+  passphrase_option.multiline = false;
+  // The reason this overlay can exist at all without breaking the rule that
+  // nothing under ui/ handles a secret: FTXUI renders asterisks, so the element
+  // handed to PassphrasePane carries no passphrase in it.
+  passphrase_option.password = true;
+  passphrase_option.on_enter = [this] { SubmitPassphrase(); };
+  auto passphrase_input =
+      Input(&passphrase_input_, "passphrase", passphrase_option);
+
+  auto passphrase_pane = Renderer(passphrase_input, [this, passphrase_input] {
+    return ui::PassphrasePane(passphrase_input->Render(), passphrase_rejected_);
+  });
+
+  auto overlay = Container::Tab(
+      {commit_pane, confirm_pane, help_pane, transfer_pane, passphrase_pane}, &overlay_index_);
 
   // --------------------------------------------------------------- main view
   auto main_view = Renderer([this, &screen] {
@@ -1646,6 +1742,15 @@ int App::Run() {
           // Swallow any other typed key so a stray keystroke cannot answer a
           // destructive question by accident.
           return event.is_character();
+
+        case kPassphrase:
+          // esc here abandons the transfer that the prompt is standing in front
+          // of, not just the prompt: there is nothing to go back to.
+          if (event == Event::Escape) {
+            CancelPassphrase();
+            return true;
+          }
+          return false;  // the Input takes the rest
 
         case kCommit:
         default:
