@@ -24,20 +24,30 @@ FetchContent_Declare(ftxui
   GIT_SHALLOW    TRUE)
 
 # ---------------------------------------------------------------- libgit2
-# Phase 1 only reads and writes the local repository, so the HTTPS and SSH
-# transports stay off: they drag in OpenSSL and libssh2 for capability nothing
-# uses yet. Phase 5 (push/pull) is where both get turned back on, and the SSH
-# side is the one to budget time for.
-set(BUILD_SHARED_LIBS OFF          CACHE BOOL   "" FORCE)
-set(BUILD_TESTS       OFF          CACHE BOOL   "" FORCE)
-set(BUILD_CLI         OFF          CACHE BOOL   "" FORCE)
-set(BUILD_EXAMPLES    OFF          CACHE BOOL   "" FORCE)
-set(BUILD_FUZZERS     OFF          CACHE BOOL   "" FORCE)
-set(USE_SSH           OFF          CACHE STRING "" FORCE)
-set(USE_HTTPS         OFF          CACHE STRING "" FORCE)
-set(USE_GSSAPI        OFF          CACHE BOOL   "" FORCE)
-set(USE_NTLMCLIENT    OFF          CACHE BOOL   "" FORCE)
-set(REGEX_BACKEND     "builtin"    CACHE STRING "" FORCE)
+# Phase 5 pushes and pulls, so the transports that were off through Phases 1-4
+# come back on. Both backends are chosen to add no build-time dependency:
+#
+#   OpenSSL-Dynamic  dlopen()s libssl at run time instead of linking it, so the
+#                    build needs no OpenSSL headers and the binary is not tied
+#                    to the ABI of the 1.1 or 3.x it was compiled against. It
+#                    still uses OpenSSL's own default certificate paths, which
+#                    is the same reason libcurl is taken from the system below.
+#
+#   exec             runs the system `ssh` rather than reimplementing it with
+#                    libssh2. That is not only the cheaper dependency, it is the
+#                    better behaviour: gittop inherits ~/.ssh/config, the agent,
+#                    the user's keys and their known_hosts, so a remote that
+#                    works from the shell works here with no second setup.
+set(BUILD_SHARED_LIBS OFF                CACHE BOOL   "" FORCE)
+set(BUILD_TESTS       OFF                CACHE BOOL   "" FORCE)
+set(BUILD_CLI         OFF                CACHE BOOL   "" FORCE)
+set(BUILD_EXAMPLES    OFF                CACHE BOOL   "" FORCE)
+set(BUILD_FUZZERS     OFF                CACHE BOOL   "" FORCE)
+set(USE_SSH           "exec"             CACHE STRING "" FORCE)
+set(USE_HTTPS         "OpenSSL-Dynamic"  CACHE STRING "" FORCE)
+set(USE_GSSAPI        OFF                CACHE BOOL   "" FORCE)
+set(USE_NTLMCLIENT    OFF                CACHE BOOL   "" FORCE)
+set(REGEX_BACKEND     "builtin"          CACHE STRING "" FORCE)
 
 FetchContent_Declare(libgit2
   GIT_REPOSITORY https://github.com/libgit2/libgit2.git
@@ -72,16 +82,20 @@ add_executable(gittop
   src/config/config.cpp
   src/git/graph.cpp
   src/git/repository.cpp
+  src/git/transfer.cpp
   src/remote/api.cpp
   src/remote/client.cpp
   src/remote/http.cpp
   src/remote/pipelines.cpp
   src/remote/provider.cpp
+  src/remote/pulls.cpp
   src/remote/token.cpp
   src/ui/graph_panel.cpp
   src/ui/history_panel.cpp
+  src/ui/keymap.cpp
   src/ui/panels.cpp
   src/ui/pipeline_panel.cpp
+  src/ui/pull_panel.cpp
   src/ui/remote_panel.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp

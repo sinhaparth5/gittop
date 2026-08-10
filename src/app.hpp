@@ -1,20 +1,27 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
+#include <ftxui/dom/elements.hpp>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "config/config.hpp"
 #include "git/repository.hpp"
+#include "git/transfer.hpp"
 #include "model/history.hpp"
 #include "model/pipeline.hpp"
+#include "model/pull.hpp"
 #include "model/remote.hpp"
 #include "model/status.hpp"
 #include "remote/fetcher.hpp"
 #include "remote/ticker.hpp"
 #include "ui/graph_panel.hpp"
+#include "ui/keymap.hpp"
 #include "ui/panels.hpp"
 #include "ui/pipeline_panel.hpp"
+#include "ui/pull_panel.hpp"
 
 namespace gittop {
 
@@ -31,12 +38,31 @@ class App {
     kCommit = 0,
     kConfirm = 1,
     kHelp = 2,
+    kTransfer = 3,
   };
 
-  // Re-reads the repository into snapshot_. Phase 3 moves the ReadStatus() call
-  // onto a worker thread and posts the finished snapshot back through
-  // ScreenInteractive::PostEvent; everything else here stays as it is, which is
-  // the whole reason the UI reads from a snapshot instead of from libgit2.
+  // What a `y` in the confirm overlay is agreeing to. One overlay rather than
+  // one per question, because the routing rule is that every key is decided in
+  // a single handler and two confirm panes would need two branches of it.
+  enum class ConfirmKind {
+    Discard,
+    Push,
+  };
+
+  // Which transfer is in flight, for the progress pane's title and for deciding
+  // what to reload when it lands.
+  enum class TransferKind {
+    None,
+    Fetch,
+    Pull,
+    Push,
+  };
+
+  // Reads the config into the theme and the keymap. Runs before the first frame
+  // so nothing is ever drawn in a palette the user replaced.
+  void ApplyConfig();
+
+  // Re-reads the repository into snapshot_.
   void Refresh();
 
   void Apply(const git::OpResult& result);
@@ -67,6 +93,11 @@ class App {
   void StartFetch();
   void CollectFetch();
 
+  // A repository can have several remotes and every network view reads exactly
+  // one of them. Changing it drops all three caches, because none of them
+  // describes the new one.
+  void NextRemote();
+
   // CI runs sit on the same lazy terms as the remote, plus an interval: a
   // pipeline that finishes while you watch is the whole point of the view.
   void EnsurePipelines();
@@ -75,6 +106,14 @@ class App {
   void StartJobFetch();
   void CollectJobs();
   void ToggleJobs();
+
+  // Pull requests are one request and no interval. Nothing about a review moves
+  // second to second, and the drill-down needs no request at all: everything it
+  // shows arrived with the list.
+  void EnsurePulls();
+  void StartPullFetch();
+  void CollectPulls();
+  void ToggleDetails();
 
   // How long until the next automatic refresh, and whether there should be one
   // at all. Anonymous GitHub gets sixty requests an hour, so polling on a timer
@@ -85,6 +124,16 @@ class App {
   int SecondsToRefresh() const;
   void MaybeAutoRefresh();
   ui::PipelineView PipelineViewState() const;
+
+  // Push, pull and fetch. All three run on a worker with their own repository
+  // handle: libgit2 objects are not safe to share, and repo_ belongs to the UI
+  // thread for the whole life of the program.
+  void StartTransfer(TransferKind kind);
+  void RequestPush();
+  void PerformPush();
+  void CollectTransfer();
+  void CancelTransfer();
+  ui::TransferView TransferViewState() const;
 
   const model::StatusEntry* Selected() const;
 
@@ -102,6 +151,17 @@ class App {
   void OpenOverlay(Overlay which);
   void CloseOverlay();
 
+  // Everything a key can do, in one place. The routing handler turns an event
+  // into an Action through the keymap and then calls this, so a rebound key
+  // needs no change here and a new action needs no change there.
+  bool Perform(ui::Action action);
+  ui::Scope CurrentScope() const;
+
+  // Mouse. FTXUI cannot be asked where a dom node ended up, so every list
+  // reflects its rows' boxes during layout and they are matched here.
+  bool HandleMouse(const ftxui::Mouse& mouse);
+  std::vector<ftxui::Box>* ActiveRowBoxes();
+
   // Advances the eased bar levels by the wall time since the previous frame,
   // then reports whether anything is still in motion. The renderer asks for
   // another frame only while this is true, so an idle dashboard costs nothing.
@@ -113,12 +173,14 @@ class App {
   git::Repository repo_;
   config::Config config_;
   std::string config_path_;
+  ui::Keymap keys_;
 
   model::StatusSnapshot snapshot_;
   model::HistorySnapshot history_;
   bool history_loaded_ = false;
 
   std::vector<model::RemoteRef> remotes_;
+  std::size_t remote_index_ = 0;
   model::RemoteSnapshot remote_;
   remote::Fetcher<model::RemoteSnapshot> fetcher_;
   bool remotes_discovered_ = false;
@@ -138,6 +200,27 @@ class App {
   bool jobs_open_ = false;
   std::chrono::steady_clock::time_point last_pipeline_fetch_{};
 
+  model::PullSnapshot pulls_;
+  remote::Fetcher<model::PullSnapshot> pull_fetcher_;
+  int pull_selected_ = 0;
+  bool pull_details_open_ = false;
+
+  // The same one-task worker the network fetches use. A transfer is not an HTTP
+  // request, but the contract it needs is identical, and a second copy of a
+  // subtle threading arrangement is worse than a slightly broad name.
+  remote::Fetcher<git::TransferResult> transfer_fetcher_;
+  // Progress is the one thing that has to be visible before the result lands,
+  // so it goes through a lock rather than through the result channel. Held by
+  // shared_ptr so the worker never reaches back into App.
+  std::shared_ptr<git::ProgressSink> transfer_sink_;
+  TransferKind transfer_kind_ = TransferKind::None;
+  bool transfer_cancelling_ = false;
+  // `q` during a transfer means "stop this and let me out". The exit cannot
+  // happen there and then — shutting down joins the worker, and a stalled
+  // socket would hang the whole program on the way out — so the intent is
+  // recorded and acted on when the cancelled transfer reports back.
+  bool quit_after_transfer_ = false;
+
   ui::View view_ = ui::View::Status;
 
   int selected_ = 0;
@@ -153,6 +236,13 @@ class App {
 
   std::string commit_message_;
   model::StatusEntry discard_target_;
+  ConfirmKind confirm_kind_ = ConfirmKind::Discard;
+
+  // Filled by the panels during layout and read on the next event. Never read
+  // before a frame has been drawn, which the event loop guarantees.
+  std::vector<ftxui::Box> row_boxes_;
+  std::vector<ftxui::Box> tab_boxes_;
+  ftxui::Box body_box_;
 
   int overlay_index_ = kCommit;
   bool overlay_open_ = false;

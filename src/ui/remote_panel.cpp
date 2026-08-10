@@ -85,24 +85,6 @@ std::string Until(std::int64_t when) {
   return "resets in " + std::to_string(delta / 3600) + "h";
 }
 
-// A remote can be configured as https://user:token@host/path. That token must
-// never reach the screen, so the userinfo is replaced rather than shortened.
-std::string SafeUrl(const std::string& url) {
-  const std::size_t scheme = url.find("://");
-  if (scheme == std::string::npos) {
-    return url;  // scp-style user@host:path carries no password
-  }
-  const std::size_t start = scheme + 3;
-  const std::size_t slash = url.find('/', start);
-  const std::size_t authority_end = slash == std::string::npos ? url.size() : slash;
-  const std::size_t at = url.rfind('@', authority_end);
-
-  if (at == std::string::npos || at < start) {
-    return url;
-  }
-  return url.substr(0, start) + "•••@" + url.substr(at + 1);
-}
-
 std::string ProviderGlyph(Provider provider) {
   switch (provider) {
     case Provider::GitHub:
@@ -299,7 +281,8 @@ Element Budget(const RemoteSnapshot& snapshot) {
                                }));
 }
 
-Element Details(const RemoteSnapshot& snapshot, bool include_counts) {
+Element Details(const RemoteSnapshot& snapshot, bool include_counts,
+                const std::string& transports) {
   const Theme& t = theme();
   const auto& ref = snapshot.ref;
 
@@ -344,6 +327,7 @@ Element Details(const RemoteSnapshot& snapshot, bool include_counts) {
                           })),
       DetailText("web", snapshot.info.web_url.empty() ? ref.web_url : snapshot.info.web_url, true),
       DetailText("api", ref.api_base, true),
+      DetailText("transports", transports),
   };
   for (Element& row : tail) {
     rows.push_back(std::move(row));
@@ -453,7 +437,8 @@ Element Unsupported(const RemoteSnapshot& snapshot) {
 
 }  // namespace
 
-Element RemotePanel(const RemoteSnapshot& snapshot, int width, int height, int frame) {
+Element RemotePanel(const RemoteSnapshot& snapshot, int width, int height, int frame,
+                    const std::string& transports) {
   // Below this the tile row stops being four readable numbers and starts being
   // four clipped ones, so it folds into the details list instead.
   const bool wide = width >= 72;
@@ -481,7 +466,7 @@ Element RemotePanel(const RemoteSnapshot& snapshot, int width, int height, int f
       // What went wrong and what to do about it is the whole message here. The
       // reference data underneath is worth having, but not worth crowding it.
       if (tall) {
-        body.push_back(Details(snapshot, false));
+        body.push_back(Details(snapshot, false, transports));
       }
       break;
 
@@ -490,7 +475,7 @@ Element RemotePanel(const RemoteSnapshot& snapshot, int width, int height, int f
         body.push_back(Tiles(snapshot));
       }
       body.push_back(Budget(snapshot));
-      body.push_back(Details(snapshot, !wide || !tall));
+      body.push_back(Details(snapshot, !wide || !tall, transports));
       break;
   }
 

@@ -3,7 +3,7 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phases 0–4 complete and running. Next: Phase 5 (pull requests, push/pull, themes).
+**Status:** Phases 0–5 complete and running. Next: Phase 6 (diff viewer, stash, rebase helpers).
 **Started:** 2026-08-09
 **Last updated:** 2026-08-10
 
@@ -73,6 +73,11 @@ ever needs to know which provider it's talking to, the abstraction leaked.
 `libgit2-dev` was not installed and installing it needs root. It builds with `USE_HTTPS=OFF`
 and `USE_SSH=OFF` since Phase 1 never touches the network; both flip on in Phase 5, and the
 SSH side is the one to budget time for. `GITTOP_SYSTEM_LIBGIT2` is not wired up yet.
+
+*Settled in Phase 5, and the SSH side cost nothing in the end.* `USE_HTTPS=OpenSSL-Dynamic` and
+`USE_SSH=exec` both turned on without adding a single build dependency — see the Phase 5 notes.
+The budgeted afternoon of libssh2 wrangling never happened because gittop does not link libssh2
+at all; it runs the `ssh` the user already has.
 
 ### Phase 1 — Local status dashboard ✅
 - [x] Read status: staged / unstaged / untracked / conflicted
@@ -202,13 +207,91 @@ no way to tell a pipeline's own duration from its created/updated pair when it i
 so a running GitLab pipeline's elapsed time is measured from creation and includes any time it sat
 queued.
 
-### Phase 5 — Full remote features
-- [ ] Pull Requests / Merge Requests panel
-- [ ] Push / pull with progress and auth handling
-- [ ] Multiple remotes
-- [ ] Themes
-- [ ] Mouse support
-- [ ] Configurable keybindings
+### Phase 5 — Full remote features ✅
+- [x] Pull Requests / Merge Requests panel (tab `7`)
+- [x] Push / pull with progress and auth handling
+- [x] Multiple remotes, cycled with `R`
+- [x] Themes: seven palettes, a light one, user palettes from config, 256/16/mono fallback
+- [x] Mouse support: wheel, click to select, click a tab, click again to open
+- [x] Configurable keybindings under `[keys]`
+
+**The transports came back on with no new build dependency, which was luck worth
+taking.** libgit2 has been built with `USE_HTTPS=OFF USE_SSH=OFF` since Phase 0, and the note
+there said turning them on was the thing to budget time for. The two backends chosen avoid the
+usual cost entirely. `OpenSSL-Dynamic` dlopen()s libssl at run time, so the build needs no OpenSSL
+headers and the binary is not welded to the 1.1 or 3.x it compiled against. `USE_SSH=exec` runs the
+system `ssh` instead of reimplementing it through libssh2 — cheaper to build, and better behaved:
+gittop inherits `~/.ssh/config`, the agent, the user's keys and their known_hosts, so a remote that
+works from the shell works here with no second setup. `git_libgit2_features()` reports both at run
+time and the remote panel prints them, because whether push can work at all is a property of the
+binary rather than of the repository.
+
+**A network gave libgit2 a way to hang the program, and the cancel flag could not reach it.**
+A transfer checks for cancellation only from libgit2's progress callbacks, and a server that
+accepts a connection and then says nothing never fires one — so neither `esc` nor `q` could get
+out, because quitting joins the worker. Verified against a socket that accepts and stays silent:
+gittop had to be killed. `GIT_OPT_SET_SERVER_CONNECT_TIMEOUT` and `GIT_OPT_SET_SERVER_TIMEOUT`, set
+in `git::Library` to the same 5s/10s budget libcurl already runs with for the REST calls, are the
+only thing that bounds that wait. Afterwards: 64ms to quit normally, 9.6s worst case out of a
+stalled transfer. `q` inside the progress pane means "cancel this and let me out" rather than
+nothing at all, and the exit happens when the worker reports back rather than in the keypress.
+
+**`git_remote_push` returns zero for a push the server refused.** The refusal arrives through
+the `push_update_reference` callback and nowhere else, so a push that does not check it reports
+success for a rejected non-fast-forward. Confirmed both ways against a `git daemon` on loopback
+with a `pre-receive` hook that declines: the toast reads "origin refused the push — refs/heads/
+master: pre-receive hook declined" and no ref was created. This is not reachable with a local-path
+remote at all — libgit2's local transport copies objects directly and never runs receive-pack —
+which is why the daemon was worth standing up.
+
+**Pull fast-forwards or refuses, and never does anything else.** A diverged branch needs a merge
+commit or a rebase, both of which are Phase 6; doing either implicitly behind a key called "pull"
+is how a tool loses work that exists nowhere else. The checkout is `GIT_CHECKOUT_SAFE`, so a
+fast-forward that would write over an uncommitted change stops and says which file is in the way.
+Push is never forced — no `+` on the refspec — and it is the only operation that asks first,
+because it is the only one that changes something other people can see.
+
+**Two kinds of shadowing had to be told apart in the keymap.** Routing now goes through one
+action table so a config can move a key, and the graph deliberately takes `d`, `g` and `G` away
+from the shared bindings while it is on screen. A first pass reported those as conflicts on every
+single startup. The rule that works: same-scope collisions are always conflicts, a scoped key over
+a global one is a conflict only when the config is what put it there, and the message names which
+action goes missing rather than just listing both.
+
+**Colour depth is one function, not a branch in every panel.** Every colour in the program
+already funnelled through `ToColor`, so the 256-colour cube, the sixteen-colour fallback and
+`NO_COLOR` are a quantizer in that one place and no panel knows about any of it. Palettes are
+authored in sixteen roles and composed into the thirty semantic tokens, which is what makes a user
+palette in the config the same object as a built-in one and a new theme sixteen lines. Verified at
+all four depths; under `NO_COLOR` the glyph-and-letter rule from Phase 1 is what keeps the status
+list readable with no colour at all.
+
+**FTXUI cannot be asked where a node ended up, so the mouse needed `reflect()`.** A node's box
+is only filled during layout, and the lists scroll inside a frame, so a row's screen position has
+nothing to do with its index. Every list now reflects its rows' boxes and App matches a click
+against them on the next event — which works because FTXUI renders before it reads input. A click
+is also checked against the panel's own box, since a row scrolled out of its frame still gets a box
+and it can land somewhere else on screen.
+
+**Verified end to end.** Both providers' pull request shapes against a stub, including the four
+things only one of them sends (GitHub has no mergeability or comment count on a list; GitLab has
+no `merged_at` distinction and folds `locked` into open), GitLab's `detailed_merge_status` and the
+older `merge_status` both read, and the branch you are standing on sorted to the top and marked.
+Fetch, pull and push against local-path remotes and against a `git daemon` on loopback: 60 commits
+fetched with a live progress bar, a fast-forward that moved the working tree, a no-op pull, a
+diverged pull refused with HEAD unmoved, a fast-forward refused because of an uncommitted edit with
+the edit intact afterwards, a non-fast-forward push refused client-side, a push refused
+server-side, and `git push -u` setting the upstream. Themes at truecolor, 256, 16 and none; five
+different malformed config lines each reported by name; keys rebound and the footer and help
+overlay following them. Mouse driven with SGR sequences: a tab click, a row click, a second click
+opening the detail pane, and wheel notches moving three rows each way.
+
+**Known simplifications.** Open pull requests only, one page of thirty, no pagination — the same
+terms the CI list is on. Mergeability and comment counts stay empty on GitHub because its list
+endpoint does not report them and asking per row would be one request each. Pull is fast-forward
+only. There is no force push and no way to ask for one. The push confirmation names the remote and
+the branch but does not show what is about to be sent, so it cannot tell you that you are about to
+push forty commits rather than one.
 
 ### Phase 6 — Power features
 - [ ] Diff viewer
@@ -235,13 +318,14 @@ that fades on a reserved line so nothing reflows under the cursor. The rest belo
 - [ ] Type hierarchy: bold/dim/italic used systematically, not ad hoc
 - [ ] Tabular alignment for all numeric columns so digits don't jitter on refresh
 
-**Color & themes**
-- [ ] Truecolor palette with graceful 256-color and 16-color degradation
-- [ ] Terminal capability detection (`COLORTERM`, `TERM`) driving the fallback
-- [ ] Built-in themes: default (btop-flavored), Catppuccin, Gruvbox, Nord, Tokyo Night, Dracula
-- [ ] At least one light theme that genuinely works, not an inverted dark theme
-- [ ] User themes loadable from config
-- [ ] `NO_COLOR` env var respected
+**Color & themes** — landed in Phase 5, since themes were on that list anyway and doing them
+twice made no sense. What is left here is the audit, not the mechanism.
+- [x] Truecolor palette with graceful 256-color and 16-color degradation
+- [x] Terminal capability detection (`COLORTERM`, `TERM`) driving the fallback
+- [x] Built-in themes: default (btop-flavored), Catppuccin, Gruvbox, Nord, Tokyo Night, Dracula
+- [x] At least one light theme that genuinely works, not an inverted dark theme
+- [x] User themes loadable from config
+- [x] `NO_COLOR` env var respected
 
 **Glyphs & borders**
 - [ ] Nerd Font icon set for file states, branches, CI status — with an ASCII fallback mode
@@ -285,7 +369,15 @@ that fades on a reserved line so nothing reflows under the cursor. The rest belo
 (OpenSSL or mbedTLS) plus libssh2 for SSH remotes. The repo's own remote is SSH, so push/pull in
 Phase 5 needs SSH support compiled in — that's a build-config decision to make in Phase 0, not
 Phase 5. Alternative: find_package a system libgit2 and only FetchContent the header-only-ish
-deps. Decide early; retrofitting is painful.
+deps. Decide early; retrofitting is painful. *Resolved in Phase 5, and the premise turned out to
+be wrong: neither backend needs a dev package. The retrofit was one CMake edit, because the
+decision this warned about — whether to vendor libgit2 at all — had already been made correctly.*
+
+**A network transport can hang a worker where a cancel flag cannot reach it.** Found in Phase 5:
+libgit2 only checks for cancellation from its progress callbacks, so a socket that accepts and then
+goes quiet is unreachable and quitting joins the worker. Bounded now by libgit2's own connect and
+idle timeouts, set alongside the library init. Any future long-running libgit2 call needs the same
+question asked of it: what fires the callback that notices the cancel?
 
 **Async is a Phase 3 problem but a Phase 0 design constraint.** *Settled in Phase 3, and the
 warning turned out to be worth heeding.* The one thing to remember for Phase 4: the notifier
@@ -319,6 +411,18 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-10** — Phase 5 done. Pull requests and merge requests on tab 7, push/pull/fetch on a
+  worker with a progress overlay, remotes cycled with `R`, seven themes with 256/16/mono fallback,
+  configurable keybindings, and the mouse. Four things came out of it. The transports the Phase 0
+  note said to budget time for cost nothing: `OpenSSL-Dynamic` needs no OpenSSL headers and
+  `USE_SSH=exec` needs no libssh2, and the second is better behaviour rather than a compromise
+  since it inherits the user's own ssh setup. Giving libgit2 a network reintroduced a hang the
+  async layer thought it had solved — the cancel flag is only read from progress callbacks, so a
+  silent server is unreachable — and only libgit2's own timeouts bound it. `git_remote_push`
+  returns zero for a push the server refused, which took a `git daemon` with a declining hook to
+  prove, because a local-path remote never runs receive-pack at all. And routing every key through
+  an action table meant teaching the conflict checker the difference between the graph
+  deliberately shadowing `g` and a config accidentally doing the same thing. Next: Phase 6.
 - **2026-08-10** — Phase 4 done. CI view on tab 6: workflow runs and pipelines for the current
   branch, both folded into `model::Pipeline`, a job drill-down on `enter`, and a refresh interval
   that stops itself when anonymous or when the budget runs low. Three things came out of it. The

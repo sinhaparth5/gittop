@@ -237,6 +237,82 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # budget, and says so rather than looking stuck.
 # auto_refresh = true
 # refresh_seconds = 20         # clamped to 10 … 3600
+
+[theme]
+# One of: default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight.
+# `t` cycles them at run time, which is the quickest way to see them all.
+# name = "default"
+
+# How much colour the terminal can show. "auto" reads NO_COLOR, then TERM and
+# COLORTERM, and is nearly always right; the rest are for when it is not.
+# One of: auto, truecolor, 256, 16, none.
+# depth = "auto"
+
+# A theme of your own is the chosen one with roles replaced — the same sixteen
+# every built-in palette is written in. Anything not named here keeps its value.
+# [theme.colors]
+# bg = "#0b0f16"
+# surface = "#131924"
+# surface_alt = "#1e2636"
+# surface_raised = "#273145"
+# border = "#263043"
+# text = "#d7dee8"
+# text_dim = "#97a3b6"
+# text_faint = "#5e6b7f"
+# accent = "#f0883e"
+# green = "#56d364"
+# yellow = "#e3b341"
+# blue = "#79c0ff"
+# red = "#ff7b72"
+# purple = "#d2a8ff"
+# cyan = "#39c5cf"
+
+[keys]
+# Rebind an action to one or more keys, space separated. A key is a single
+# character, or one of: enter esc tab backtab space up down left right home end
+# pageup pagedown insert delete backspace f1 … f12 — optionally prefixed with
+# ctrl- or alt-. An empty value unbinds the action entirely.
+#
+# An action keeps the view it belongs to: moving `discard` to another key does
+# not make it fire outside the status view.
+#
+# quit = "q esc"
+# help = "?"
+# reload = "r"
+# theme = "t"
+# next_view = "tab"
+# prev_view = "backtab"
+# view_status = "1"
+# view_history = "2"
+# view_branches = "3"
+# view_graph = "4"
+# view_remote = "5"
+# view_ci = "6"
+# view_pulls = "7"
+# down = "j down"
+# up = "k up"
+# first = "g home"
+# last = "G end"
+# page_down = "ctrl-d pagedown"
+# page_up = "ctrl-u pageup"
+# open = "enter"
+# next_remote = "R"
+# fetch = "f"
+# pull = "p"
+# push = "P"
+# toggle_stage = "space"
+# stage = "s"
+# unstage = "u"
+# stage_all = "a"
+# discard = "d"
+# commit = "c"
+# pan_left = "h left"
+# pan_right = "l right"
+# bucket_day = "d"
+# bucket_week = "w"
+# bucket_month = "m"
+# graph_oldest = "g"
+# graph_newest = "G"
 )";
 
 }  // namespace

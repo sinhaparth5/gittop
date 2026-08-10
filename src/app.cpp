@@ -16,10 +16,12 @@
 #include "remote/http.hpp"
 #include "remote/pipelines.hpp"
 #include "remote/provider.hpp"
+#include "remote/pulls.hpp"
 #include "remote/token.hpp"
 #include "ui/history_panel.hpp"
 #include "ui/panels.hpp"
 #include "ui/pipeline_panel.hpp"
+#include "ui/pull_panel.hpp"
 #include "ui/remote_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -33,6 +35,7 @@ namespace {
 // One page. More runs than anyone scrolls in a sitting, and one request rather
 // than the pagination that a second page would need.
 constexpr int kPipelineLimit = 30;
+constexpr int kPullLimit = 30;
 
 // Fast enough that a pipeline finishing feels live, slow enough that an
 // authenticated GitHub token spends 180 of its 5000 hourly requests watching
@@ -46,12 +49,105 @@ constexpr int kMaxRefreshSeconds = 3600;
 // view they left open is not it.
 constexpr int kBudgetFloorPercent = 20;
 
+// A wheel notch moves three rows, which is what every terminal list does and
+// what a hand expects. One row per notch makes a long log feel stuck.
+constexpr int kWheelRows = 3;
+
+// Username halves for a token-over-https push. The token is the password in
+// every case; only the name in front of it differs, and both providers ignore
+// anything sensible in that slot.
+const char* UsernameFor(model::Provider provider) {
+  switch (provider) {
+    case model::Provider::GitHub:
+      return "x-access-token";
+    case model::Provider::GitLab:
+      return "oauth2";
+    case model::Provider::Unknown:
+      break;
+  }
+  return "git";
+}
+
 }  // namespace
 
 App::App(git::Repository repo, config::Config config, std::string config_path)
     : repo_(std::move(repo)),
       config_(std::move(config)),
-      config_path_(std::move(config_path)) {}
+      config_path_(std::move(config_path)),
+      transfer_sink_(std::make_shared<git::ProgressSink>()) {
+  ApplyConfig();
+}
+
+void App::ApplyConfig() {
+  // A config with three mistakes in it should not report only the third. The
+  // toast holds one line, so the first problem is the one shown and the rest
+  // are counted — enough to know to keep reading.
+  int problems = 0;
+  std::string first_problem;
+  const auto complain = [&problems, &first_problem](std::string what) {
+    ++problems;
+    if (first_problem.empty()) {
+      first_problem = std::move(what);
+    }
+  };
+
+  // Depth first: a palette is chosen in 24-bit and quantized on the way to the
+  // screen, so the theme does not need to know what the terminal can show.
+  ui::ColorDepth depth = ui::DetectColorDepth();
+  const std::string wanted_depth = config_.Get("theme.depth", "auto");
+  if (!ui::ParseColorDepth(wanted_depth, &depth)) {
+    complain("unknown theme.depth '" + wanted_depth + "' — detecting instead");
+    depth = ui::DetectColorDepth();
+  }
+  ui::SetColorDepth(depth);
+
+  const std::string name = config_.Get("theme.name");
+  if (!name.empty() && !ui::SetTheme(name)) {
+    complain("unknown theme '" + name + "'");
+  }
+
+  // A user theme is the built-in one with roles replaced, which is why there is
+  // no separate file format for it: the palette a config edits is the same
+  // object a built-in palette is.
+  constexpr const char* kColorPrefix = "theme.colors.";
+  for (const auto& [key, value] : config_.values()) {
+    if (key.rfind(kColorPrefix, 0) != 0) {
+      continue;
+    }
+    const std::string role = key.substr(std::string(kColorPrefix).size());
+    ui::Rgb rgb;
+    if (!ui::ParseHexColor(value, &rgb)) {
+      complain("theme.colors." + role + " is not a #rrggbb colour");
+      continue;
+    }
+    if (!ui::OverrideColor(role, rgb)) {
+      complain("theme.colors." + role + " is not a colour gittop has");
+    }
+  }
+
+  constexpr const char* kKeyPrefix = "keys.";
+  for (const auto& [key, value] : config_.values()) {
+    if (key.rfind(kKeyPrefix, 0) != 0) {
+      continue;
+    }
+    std::string error;
+    if (!keys_.Rebind(key.substr(std::string(kKeyPrefix).size()), value, &error)) {
+      complain(error);
+    }
+  }
+
+  // Said once at startup rather than left for the user to discover by pressing
+  // a key and getting something else.
+  for (const std::string& conflict : keys_.Conflicts()) {
+    complain(conflict);
+  }
+
+  if (problems > 0) {
+    Note(problems == 1 ? first_problem
+                       : first_problem + "  (and " + std::to_string(problems - 1) + " more)",
+         true);
+  }
+}
 
 void App::Refresh() {
   snapshot_ = repo_.ReadStatus();
@@ -147,7 +243,14 @@ bool App::Animating() const {
   }
   // A fetch in flight keeps the spinner turning. It stops the moment the
   // request lands, so this is bounded by the HTTP timeout rather than open.
-  if (fetcher_.Running() || pipeline_fetcher_.Running() || job_fetcher_.Running()) {
+  if (fetcher_.Running() || pipeline_fetcher_.Running() || job_fetcher_.Running() ||
+      pull_fetcher_.Running()) {
+    return true;
+  }
+  // A transfer's progress bar is the one thing here that has to repaint while
+  // nothing else is happening, because the numbers behind it change on a worker
+  // thread that posts no events.
+  if (transfer_fetcher_.Running()) {
     return true;
   }
   // A live pipeline has a spinner per row. Bounded by the run finishing and by
@@ -176,6 +279,8 @@ int& App::ActiveSelection() {
       return branch_selected_;
     case ui::View::Pipelines:
       return pipeline_selected_;
+    case ui::View::Pulls:
+      return pull_selected_;
     case ui::View::Graph:
     case ui::View::Remote:
     case ui::View::Status:
@@ -192,6 +297,8 @@ int App::ActiveCount() const {
       return static_cast<int>(history_.branches.size());
     case ui::View::Pipelines:
       return static_cast<int>(pipelines_.runs.size());
+    case ui::View::Pulls:
+      return static_cast<int>(pulls_.pulls.size());
     case ui::View::Graph:
       return 0;  // the graph pans instead of selecting
     case ui::View::Remote:
@@ -231,7 +338,17 @@ void App::DiscoverRemotes() {
     remote::ApplyHostOverrides(ref, config_);
     remotes_.push_back(std::move(ref));
   }
-  remote_.ref = remote::ChooseRemote(remotes_);
+
+  // ChooseRemote holds the preference order; this only needs to know which
+  // index it landed on, because the user can now walk the list from there.
+  const model::RemoteRef chosen = remote::ChooseRemote(remotes_);
+  for (std::size_t i = 0; i < remotes_.size(); ++i) {
+    if (remotes_[i].name == chosen.name) {
+      remote_index_ = i;
+      break;
+    }
+  }
+  remote_.ref = chosen;
 
   // Where the token came from is settled once, here, rather than at the first
   // fetch: the CI view has to know whether it is authenticated before it
@@ -241,6 +358,55 @@ void App::DiscoverRemotes() {
   const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
   remote_.token_source = token.source;
   remote_.token_origin = token.origin;
+}
+
+void App::NextRemote() {
+  DiscoverRemotes();
+  if (remotes_.size() < 2) {
+    Note(remotes_.empty() ? "this repository has no remote" : "only one remote", false);
+    return;
+  }
+  remote_index_ = (remote_index_ + 1) % remotes_.size();
+
+  // Every cached network answer describes the remote that is being left, so all
+  // three go. Keeping them would show one remote's pull requests under
+  // another's name until the next refresh happened to land.
+  const model::RemoteRef ref = remotes_[remote_index_];
+  remote_ = model::RemoteSnapshot{};
+  remote_.ref = ref;
+  pipelines_ = model::PipelineSnapshot{};
+  pulls_ = model::PullSnapshot{};
+  jobs_ = model::JobList{};
+  jobs_open_ = false;
+  pull_details_open_ = false;
+  pipeline_selected_ = 0;
+  pull_selected_ = 0;
+  last_pipeline_fetch_ = {};
+
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  remote_.token_source = token.source;
+  remote_.token_origin = token.origin;
+
+  Note("remote: " + ref.name + " · " + (ref.url.empty() ? "no url" : ref.host), false);
+
+  // Only the view actually on screen re-fetches. The other two stay Idle and
+  // load on the same lazy terms as always.
+  switch (view_) {
+    case ui::View::Remote:
+      EnsureRemote();
+      break;
+    case ui::View::Pipelines:
+      EnsurePipelines();
+      break;
+    case ui::View::Pulls:
+      EnsurePulls();
+      break;
+    case ui::View::Status:
+    case ui::View::History:
+    case ui::View::Branches:
+    case ui::View::Graph:
+      break;
+  }
 }
 
 void App::StartFetch() {
@@ -414,6 +580,64 @@ void App::ToggleJobs() {
   }
 }
 
+void App::StartPullFetch() {
+  DiscoverRemotes();
+  if (!remote_.ref.valid() || pull_fetcher_.Running()) {
+    return;
+  }
+
+  const bool on_a_branch = !snapshot_.head_detached && !snapshot_.head_unborn &&
+                           !snapshot_.branch.empty() && snapshot_.branch.front() != '(';
+  const std::string branch = on_a_branch ? snapshot_.branch : std::string();
+
+  pulls_.state = model::FetchState::Loading;
+  pulls_.branch = branch;
+  pulls_.error.clear();
+  pulls_.hint.clear();
+
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const model::RemoteRef ref = remote_.ref;
+  pull_fetcher_.Start([ref, token, branch](const std::atomic<bool>& cancel) {
+    remote::HttpClient client;
+    return remote::FetchPulls(ref, token, branch, kPullLimit, client, &cancel);
+  });
+}
+
+void App::EnsurePulls() {
+  DiscoverRemotes();
+  if (pulls_.state == model::FetchState::Idle) {
+    StartPullFetch();
+  }
+}
+
+void App::CollectPulls() {
+  model::PullSnapshot result;
+  if (!pull_fetcher_.Consume(&result)) {
+    return;
+  }
+  if (result.error == "cancelled") {
+    return;
+  }
+
+  pulls_ = std::move(result);
+  pull_selected_ =
+      std::clamp(pull_selected_, 0, std::max(0, static_cast<int>(pulls_.pulls.size()) - 1));
+  if (pulls_.state == model::FetchState::Failed) {
+    Note(pulls_.error, true);
+  }
+}
+
+void App::ToggleDetails() {
+  if (pulls_.pulls.empty()) {
+    Note("nothing to open", false);
+    return;
+  }
+  // Nothing to fetch: the detail pane is built entirely from the list response,
+  // which is why the cursor may keep moving with it open while the CI view's
+  // drill-down closes.
+  pull_details_open_ = !pull_details_open_;
+}
+
 int App::RefreshInterval() const {
   const int seconds = config_.GetInt("pipelines.refresh_seconds", kDefaultRefreshSeconds);
   return std::clamp(seconds, kMinRefreshSeconds, kMaxRefreshSeconds);
@@ -434,14 +658,14 @@ bool App::AutoRefreshAllowed(std::string* reason) const {
   // poll would spend it in twenty minutes on this view alone. Anonymous means
   // manual, and the panel says so rather than looking stuck.
   if (remote_.token_source == model::TokenSource::None) {
-    *reason = "anonymous — refresh with r";
+    *reason = "anonymous — refresh with " + keys_.KeyFor(ui::Action::Reload);
     return false;
   }
 
   const model::RateLimit& rate = pipelines_.rate;
   if (rate.known && rate.limit > 0 && rate.remaining >= 0 &&
       rate.remaining * 100 < rate.limit * kBudgetFloorPercent) {
-    *reason = "API budget low — refresh with r";
+    *reason = "API budget low — refresh with " + keys_.KeyFor(ui::Action::Reload);
     return false;
   }
   return true;
@@ -489,6 +713,196 @@ ui::PipelineView App::PipelineViewState() const {
   return view;
 }
 
+void App::StartTransfer(TransferKind kind) {
+  DiscoverRemotes();
+  if (transfer_fetcher_.Running()) {
+    Note("a transfer is already running", false);
+    return;
+  }
+  if (remotes_.empty()) {
+    Note("this repository has no remote", true);
+    return;
+  }
+
+  // The remote to talk to is the active one by name, not by parsed provider: a
+  // remote gittop cannot classify still pushes and pulls perfectly well, and
+  // refusing one because its host is not GitHub or GitLab would be absurd.
+  const std::string remote_name = remotes_[remote_index_].name;
+
+  // The token is resolved here and lives only inside the task, exactly as the
+  // HTTP fetches do. It is never stored on App and never reaches ui/.
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  git::Credentials credentials;
+  if (token.present()) {
+    credentials.username = UsernameFor(remote_.ref.provider);
+    credentials.password = token.value;
+  }
+
+  const std::string path = repo_.WorkdirPath();
+  std::shared_ptr<git::ProgressSink> sink = transfer_sink_;
+  sink->Publish(git::TransferProgress{});
+
+  transfer_kind_ = kind;
+  transfer_cancelling_ = false;
+  OpenOverlay(kTransfer);
+
+  switch (kind) {
+    case TransferKind::Fetch:
+      transfer_fetcher_.Start([path, remote_name, credentials, sink](
+                                  const std::atomic<bool>& cancel) {
+        return git::Fetch(path, remote_name, credentials, sink, &cancel);
+      });
+      break;
+    case TransferKind::Pull:
+      transfer_fetcher_.Start([path, remote_name, credentials, sink](
+                                  const std::atomic<bool>& cancel) {
+        return git::Pull(path, remote_name, credentials, sink, &cancel);
+      });
+      break;
+    case TransferKind::Push:
+      transfer_fetcher_.Start([path, remote_name, credentials, sink](
+                                  const std::atomic<bool>& cancel) {
+        return git::Push(path, remote_name, /*set_upstream=*/true, credentials, sink, &cancel);
+      });
+      break;
+    case TransferKind::None:
+      break;
+  }
+}
+
+void App::RequestPush() {
+  DiscoverRemotes();
+  if (remotes_.empty()) {
+    Note("this repository has no remote", true);
+    return;
+  }
+  // Push is the only thing in gittop that changes something other people can
+  // see, which is the whole reason it asks first. Fetch and pull only ever
+  // change this working copy, so neither does.
+  confirm_kind_ = ConfirmKind::Push;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformPush() {
+  CloseOverlay();
+  StartTransfer(TransferKind::Push);
+}
+
+void App::CancelTransfer() {
+  if (!transfer_fetcher_.Running()) {
+    CloseOverlay();
+    return;
+  }
+  // Returns immediately: the worker is inside a network call and the UI thread
+  // cannot wait for it. The pane stays up, saying so, until the result lands.
+  transfer_fetcher_.Cancel();
+  transfer_cancelling_ = true;
+}
+
+void App::CollectTransfer() {
+  git::TransferResult result;
+  if (!transfer_fetcher_.Consume(&result)) {
+    return;
+  }
+
+  const TransferKind kind = transfer_kind_;
+  transfer_kind_ = TransferKind::None;
+  transfer_cancelling_ = false;
+  CloseOverlay();
+
+  if (!result.ok) {
+    if (result.summary == "cancelled") {
+      Note("transfer cancelled", false);
+      return;
+    }
+    Note(result.summary + (result.detail.empty() ? "" : " — " + result.detail), true);
+    return;
+  }
+
+  std::string note = result.summary;
+  if (!result.detail.empty()) {
+    note += " · " + result.detail;
+  }
+  Note(note, false);
+
+  // A pull can move HEAD and rewrite the working tree, and a push changes what
+  // the branch view's ahead/behind counts mean. Both make every cached read of
+  // the repository stale.
+  Refresh();
+  history_loaded_ = false;
+  if (view_ != ui::View::Status) {
+    EnsureHistory();
+  }
+  // A fetch only moves tracking refs, so ahead/behind changes but the remote's
+  // own description does not: no reason to spend a request re-reading it.
+  (void)kind;
+}
+
+ui::TransferView App::TransferViewState() const {
+  const git::TransferProgress progress = transfer_sink_->Read();
+
+  ui::TransferView view;
+  switch (transfer_kind_) {
+    case TransferKind::Fetch:
+      view.title = "Fetching from " + (remotes_.empty() ? "" : remotes_[remote_index_].name);
+      break;
+    case TransferKind::Pull:
+      view.title = "Pulling " + snapshot_.branch;
+      break;
+    case TransferKind::Push:
+      view.title = "Pushing " + snapshot_.branch;
+      break;
+    case TransferKind::None:
+      view.title = "Working";
+      break;
+  }
+
+  switch (progress.phase) {
+    case git::TransferPhase::Connecting:
+      view.phase = "connecting";
+      break;
+    case git::TransferPhase::Receiving:
+      view.phase = "receiving objects";
+      break;
+    case git::TransferPhase::Resolving:
+      view.phase = "resolving deltas";
+      break;
+    case git::TransferPhase::Sending:
+      view.phase = "sending objects";
+      break;
+    case git::TransferPhase::Updating:
+      view.phase = "updating the working tree";
+      break;
+    case git::TransferPhase::Done:
+      view.phase = "done";
+      break;
+    case git::TransferPhase::Failed:
+      view.phase = "failed";
+      break;
+    case git::TransferPhase::Idle:
+      view.phase = "starting";
+      break;
+  }
+  if (transfer_cancelling_) {
+    view.phase = quit_after_transfer_ ? "cancelling, then quitting"
+                                      : "cancelling — waiting for the request to give up";
+  }
+
+  view.detail = progress.remote_message;
+  view.ratio = progress.ratio();
+  view.bytes = progress.received_bytes;
+  if (progress.phase == git::TransferPhase::Sending) {
+    view.objects = progress.pushed_objects;
+    view.total = progress.total_push_objects;
+  } else {
+    view.objects = progress.phase == git::TransferPhase::Resolving ? progress.indexed_objects
+                                                                   : progress.received_objects;
+    view.total = progress.total_objects;
+  }
+  view.cancellable = !transfer_cancelling_;
+  return view;
+}
+
 void App::Move(int delta) {
   const int count = ActiveCount();
   if (count == 0) {
@@ -502,6 +916,9 @@ void App::Move(int delta) {
   // Following the cursor would put one request on every keystroke, which on an
   // anonymous GitHub budget is a dozen rows of scrolling and then nothing for
   // an hour. `enter` opens the new one, and that keypress is the consent.
+  //
+  // The pull request detail pane is deliberately not treated the same way: it
+  // costs nothing to redraw for the row under the cursor.
   if (view_ == ui::View::Pipelines && jobs_open_ && selection != before) {
     jobs_open_ = false;
   }
@@ -552,6 +969,9 @@ void App::SetView(ui::View view) {
     case ui::View::Pipelines:
       EnsurePipelines();
       return;
+    case ui::View::Pulls:
+      EnsurePulls();
+      return;
     case ui::View::Status:
       return;
     case ui::View::History:
@@ -563,8 +983,8 @@ void App::SetView(ui::View view) {
 }
 
 void App::Reload() {
-  // On the remote and CI views `r` means the network, everywhere else it means
-  // the repository. Refreshing whichever one is not on screen is a surprise.
+  // On the network views `r` means the network, everywhere else it means the
+  // repository. Refreshing whichever one is not on screen is a surprise.
   if (view_ == ui::View::Pipelines) {
     if (pipeline_fetcher_.Running()) {
       Note("already fetching", false);
@@ -576,6 +996,20 @@ void App::Reload() {
     }
     StartPipelineFetch();
     Note("refreshing CI", false);
+    return;
+  }
+
+  if (view_ == ui::View::Pulls) {
+    if (pull_fetcher_.Running()) {
+      Note("already fetching", false);
+      return;
+    }
+    if (!remote_.ref.valid()) {
+      Note("no remote to fetch", true);
+      return;
+    }
+    StartPullFetch();
+    Note("refreshing pull requests", false);
     return;
   }
 
@@ -662,6 +1096,7 @@ void App::RequestDiscard() {
     return;
   }
   discard_target_ = *entry;
+  confirm_kind_ = ConfirmKind::Discard;
   OpenOverlay(kConfirm);
 }
 
@@ -708,12 +1143,254 @@ void App::CloseOverlay() {
   overlay_open_ = false;
 }
 
+ui::Scope App::CurrentScope() const {
+  switch (view_) {
+    case ui::View::Status:
+      return ui::Scope::Status;
+    case ui::View::Graph:
+      return ui::Scope::Graph;
+    case ui::View::History:
+    case ui::View::Branches:
+    case ui::View::Remote:
+    case ui::View::Pipelines:
+    case ui::View::Pulls:
+      break;
+  }
+  return ui::Scope::Global;
+}
+
+bool App::Perform(ui::Action action) {
+  const std::vector<ui::View>& views = ui::AllViews();
+  const auto index_of = [&views](ui::View view) {
+    for (std::size_t i = 0; i < views.size(); ++i) {
+      if (views[i] == view) {
+        return i;
+      }
+    }
+    return std::size_t{0};
+  };
+
+  switch (action) {
+    case ui::Action::None:
+      return false;
+
+    case ui::Action::Quit:
+      return false;  // handled by the caller, which owns the screen
+
+    case ui::Action::Help:
+      OpenOverlay(kHelp);
+      return true;
+
+    case ui::Action::Reload:
+      Reload();
+      return true;
+
+    case ui::Action::Theme: {
+      const std::string label = ui::NextTheme();
+      Note("theme: " + label, false);
+      return true;
+    }
+
+    case ui::Action::NextView:
+      SetView(views[(index_of(view_) + 1) % views.size()]);
+      return true;
+
+    case ui::Action::PrevView:
+      SetView(views[(index_of(view_) + views.size() - 1) % views.size()]);
+      return true;
+
+    case ui::Action::ViewStatus:
+      SetView(ui::View::Status);
+      return true;
+    case ui::Action::ViewHistory:
+      SetView(ui::View::History);
+      return true;
+    case ui::Action::ViewBranches:
+      SetView(ui::View::Branches);
+      return true;
+    case ui::Action::ViewGraph:
+      SetView(ui::View::Graph);
+      return true;
+    case ui::Action::ViewRemote:
+      SetView(ui::View::Remote);
+      return true;
+    case ui::Action::ViewPipelines:
+      SetView(ui::View::Pipelines);
+      return true;
+    case ui::Action::ViewPulls:
+      SetView(ui::View::Pulls);
+      return true;
+
+    case ui::Action::Down:
+      Move(1);
+      return true;
+    case ui::Action::Up:
+      Move(-1);
+      return true;
+    case ui::Action::PageDown:
+      Move(10);
+      return true;
+    case ui::Action::PageUp:
+      Move(-10);
+      return true;
+    case ui::Action::First:
+      SelectFirst();
+      return true;
+    case ui::Action::Last:
+      SelectLast();
+      return true;
+
+    case ui::Action::Open:
+      if (view_ == ui::View::Pipelines) {
+        ToggleJobs();
+        return true;
+      }
+      if (view_ == ui::View::Pulls) {
+        ToggleDetails();
+        return true;
+      }
+      return false;
+
+    case ui::Action::NextRemote:
+      NextRemote();
+      return true;
+    case ui::Action::Fetch:
+      StartTransfer(TransferKind::Fetch);
+      return true;
+    case ui::Action::Pull:
+      StartTransfer(TransferKind::Pull);
+      return true;
+    case ui::Action::Push:
+      RequestPush();
+      return true;
+
+    case ui::Action::ToggleStage:
+      ToggleStage();
+      return true;
+    case ui::Action::Stage:
+      StageSelected();
+      return true;
+    case ui::Action::Unstage:
+      UnstageSelected();
+      return true;
+    case ui::Action::StageAll:
+      StageEverything();
+      return true;
+    case ui::Action::Discard:
+      RequestDiscard();
+      return true;
+    case ui::Action::Commit:
+      OpenCommit();
+      return true;
+
+    case ui::Action::PanLeft:
+      PanGraph(std::max(1, ui::GraphWindow(graph_.bucket) / 8));
+      return true;
+    case ui::Action::PanRight:
+      PanGraph(-std::max(1, ui::GraphWindow(graph_.bucket) / 8));
+      return true;
+    case ui::Action::BucketDay:
+      SetBucket(ui::Bucket::Day);
+      return true;
+    case ui::Action::BucketWeek:
+      SetBucket(ui::Bucket::Week);
+      return true;
+    case ui::Action::BucketMonth:
+      SetBucket(ui::Bucket::Month);
+      return true;
+    case ui::Action::GraphOldest:
+      graph_.offset = MaxGraphOffset();
+      return true;
+    case ui::Action::GraphNewest:
+      graph_.offset = 0;
+      return true;
+  }
+  return false;
+}
+
+std::vector<Box>* App::ActiveRowBoxes() {
+  switch (view_) {
+    case ui::View::Status:
+    case ui::View::History:
+    case ui::View::Branches:
+    case ui::View::Pipelines:
+    case ui::View::Pulls:
+      return &row_boxes_;
+    case ui::View::Graph:
+    case ui::View::Remote:
+      break;
+  }
+  return nullptr;  // nothing selectable to click on
+}
+
+bool App::HandleMouse(const Mouse& mouse) {
+  // The boxes were filled by the previous render. FTXUI runs a render before it
+  // reads input, so on the first event they are already current.
+  if (mouse.button == Mouse::WheelUp) {
+    if (view_ == ui::View::Graph) {
+      PanGraph(std::max(1, ui::GraphWindow(graph_.bucket) / 8));
+    } else {
+      Move(-kWheelRows);
+    }
+    return true;
+  }
+  if (mouse.button == Mouse::WheelDown) {
+    if (view_ == ui::View::Graph) {
+      PanGraph(-std::max(1, ui::GraphWindow(graph_.bucket) / 8));
+    } else {
+      Move(kWheelRows);
+    }
+    return true;
+  }
+
+  if (mouse.button != Mouse::Left || mouse.motion != Mouse::Pressed) {
+    return false;
+  }
+
+  for (std::size_t i = 0; i < tab_boxes_.size(); ++i) {
+    if (tab_boxes_[i].Contain(mouse.x, mouse.y)) {
+      SetView(ui::AllViews()[i]);
+      return true;
+    }
+  }
+
+  std::vector<Box>* rows = ActiveRowBoxes();
+  if (rows == nullptr) {
+    return false;
+  }
+  // A row scrolled out of its frame still gets a box, and that box can land on
+  // a coordinate inside some other panel. Requiring the hit to be inside the
+  // body as well is what keeps a click on the footer from selecting row 300.
+  if (!body_box_.Contain(mouse.x, mouse.y)) {
+    return false;
+  }
+  for (std::size_t i = 0; i < rows->size(); ++i) {
+    if (!(*rows)[i].Contain(mouse.x, mouse.y)) {
+      continue;
+    }
+    const int index = static_cast<int>(i);
+    int& selection = ActiveSelection();
+    // A second click on the row already under the cursor opens it, which is the
+    // closest thing a terminal has to a double click without guessing at
+    // timings the terminal never reports.
+    if (selection == index) {
+      Perform(ui::Action::Open);
+    } else {
+      Move(index - selection);
+    }
+    return true;
+  }
+  return false;
+}
+
 // Posted from the workers to wake the event loop. Named special events rather
 // than keystrokes, so nothing in the key routing can collide with them, and one
 // per source so a wake-up says which result to go and look for.
 const Event kRemoteReady = Event::Special("gittop:remote-ready");
 const Event kPipelinesReady = Event::Special("gittop:pipelines-ready");
 const Event kJobsReady = Event::Special("gittop:jobs-ready");
+const Event kPullsReady = Event::Special("gittop:pulls-ready");
+const Event kTransferDone = Event::Special("gittop:transfer-done");
 const Event kTick = Event::Special("gittop:tick");
 
 int App::Run() {
@@ -721,11 +1398,13 @@ int App::Run() {
 
   auto screen = ScreenInteractive::Fullscreen();
 
-  // Every one of these captures the screen by reference, which is why all four
-  // are shut down before it goes out of scope at the end of this function.
+  // Every one of these captures the screen by reference, which is why all of
+  // them are shut down before it goes out of scope at the end of this function.
   fetcher_.SetNotifier([&screen] { screen.PostEvent(kRemoteReady); });
   pipeline_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPipelinesReady); });
   job_fetcher_.SetNotifier([&screen] { screen.PostEvent(kJobsReady); });
+  pull_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPullsReady); });
+  transfer_fetcher_.SetNotifier([&screen] { screen.PostEvent(kTransferDone); });
   ticker_.SetNotifier([&screen] { screen.PostEvent(kTick); });
 
   // ---------------------------------------------------------- commit overlay
@@ -755,16 +1434,29 @@ int App::Run() {
 
   // --------------------------------------------------------- confirm overlay
   auto confirm_pane = Renderer([this] {
-    return ui::ConfirmPane(
-        discard_target_.change == model::Change::Untracked ? "Delete this file?"
-                                                           : "Discard these changes?",
-        discard_target_.path);
+    if (confirm_kind_ == ConfirmKind::Push) {
+      const std::string remote_name =
+          remotes_.empty() ? "the remote" : remotes_[remote_index_].name;
+      // Through SafeUrl, not raw: a remote configured with a token in its URL
+      // must not print it here any more than it does on the remote panel.
+      return ui::ConfirmPane("Push " + snapshot_.branch + " to " + remote_name + "?",
+                             remotes_.empty() ? "" : ui::SafeUrl(remotes_[remote_index_].url),
+                             /*warning=*/"", "push");
+    }
+    return ui::ConfirmPane(discard_target_.change == model::Change::Untracked
+                               ? "Delete this file?"
+                               : "Discard these changes?",
+                           discard_target_.path, "This cannot be undone.", "discard");
   });
 
   // ------------------------------------------------------------ help overlay
-  auto help_pane = Renderer([] { return ui::HelpPane(); });
+  auto help_pane = Renderer([this] { return ui::HelpPane(keys_); });
 
-  auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane}, &overlay_index_);
+  // -------------------------------------------------------- transfer overlay
+  auto transfer_pane = Renderer([this] { return ui::TransferPane(TransferViewState(), spinner_); });
+
+  auto overlay =
+      Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane}, &overlay_index_);
 
   // --------------------------------------------------------------- main view
   auto main_view = Renderer([this, &screen] {
@@ -778,15 +1470,20 @@ int App::Run() {
     const int width = screen.dimx();
     const int height = screen.dimy();
 
-    Elements body{ui::Header(snapshot_), ui::TabBar(view_)};
+    Elements body{ui::Header(snapshot_), ui::TabBar(view_, &tab_boxes_)};
 
+    // Only the view on screen fills these, so a stale box from another view can
+    // never be hit-tested against.
+    row_boxes_.clear();
+
+    Element panel;
     switch (view_) {
       case ui::View::Status:
         body.push_back(ui::SummaryRow(snapshot_, bars_, width < 84));
-        body.push_back(ui::FileList(snapshot_, selected_) | flex);
+        panel = ui::FileList(snapshot_, selected_, &row_boxes_) | flex;
         break;
 
-      case ui::View::History:
+      case ui::View::History: {
         // The heatmap costs ten rows. On a short terminal the log is worth
         // more than the graph, so it goes first and the heatmap steps aside.
         if (height >= 30) {
@@ -794,15 +1491,16 @@ int App::Run() {
                                 ui::ActivityPanel(history_)) |
                          color(ui::theme().border) | bgcolor(ui::theme().surface));
         }
-        body.push_back(window(text(" COMMITS ") | bold | color(ui::theme().text_dim),
-                              ui::CommitList(history_, commit_selected_)) |
-                       color(ui::theme().border) | bgcolor(ui::theme().surface) | flex);
+        panel = window(text(" COMMITS ") | bold | color(ui::theme().text_dim),
+                       ui::CommitList(history_, commit_selected_, &row_boxes_)) |
+                color(ui::theme().border) | bgcolor(ui::theme().surface) | flex;
         break;
+      }
 
       case ui::View::Branches:
-        body.push_back(window(text(" BRANCHES ") | bold | color(ui::theme().text_dim),
-                              ui::BranchList(history_, branch_selected_)) |
-                       color(ui::theme().border) | bgcolor(ui::theme().surface) | flex);
+        panel = window(text(" BRANCHES ") | bold | color(ui::theme().text_dim),
+                       ui::BranchList(history_, branch_selected_, &row_boxes_)) |
+                color(ui::theme().border) | bgcolor(ui::theme().surface) | flex;
         break;
 
       case ui::View::Graph: {
@@ -821,16 +1519,31 @@ int App::Run() {
       }
 
       case ui::View::Remote:
-        body.push_back(ui::RemotePanel(remote_, width, height, spinner_));
+        panel = ui::RemotePanel(remote_, width, height, spinner_, git::TransportSummary());
         break;
 
       case ui::View::Pipelines:
-        body.push_back(ui::PipelinePanel(pipelines_, jobs_, remote_.ref, PipelineViewState(),
-                                         width, height, spinner_));
+        panel = ui::PipelinePanel(pipelines_, jobs_, remote_.ref, PipelineViewState(), width,
+                                  height, spinner_, &row_boxes_);
         break;
+
+      case ui::View::Pulls: {
+        ui::PullView pull_view;
+        pull_view.selected = pull_selected_;
+        pull_view.details_open = pull_details_open_;
+        panel = ui::PullPanel(pulls_, remote_.ref, pull_view, width, height, spinner_,
+                              &row_boxes_);
+        break;
+      }
     }
 
-    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_));
+    if (panel) {
+      // The panel's own box, used to reject a click that landed on a row whose
+      // reflected geometry is outside the frame it was clipped to.
+      body.push_back(std::move(panel) | reflect(body_box_));
+    }
+
+    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_, keys_));
 
     Element view = vbox(std::move(body)) | bgcolor(ui::theme().bg);
 
@@ -851,9 +1564,9 @@ int App::Run() {
   // wrapped around it. Returning false while an overlay is open lets the event
   // fall through to that overlay.
   root |= CatchEvent([this, &screen](const Event& event) {
-    // The worker thread posts this after a fetch finishes. It carries no data
-    // itself — it only wakes the loop so the result can be picked up here, on
-    // the UI thread, where every other piece of state is touched.
+    // The worker threads post these after a task finishes. They carry no data
+    // themselves — they only wake the loop so the result can be picked up here,
+    // on the UI thread, where every other piece of state is touched.
     if (event == kRemoteReady) {
       CollectFetch();
       return true;
@@ -866,6 +1579,19 @@ int App::Run() {
       CollectJobs();
       return true;
     }
+    if (event == kPullsReady) {
+      CollectPulls();
+      return true;
+    }
+    if (event == kTransferDone) {
+      CollectTransfer();
+      // The worker has reported and been joined by now, so this is the first
+      // moment it is safe to tear the screen down.
+      if (quit_after_transfer_) {
+        screen.Exit();
+      }
+      return true;
+    }
     // One a second while the CI view is open. It repaints the countdown and
     // asks whether the interval is up; the answer is usually no.
     if (event == kTick) {
@@ -874,9 +1600,9 @@ int App::Run() {
     }
 
     // Overlay routing lives here rather than on the panes themselves.
-    // Container::Tab drops events unless it is focused, and the confirm and
-    // help panes are plain Renderers with nothing focusable inside them, so
-    // handlers attached to those panes never ran at all.
+    // Container::Tab drops events unless it is focused, and the confirm, help
+    // and transfer panes are plain Renderers with nothing focusable inside
+    // them, so handlers attached to those panes never ran at all.
     if (overlay_open_) {
       switch (overlay_index_) {
         case kHelp:
@@ -886,9 +1612,30 @@ int App::Run() {
           }
           return false;
 
+        case kTransfer:
+          // Escape before Quit, because esc is one of quit's default keys and
+          // the two mean different things here: esc stops the transfer and
+          // stays, q stops it and leaves.
+          if (event == Event::Escape) {
+            CancelTransfer();
+            return true;
+          }
+          if (keys_.Lookup(ui::Scope::Global, event) == ui::Action::Quit) {
+            CancelTransfer();
+            quit_after_transfer_ = true;
+            return true;
+          }
+          // Nothing else can be answered here, and a stray key must not fall
+          // through to the dashboard underneath while a push is in flight.
+          return !event.is_mouse();
+
         case kConfirm:
           if (event == Event::Character('y') || event == Event::Character('Y')) {
-            PerformDiscard();
+            if (confirm_kind_ == ConfirmKind::Push) {
+              PerformPush();
+            } else {
+              PerformDiscard();
+            }
             return true;
           }
           if (event == Event::Character('n') || event == Event::Character('N') ||
@@ -910,152 +1657,22 @@ int App::Run() {
       }
     }
 
-    if (event == Event::Character('q') || event == Event::Escape) {
+    if (event.is_mouse()) {
+      // FTXUI's mouse() accessor is non-const, and the handler is handed a
+      // const Event. A copy is a few bytes and beats casting the constness off.
+      Event copy = event;
+      return HandleMouse(copy.mouse());
+    }
+
+    // One table lookup rather than thirty comparisons, which is what lets the
+    // config move a key: the scope decides whether the graph's `d` or the
+    // status view's is the one this keypress means.
+    const ui::Action action = keys_.Lookup(CurrentScope(), event);
+    if (action == ui::Action::Quit) {
       screen.Exit();
       return true;
     }
-    // The graph pans along a timeline rather than selecting rows, so it claims
-    // the horizontal keys before the shared list movement below.
-    if (view_ == ui::View::Graph) {
-      const int step = std::max(1, ui::GraphWindow(graph_.bucket) / 8);
-      if (event == Event::Character('h') || event == Event::ArrowLeft) {
-        PanGraph(step);
-        return true;
-      }
-      if (event == Event::Character('l') || event == Event::ArrowRight) {
-        PanGraph(-step);
-        return true;
-      }
-      if (event == Event::Character('d')) {
-        SetBucket(ui::Bucket::Day);
-        return true;
-      }
-      if (event == Event::Character('w')) {
-        SetBucket(ui::Bucket::Week);
-        return true;
-      }
-      if (event == Event::Character('m')) {
-        SetBucket(ui::Bucket::Month);
-        return true;
-      }
-      if (event == Event::Character('g')) {
-        graph_.offset = MaxGraphOffset();
-        return true;
-      }
-      if (event == Event::Character('G')) {
-        graph_.offset = 0;
-        return true;
-      }
-    }
-
-    if (event == Event::Character('j') || event == Event::ArrowDown) {
-      Move(1);
-      return true;
-    }
-    if (event == Event::Character('k') || event == Event::ArrowUp) {
-      Move(-1);
-      return true;
-    }
-    if (event == Event::Character('g') || event == Event::Home) {
-      SelectFirst();
-      return true;
-    }
-    if (event == Event::Character('G') || event == Event::End) {
-      SelectLast();
-      return true;
-    }
-    if (event == Event::Character('1')) {
-      SetView(ui::View::Status);
-      return true;
-    }
-    if (event == Event::Character('2')) {
-      SetView(ui::View::History);
-      return true;
-    }
-    if (event == Event::Character('3')) {
-      SetView(ui::View::Branches);
-      return true;
-    }
-    if (event == Event::Character('4')) {
-      SetView(ui::View::Graph);
-      return true;
-    }
-    if (event == Event::Character('5')) {
-      SetView(ui::View::Remote);
-      return true;
-    }
-    if (event == Event::Character('6')) {
-      SetView(ui::View::Pipelines);
-      return true;
-    }
-    // Opening a run's jobs is a request, so it takes a keypress rather than
-    // following the cursor. See the note in Move().
-    if (view_ == ui::View::Pipelines && event == Event::Return) {
-      ToggleJobs();
-      return true;
-    }
-    if (event == Event::Tab) {
-      switch (view_) {
-        case ui::View::Status:
-          SetView(ui::View::History);
-          break;
-        case ui::View::History:
-          SetView(ui::View::Branches);
-          break;
-        case ui::View::Branches:
-          SetView(ui::View::Graph);
-          break;
-        case ui::View::Graph:
-          SetView(ui::View::Remote);
-          break;
-        case ui::View::Remote:
-          SetView(ui::View::Pipelines);
-          break;
-        case ui::View::Pipelines:
-          SetView(ui::View::Status);
-          break;
-      }
-      return true;
-    }
-    if (event == Event::Character('r')) {
-      Reload();
-      return true;
-    }
-
-    // Everything below acts on the working tree, so it only applies where the
-    // working tree is on screen. Pressing `d` while reading the log should not
-    // quietly discard whatever the status view happened to have selected.
-    if (view_ == ui::View::Status) {
-      if (event == Event::Character(' ')) {
-        ToggleStage();
-        return true;
-      }
-      if (event == Event::Character('s')) {
-        StageSelected();
-        return true;
-      }
-      if (event == Event::Character('u')) {
-        UnstageSelected();
-        return true;
-      }
-      if (event == Event::Character('a')) {
-        StageEverything();
-        return true;
-      }
-      if (event == Event::Character('d')) {
-        RequestDiscard();
-        return true;
-      }
-      if (event == Event::Character('c')) {
-        OpenCommit();
-        return true;
-      }
-    }
-    if (event == Event::Character('?')) {
-      OpenOverlay(kHelp);
-      return true;
-    }
-    return false;
+    return Perform(action);
   });
 
   screen.Loop(root);
@@ -1067,6 +1684,8 @@ int App::Run() {
   fetcher_.Shutdown();
   pipeline_fetcher_.Shutdown();
   job_fetcher_.Shutdown();
+  pull_fetcher_.Shutdown();
+  transfer_fetcher_.Shutdown();
   return 0;
 }
 

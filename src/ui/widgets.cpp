@@ -110,4 +110,22 @@ std::string SpinnerFrame(int frame) {
   return kFrames[static_cast<std::size_t>(index)];
 }
 
+// A remote can be configured as https://user:token@host/path. That token must
+// never reach the screen, so the userinfo is replaced rather than shortened.
+std::string SafeUrl(const std::string& url) {
+  const std::size_t scheme = url.find("://");
+  if (scheme == std::string::npos) {
+    return url;  // scp-style user@host:path carries no password
+  }
+  const std::size_t start = scheme + 3;
+  const std::size_t slash = url.find('/', start);
+  const std::size_t authority_end = slash == std::string::npos ? url.size() : slash;
+  const std::size_t at = url.rfind('@', authority_end);
+
+  if (at == std::string::npos || at < start) {
+    return url;
+  }
+  return url.substr(0, start) + "•••@" + url.substr(at + 1);
+}
+
 }  // namespace gittop::ui

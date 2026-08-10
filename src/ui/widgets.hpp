@@ -21,6 +21,13 @@ ftxui::Element Chip(const std::string& key, const std::string& label);
 // by filename instead of by prefix.
 ftxui::Element PathText(const std::string& path, bool emphasised);
 
+// A remote URL with its userinfo replaced, for anywhere one reaches the screen.
+// A remote configured as https://user:token@host/... has the token in its URL,
+// and there is exactly one rule about those: never render one. Shared rather
+// than private to the remote panel because the push confirmation prints a URL
+// too, and the second caller is where a rule like this quietly stops holding.
+std::string SafeUrl(const std::string& url);
+
 // One frame of the braille spinner. `frame` is App's counter, which advances on
 // wall time rather than per rendered frame so the spin rate does not follow the
 // frame rate. Negative values are handled, because the counter is a plain int

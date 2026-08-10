@@ -292,7 +292,8 @@ Element RunRow(const Pipeline& run, bool selected, bool wide, int frame) {
   return element;
 }
 
-Element RunList(const PipelineSnapshot& snapshot, const PipelineView& view, bool wide, int frame) {
+Element RunList(const PipelineSnapshot& snapshot, const PipelineView& view, bool wide, int frame,
+                std::vector<Box>* row_boxes) {
   const Theme& t = theme();
 
   if (snapshot.runs.empty()) {
@@ -311,11 +312,18 @@ Element RunList(const PipelineSnapshot& snapshot, const PipelineView& view, bool
     });
   }
 
+  if (row_boxes != nullptr) {
+    row_boxes->assign(snapshot.runs.size(), Box());
+  }
+
   Elements rows;
   rows.reserve(snapshot.runs.size());
   for (std::size_t i = 0; i < snapshot.runs.size(); ++i) {
-    rows.push_back(
-        RunRow(snapshot.runs[i], static_cast<int>(i) == view.selected, wide, frame));
+    Element row = RunRow(snapshot.runs[i], static_cast<int>(i) == view.selected, wide, frame);
+    if (row_boxes != nullptr) {
+      row = std::move(row) | reflect((*row_boxes)[i]);
+    }
+    rows.push_back(std::move(row));
   }
   return vbox(std::move(rows)) | vscroll_indicator | yframe;
 }
@@ -471,7 +479,11 @@ Element Unsupported(const RemoteRef& ref) {
 }  // namespace
 
 Element PipelinePanel(const PipelineSnapshot& snapshot, const JobList& jobs, const RemoteRef& ref,
-                      const PipelineView& view, int width, int height, int frame) {
+                      const PipelineView& view, int width, int height, int frame,
+                      std::vector<Box>* rows) {
+  if (rows != nullptr) {
+    rows->clear();
+  }
   if (!ref.valid()) {
     // flex on the window itself, not on a vbox wrapped around it.
     return Unsupported(ref) | flex;
@@ -510,7 +522,7 @@ Element PipelinePanel(const PipelineSnapshot& snapshot, const JobList& jobs, con
       // size, rather than leaving two lists each too small to read.
       const bool jobs_take_the_slack = drilling && height < 24;
 
-      Element runs = Section("RUNS", RunList(snapshot, view, wide, frame));
+      Element runs = Section("RUNS", RunList(snapshot, view, wide, frame, rows));
       if (!jobs_take_the_slack) {
         runs = std::move(runs) | flex;
         stretched = true;

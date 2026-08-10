@@ -2,6 +2,7 @@
 
 #include <ftxui/dom/elements.hpp>
 #include <string>
+#include <vector>
 
 #include "model/pipeline.hpp"
 #include "model/remote.hpp"
@@ -26,6 +27,6 @@ struct PipelineView {
 
 ftxui::Element PipelinePanel(const model::PipelineSnapshot& snapshot, const model::JobList& jobs,
                              const model::RemoteRef& ref, const PipelineView& view, int width,
-                             int height, int frame);
+                             int height, int frame, std::vector<ftxui::Box>* rows = nullptr);
 
 }  // namespace gittop::ui

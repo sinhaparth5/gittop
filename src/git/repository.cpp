@@ -73,6 +73,18 @@ struct IndexHandle {
 
 Library::Library() {
   git_libgit2_init();
+
+  // Phase 5 gave libgit2 a network to talk to, and with it the way an idle
+  // socket can hang a worker thread forever. That matters more here than in
+  // most programs: the cancel flag a transfer checks is only read from libgit2's
+  // progress callbacks, and a server that accepts a connection and then says
+  // nothing never fires one — so neither `esc` nor `q` could get out, because
+  // quitting joins the worker. These are the same budget libcurl already runs
+  // with for the REST calls, and they are the only thing that bounds that wait.
+  constexpr int kConnectTimeoutMs = 5000;
+  constexpr int kIdleTimeoutMs = 10000;
+  git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, kConnectTimeoutMs);
+  git_libgit2_opts(GIT_OPT_SET_SERVER_TIMEOUT, kIdleTimeoutMs);
 }
 
 Library::~Library() {

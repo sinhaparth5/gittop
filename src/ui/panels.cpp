@@ -62,6 +62,59 @@ Decoration Decorate(const StatusEntry& e) {
   return {"·", " ", t.text_dim};
 }
 
+std::string TabLabel(View view) {
+  switch (view) {
+    case View::Status:
+      return "Status";
+    case View::History:
+      return "History";
+    case View::Branches:
+      return "Branches";
+    case View::Graph:
+      return "Graph";
+    case View::Remote:
+      return "Remote";
+    case View::Pipelines:
+      return "CI";
+    case View::Pulls:
+      return "Pulls";
+  }
+  return "?";
+}
+
+// A chip whose key comes from the live binding. Empty when the action has been
+// unbound in the config, in which case there is nothing to advertise.
+Element KeyChip(const Keymap& keys, Action action, const std::string& label) {
+  const std::string key = keys.KeyFor(action);
+  if (key.empty()) {
+    return text("");
+  }
+  return Chip(key, label);
+}
+
+// "j / ↓", or just the first when only one key is bound. Arrow names are
+// printed as arrows: a hint that reads "down" next to "j" says less.
+std::string KeyList(const Keymap& keys, Action action) {
+  static const struct {
+    const char* name;
+    const char* glyph;
+  } kGlyphs[] = {{"up", "↑"}, {"down", "↓"}, {"left", "←"}, {"right", "→"},
+                 {"enter", "⏎"}};
+
+  std::string out;
+  for (const std::string& key : keys.KeysFor(action)) {
+    std::string shown = key;
+    for (const auto& glyph : kGlyphs) {
+      if (key == glyph.name) {
+        shown = glyph.glyph;
+        break;
+      }
+    }
+    out += out.empty() ? shown : " / " + shown;
+  }
+  return out;
+}
+
 enum class Group { Conflicts, Staged, Unstaged, Untracked };
 
 Group GroupOf(const StatusEntry& e) {
@@ -214,35 +267,45 @@ Element Header(const model::StatusSnapshot& snapshot) {
   return hbox(std::move(parts)) | bgcolor(t.surface);
 }
 
-Element TabBar(View active) {
-  const Theme& t = theme();
+const std::vector<View>& AllViews() {
+  static const std::vector<View> kViews{
+      View::Status, View::History, View::Branches, View::Graph,
+      View::Remote, View::Pipelines, View::Pulls,
+  };
+  return kViews;
+}
 
-  const auto tab = [&t, active](View view, const std::string& key, const std::string& label) {
+Element TabBar(View active, std::vector<Box>* tabs) {
+  const Theme& t = theme();
+  const std::vector<View>& views = AllViews();
+
+  if (tabs != nullptr) {
+    tabs->assign(views.size(), Box());
+  }
+
+  Elements row{text(" ")};
+  for (std::size_t i = 0; i < views.size(); ++i) {
+    const View view = views[i];
     const bool on = view == active;
-    return hbox({
+    // The digit shown is the key that reaches the tab, so it comes from the
+    // view's own position rather than from a literal that could drift.
+    const std::string key = std::to_string(i + 1);
+
+    Element chip = hbox({
         text(" " + key + " ") | bold | color(on ? t.bg : t.text_faint) |
             bgcolor(on ? t.accent : t.surface),
-        text(" " + label + "  ") | bold | color(on ? t.text : t.text_faint) |
+        text(" " + TabLabel(view) + "  ") | bold | color(on ? t.text : t.text_faint) |
             bgcolor(on ? t.surface_alt : t.surface),
     });
-  };
+    if (tabs != nullptr) {
+      chip = std::move(chip) | reflect((*tabs)[i]);
+    }
+    row.push_back(std::move(chip));
+    row.push_back(text(" "));
+  }
+  row.push_back(filler());
 
-  return hbox({
-             text(" "),
-             tab(View::Status, "1", "Status"),
-             text(" "),
-             tab(View::History, "2", "History"),
-             text(" "),
-             tab(View::Branches, "3", "Branches"),
-             text(" "),
-             tab(View::Graph, "4", "Graph"),
-             text(" "),
-             tab(View::Remote, "5", "Remote"),
-             text(" "),
-             tab(View::Pipelines, "6", "CI"),
-             filler(),
-         }) |
-         bgcolor(t.surface);
+  return hbox(std::move(row)) | bgcolor(t.surface);
 }
 
 Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
@@ -289,9 +352,14 @@ Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
          borderRounded | color(t.border) | bgcolor(t.surface);
 }
 
-Element FileList(const model::StatusSnapshot& snapshot, int selected) {
+Element FileList(const model::StatusSnapshot& snapshot, int selected,
+                 std::vector<Box>* row_boxes) {
   const Theme& t = theme();
   Elements rows;
+
+  if (row_boxes != nullptr) {
+    row_boxes->assign(snapshot.entries.size(), Box());
+  }
 
   if (snapshot.clean()) {
     rows.push_back(EmptyState());
@@ -308,7 +376,14 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected) {
         rows.push_back(GroupHeader(group, CountOf(group, snapshot)));
         current = group;
       }
-      rows.push_back(Row(entry, static_cast<int>(i) == selected));
+      Element row = Row(entry, static_cast<int>(i) == selected);
+      if (row_boxes != nullptr) {
+        // The group headers and blank spacers mean a row's screen position has
+        // nothing to do with its index, which is exactly why this is reflected
+        // rather than computed.
+        row = std::move(row) | reflect((*row_boxes)[i]);
+      }
+      rows.push_back(std::move(row));
     }
     rows.push_back(text(""));
   }
@@ -319,7 +394,8 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected) {
          bgcolor(t.surface);
 }
 
-Element Footer(const std::string& message, bool is_error, float fade, View view) {
+Element Footer(const std::string& message, bool is_error, float fade, View view,
+               const Keymap& keys) {
   const Theme& t = theme();
 
   // The toast line is always drawn, blank or not, so the list above never
@@ -339,65 +415,102 @@ Element Footer(const std::string& message, bool is_error, float fade, View view)
   // Six chips fit an 80-column terminal with room to spare. Everything else
   // lives in the help overlay rather than being clipped in half here, which is
   // what a seventh chip was doing.
+  const std::string move = KeyList(keys, Action::Down) + " " + KeyList(keys, Action::Up);
+
   Elements chips{text(" ")};
   if (view == View::Status) {
-    chips.push_back(Chip("space", "stage"));
-    chips.push_back(Chip("a", "all"));
-    chips.push_back(Chip("d", "discard"));
-    chips.push_back(Chip("c", "commit"));
+    chips.push_back(KeyChip(keys, Action::ToggleStage, "stage"));
+    chips.push_back(KeyChip(keys, Action::StageAll, "all"));
+    chips.push_back(KeyChip(keys, Action::Discard, "discard"));
+    chips.push_back(KeyChip(keys, Action::Commit, "commit"));
+    chips.push_back(KeyChip(keys, Action::Push, "push"));
   } else if (view == View::Graph) {
-    chips.push_back(Chip("h/l", "pan"));
-    chips.push_back(Chip("d/w/m", "bucket"));
-    chips.push_back(Chip("tab", "switch view"));
+    chips.push_back(Chip(keys.KeyFor(Action::PanLeft) + "/" + keys.KeyFor(Action::PanRight),
+                         "pan"));
+    chips.push_back(Chip(keys.KeyFor(Action::BucketDay) + "/" + keys.KeyFor(Action::BucketWeek) +
+                             "/" + keys.KeyFor(Action::BucketMonth),
+                         "bucket"));
+    chips.push_back(KeyChip(keys, Action::NextView, "switch view"));
   } else if (view == View::Remote) {
-    chips.push_back(Chip("r", "fetch"));
-    chips.push_back(Chip("tab", "switch view"));
+    chips.push_back(KeyChip(keys, Action::Reload, "fetch"));
+    chips.push_back(KeyChip(keys, Action::NextRemote, "remote"));
+    chips.push_back(KeyChip(keys, Action::Pull, "pull"));
+    chips.push_back(KeyChip(keys, Action::Push, "push"));
   } else if (view == View::Pipelines) {
-    chips.push_back(Chip("j/k", "move"));
-    chips.push_back(Chip("enter", "jobs"));
-    chips.push_back(Chip("r", "refresh"));
+    chips.push_back(Chip(move, "move"));
+    chips.push_back(KeyChip(keys, Action::Open, "jobs"));
+    chips.push_back(KeyChip(keys, Action::Reload, "refresh"));
+  } else if (view == View::Pulls) {
+    chips.push_back(Chip(move, "move"));
+    chips.push_back(KeyChip(keys, Action::Open, "details"));
+    chips.push_back(KeyChip(keys, Action::Reload, "refresh"));
   } else {
-    chips.push_back(Chip("j/k", "move"));
-    chips.push_back(Chip("tab", "switch view"));
-    chips.push_back(Chip("r", "reload"));
+    chips.push_back(Chip(move, "move"));
+    chips.push_back(KeyChip(keys, Action::NextView, "switch view"));
+    chips.push_back(KeyChip(keys, Action::Reload, "reload"));
   }
   chips.push_back(filler());
-  chips.push_back(Chip("?", "help"));
-  chips.push_back(Chip("q", "quit"));
+  chips.push_back(KeyChip(keys, Action::Help, "help"));
+  chips.push_back(KeyChip(keys, Action::Quit, "quit"));
 
-  Element keys = hbox(std::move(chips)) | bgcolor(t.surface);
+  Element key_row = hbox(std::move(chips)) | bgcolor(t.surface);
 
-  return vbox({toast, keys});
+  return vbox({toast, key_row});
 }
 
-Element HelpPane() {
+Element HelpPane(const Keymap& keys) {
   const Theme& t = theme();
-  const auto line = [&t](const std::string& keys, const std::string& what) {
+  // Sixteen, not twelve: "ctrl-u / ctrl-d" is fifteen cells and was being cut
+  // in half by the description next to it.
+  constexpr int kKeyColumn = 16;
+  const auto row = [&t](const std::string& shown, const std::string& what) {
     return hbox({
         text("  "),
-        text(keys) | bold | color(t.accent) | size(WIDTH, EQUAL, 12),
+        text(shown) | bold | color(t.accent) | size(WIDTH, EQUAL, kKeyColumn),
         text(what) | color(t.text_dim),
     });
+  };
+  // Every key here is read out of the live keymap, so a config that rebinds one
+  // is described correctly rather than contradicted by its own help screen.
+  const auto line = [&row, &keys](Action action, const std::string& what) {
+    return row(KeyList(keys, action), what);
+  };
+  const auto pair = [&row, &keys](Action a, Action b, const std::string& what) {
+    return row(keys.KeyFor(a) + " / " + keys.KeyFor(b), what);
   };
 
   return vbox({
              hbox({text(" Keys") | bold | color(t.text), filler()}),
              separator() | color(t.border),
-             line("1 … 6", "status / history / branches / graph / remote / CI"),
-             line("tab", "cycle through the views"),
-             line("j / ↓", "move down"),
-             line("k / ↑", "move up"),
-             line("g / G", "first / last, or oldest / newest on the graph"),
-             line("h / l", "pan the graph through time"),
-             line("d / w / m", "graph bucket: day, week, month"),
-             line("space", "stage or unstage the selection"),
-             line("s / u", "stage / unstage explicitly"),
-             line("a", "stage everything"),
-             line("d", "discard the selection, after a confirm"),
-             line("c", "write a commit"),
-             line("enter", "jobs of the selected CI run"),
-             line("r", "re-read the repository, or re-fetch the remote"),
-             line("q", "quit"),
+             row(keys.KeyFor(Action::ViewStatus) + " … " + keys.KeyFor(Action::ViewPulls),
+                 "status / history / branches / graph / remote / CI / pulls"),
+             line(Action::NextView, "cycle through the views"),
+             line(Action::Down, "move down"),
+             line(Action::Up, "move up"),
+             pair(Action::First, Action::Last, "first / last, or oldest / newest on the graph"),
+             pair(Action::PageUp, Action::PageDown, "move a screen at a time"),
+             pair(Action::PanLeft, Action::PanRight, "pan the graph through time"),
+             row(keys.KeyFor(Action::BucketDay) + " / " + keys.KeyFor(Action::BucketWeek) + " / " +
+                     keys.KeyFor(Action::BucketMonth),
+                 "graph bucket: day, week, month"),
+             line(Action::ToggleStage, "stage or unstage the selection"),
+             pair(Action::Stage, Action::Unstage, "stage / unstage explicitly"),
+             line(Action::StageAll, "stage everything"),
+             line(Action::Discard, "discard the selection, after a confirm"),
+             line(Action::Commit, "write a commit"),
+             line(Action::Open, "jobs of a CI run, or details of a pull request"),
+             line(Action::Fetch, "fetch from the active remote"),
+             line(Action::Pull, "pull — fetch, then fast-forward if that is all it takes"),
+             line(Action::Push, "push the current branch, after a confirm"),
+             line(Action::NextRemote, "switch to the next remote"),
+             line(Action::Theme, "next theme"),
+             line(Action::Reload, "re-read the repository, or re-fetch the remote"),
+             line(Action::Quit, "quit"),
+             separator() | color(t.border),
+             row("mouse", "wheel scrolls, click selects a row or a tab"),
+             // What the screen is actually being drawn with. The first question
+             // about a terminal that looks wrong is which of these two it is.
+             row("theme", ThemeLabel() + " · " + ColorDepthName(ColorDepthNow())),
              separator() | color(t.border),
              hbox({
                  text("  "),
@@ -413,32 +526,92 @@ Element HelpPane() {
              separator() | color(t.border),
              hbox({filler(), Chip("any key", "close"), filler()}),
          }) |
-         PaneFrame() | size(WIDTH, GREATER_THAN, 62);
+         PaneFrame() | size(WIDTH, GREATER_THAN, 74);
 }
 
-Element ConfirmPane(const std::string& question, const std::string& detail) {
+Element ConfirmPane(const std::string& question, const std::string& detail,
+                    const std::string& warning, const std::string& confirm_label) {
   const Theme& t = theme();
-  return vbox({
-             hbox({
-                 text(" ▲ ") | bold | color(t.danger),
-                 text(question) | bold | color(t.text),
-                 filler(),
-             }),
-             separator() | color(t.border),
-             text(""),
-             hbox({text("   "), PathText(detail, true)}),
-             text(""),
-             hbox({text("   "), text("This cannot be undone.") | color(t.danger)}),
-             text(""),
-             separator() | color(t.border),
-             hbox({
-                 text(" "),
-                 Chip("y", "discard"),
-                 filler(),
-                 Chip("n / esc", "keep"),
-             }),
-         }) |
-         borderRounded | color(t.danger) | bgcolor(t.surface) | size(WIDTH, GREATER_THAN, 54);
+  // A question that carries no warning is not a destructive one, and colouring
+  // its frame red anyway would spend the alarm on something that does not
+  // deserve it — leaving nothing left for the one that does.
+  const Swatch tone = warning.empty() ? t.accent : t.danger;
+
+  Elements rows{
+      hbox({
+          text(" ▲ ") | bold | color(tone),
+          text(question) | bold | color(t.text),
+          filler(),
+      }),
+      separator() | color(t.border),
+      text(""),
+      hbox({text("   "), PathText(detail, true)}),
+      text(""),
+  };
+  if (!warning.empty()) {
+    rows.push_back(hbox({text("   "), text(warning) | color(t.danger)}));
+    rows.push_back(text(""));
+  }
+  rows.push_back(separator() | color(t.border));
+  rows.push_back(hbox({
+      text(" "),
+      Chip("y", confirm_label),
+      filler(),
+      Chip("n / esc", "cancel"),
+  }));
+
+  return vbox(std::move(rows)) | borderRounded | color(tone) | bgcolor(t.surface) |
+         size(WIDTH, GREATER_THAN, 54);
+}
+
+Element TransferPane(const TransferView& view, int frame) {
+  const Theme& t = theme();
+
+  Elements rows{
+      hbox({
+          text(" "),
+          text(SpinnerFrame(frame)) | bold | color(t.accent),
+          text(" " + view.title) | bold | color(t.text),
+          filler(),
+      }),
+      separator() | color(t.border),
+      text(""),
+      hbox({text("  "), text(view.phase) | color(t.text_dim), filler()}),
+      text(""),
+  };
+
+  if (view.ratio >= 0.0F) {
+    rows.push_back(hbox({text("  "), GradientBar(view.ratio, t.untracked_ramp, t.surface_alt),
+                         text("  ")}));
+    rows.push_back(text(""));
+    std::string counted = std::to_string(view.objects) + " / " + std::to_string(view.total) +
+                          " objects";
+    if (view.bytes > 0) {
+      counted += "   " + std::to_string(view.bytes / 1024) + " KiB";
+    }
+    rows.push_back(hbox({text("  "), text(counted) | color(t.text_faint), filler()}));
+  } else {
+    // No totals yet. A bar that guesses at a percentage during the negotiation
+    // phase is worse than one that says it is still counting.
+    rows.push_back(hbox({text("  "), text("counting…") | color(t.text_faint), filler()}));
+  }
+
+  if (!view.detail.empty()) {
+    rows.push_back(text(""));
+    rows.push_back(hbox({text("  "), text(view.detail) | color(t.text_faint), filler()}));
+  }
+
+  rows.push_back(text(""));
+  rows.push_back(separator() | color(t.border));
+  rows.push_back(hbox({
+      text(" "),
+      view.cancellable ? Chip("esc", "cancel") : text(""),
+      text(" "),
+      view.cancellable ? Chip("q", "cancel and quit") : text(""),
+      filler(),
+  }));
+
+  return vbox(std::move(rows)) | PaneFrame() | size(WIDTH, GREATER_THAN, 56);
 }
 
 }  // namespace gittop::ui

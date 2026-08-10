@@ -56,6 +56,7 @@ class Fetcher {
     Join();  // reap the previous worker before spawning another
 
     cancel_.store(false);
+    discard_result_.store(false);
     running_.store(true);
 
     worker_ = std::thread([this, task = std::move(task)]() mutable {
@@ -64,9 +65,11 @@ class Fetcher {
       std::function<void()> notifier;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        // A cancelled fetch is being torn down; publishing its result would
-        // only race with the shutdown that asked for the cancel.
-        if (!cancel_.load()) {
+        // A fetch cancelled by Shutdown() is being torn down; publishing its
+        // result would only race with the teardown that asked for the cancel.
+        // A fetch cancelled by Cancel() is a user pressing esc, and that one
+        // does want its "cancelled" result delivered.
+        if (!discard_result_.load()) {
           result_ = std::move(result);
           notifier = notifier_;
         }
@@ -95,8 +98,14 @@ class Fetcher {
     return true;
   }
 
+  // Asks the task to stop and returns immediately: this is a user pressing esc
+  // on a transfer, and the UI thread cannot block on a network round trip
+  // finishing. The task still reports back, as a cancelled result.
+  void Cancel() { cancel_.store(true); }
+
   // Cancels anything in flight and joins. Idempotent.
   void Shutdown() {
+    discard_result_.store(true);
     cancel_.store(true);
     {
       // Dropped before joining: the worker takes this same lock on its way
@@ -118,6 +127,7 @@ class Fetcher {
   std::thread worker_;
   std::atomic<bool> running_{false};
   std::atomic<bool> cancel_{false};
+  std::atomic<bool> discard_result_{false};
 
   mutable std::mutex mutex_;
   std::optional<Result> result_;

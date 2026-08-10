@@ -33,13 +33,14 @@ GitHub and GitLab REST APIs and degrades to the local view when there is no toke
 connection.
 
 > [!NOTE]
-> The local half runs today, and so does reading repository state and CI from GitHub and GitLab.
-> Pull requests, push/pull, and themes are not built yet. See
-> [Current status](#current-status) for what exists and what does not.
+> The local half runs today, and so does everything remote except the things listed under
+> [Planned](#planned): repository state, CI, pull requests, push and pull, themes, and the mouse
+> all work. A diff viewer, stash management and search do not. See
+> [Current status](#current-status) for the full picture.
 
 ## What works today
 
-Six views, switched with `1` through `6` or cycled with `tab`.
+Seven views, switched with `1` through `7` or cycled with `tab`.
 
 **Status.**
 
@@ -82,6 +83,7 @@ able to separate green from amber.
 - Works anonymously on public repositories; a token raises the limit and opens private ones
 - Self-hosted GitHub Enterprise and GitLab are detected from the hostname, and a host that gives
   nothing away can be named in the config
+- More than one remote: `R` walks them, and every remote-backed view follows
 
 **CI.**
 
@@ -91,6 +93,17 @@ able to separate green from amber.
 - Duration per run, counting up while one is still going, and how long ago it started
 - `enter` opens the jobs of the selected run — with GitLab's stages when there are stages
 - Refreshes on a timer while the view is open, and says in the header when the next one is due
+
+**Pull requests.**
+
+- Open pull requests from GitHub and merge requests from GitLab, in one list that says what each
+  provider actually reports rather than inventing the rest
+- Draft, open, merged and closed, each with its own glyph and word
+- `enter` opens the branches, author, labels, reviewers and URL — a disclosure, not a request:
+  everything it shows arrived with the list, so scrolling with it open costs nothing
+- Mergeable, conflicting and blocked where GitLab says so; GitHub's list endpoint does not report
+  mergeability, so that column simply is not drawn rather than guessed at
+- The one for the branch you are standing on is marked and sorted to the top
 
 The refresh loop is built around the rate limit rather than a stopwatch. It only runs while the CI
 view is on screen, only when there is a token — sixty anonymous requests an hour does not survive a
@@ -106,6 +119,47 @@ one, and no network at all is reported as the ordinary thing it is.
 The layout adapts: stat cards stack two-by-two below 84 columns, the heatmap yields to the log
 on terminals shorter than 30 rows, and the remote view folds its count tiles into a single line
 when there is no room for four.
+
+## Push and pull
+
+`f` fetches, `p` pulls, `P` pushes. All three run on a worker thread with a progress bar, and
+`esc` gives up on one mid-flight.
+
+Pull fast-forwards or refuses. A branch that has genuinely diverged needs a merge commit or a
+rebase, and doing either implicitly behind a key called "pull" is how a tool loses work that
+exists nowhere else — so gittop fetches, says what it found, and leaves the decision alone. A
+fast-forward that would write over an uncommitted change stops and names the file in the way.
+
+Push never forces, and there is no flag to make it. It asks before it runs, because it is the only
+thing here that changes something other people can see. A branch with no upstream gets one, the
+same as `git push -u`.
+
+Over https, a token from the environment or the config file is the password. Over ssh, gittop runs
+the `ssh` you already have — so your `~/.ssh/config`, your agent, your keys and your known_hosts
+all apply, and a remote that works from the shell works here with nothing else to set up.
+
+## Themes
+
+Seven built in: `default`, `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`, and
+`daylight`, which is a light theme designed as one rather than a dark theme inverted. `t` cycles
+them; `theme.name` in the config picks one to start with.
+
+Palettes are written in sixteen roles, so a theme of your own is those same roles under
+`[theme.colors]` — anything you leave out keeps the value it had.
+
+Colour degrades on the way to the screen rather than in the panels: truecolor when `COLORTERM`
+says so, the 256-colour cube when `TERM` does, the base sixteen otherwise, and none at all under
+`NO_COLOR`. Every status in gittop is a glyph and a word as well as a colour, so the monochrome
+case is legible rather than merely supported.
+
+## Keys and the mouse
+
+Every key is rebindable under `[keys]` in the config, by action name rather than by position, and
+the footer hints and the help overlay read the bindings in force rather than a list of what they
+used to be.
+
+The mouse works too: the wheel scrolls, a click selects a row or switches to a tab, and clicking
+the row already under the cursor opens it.
 
 ## Tokens
 
@@ -137,13 +191,13 @@ the file it came from and nothing else.
 
 **From GitHub and GitLab:**
 
-- Open pull requests and merge requests
-- Push and pull with progress, plus remote tracking state
-- More than one page of CI history, and more than one remote
+- More than one page of CI and pull request history
+- Merge and rebase, so a pull that is not a fast-forward has somewhere to go
+- Review state and check status on a pull request row
 
 ## Current status
 
-Five phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
+Six phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
 the source layout, per-task checkboxes, known risks, and a work log.
 
 | Phase | Scope | State |
@@ -153,15 +207,15 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | 2 | History, commit graph, activity heatmap, branches | Done |
 | 3 | Config, tokens, provider detection, async HTTP | Done |
 | 4 | Pipelines and CI panels | Done |
-| 5 | Pull requests, push/pull, themes, mouse | Next |
-| 6 | Diff viewer, stash, rebase helpers, search | Planned |
+| 5 | Pull requests, push/pull, themes, mouse | Done |
+| 6 | Diff viewer, stash, rebase helpers, search | Next |
 | 7 | Visual design pass | Partly landed early |
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `1` … `6` | Status / History / Branches / Graph / Remote / CI |
+| `1` … `7` | Status / History / Branches / Graph / Remote / CI / Pulls |
 | `tab` | Cycle through the views |
 | `j` `k` or arrows | Move the selection |
 | `g` `G` | First / last, or oldest / newest on the graph |
@@ -172,8 +226,12 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | `a` | Stage everything |
 | `d` | Discard the selection, after a confirm |
 | `c` | Write a commit |
-| `enter` | Jobs of the selected CI run |
-| `r` | Re-read the repository, or re-fetch on the remote and CI views |
+| `ctrl-u` `ctrl-d` | Move a screen at a time |
+| `enter` | Jobs of a CI run, or details of a pull request |
+| `f` `p` `P` | Fetch / pull / push |
+| `R` | Switch to the next remote |
+| `t` | Next theme |
+| `r` | Re-read the repository, or re-fetch on the remote views |
 | `?` | Help |
 | `q` | Quit |
 
@@ -209,9 +267,11 @@ libcurl is the one dependency taken from the system rather than built here, beca
 distribution's copy comes configured for the platform's CA bundle and TLS backend. A vendored one
 would have to be told where the machine keeps its certificates before it could verify a request.
 
-libgit2 is compiled with its own HTTPS and SSH transports off: gittop talks to the REST APIs
-through libcurl, and nothing yet asks libgit2 to reach the network. Phase 5 adds push and pull,
-which is where they come back on.
+libgit2's transports are on, and neither costs a build dependency. HTTPS uses libgit2's
+`OpenSSL-Dynamic` backend, which loads libssl at run time rather than linking it, so no OpenSSL
+headers are needed to build and the binary is not tied to the version it compiled against. SSH
+runs the system `ssh` instead of libssh2 — cheaper to build, and better behaved, since it inherits
+your own ssh configuration.
 
 ## License
 

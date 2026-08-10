@@ -97,10 +97,14 @@ Element RefBadges(const model::Commit& commit) {
 
 }  // namespace
 
-Element CommitList(const model::HistorySnapshot& history, int selected) {
+Element CommitList(const model::HistorySnapshot& history, int selected,
+                   std::vector<Box>* row_boxes) {
   const Theme& t = theme();
 
   if (history.empty()) {
+    if (row_boxes != nullptr) {
+      row_boxes->clear();
+    }
     return vbox({
         filler(),
         hbox({filler(), text("no commits yet") | color(t.text), filler()}),
@@ -112,6 +116,10 @@ Element CommitList(const model::HistorySnapshot& history, int selected) {
 
   const int lanes = std::min(git::LaneWidth(history.commits), kMaxDrawnLanes);
   const auto now = static_cast<std::int64_t>(std::time(nullptr));
+
+  if (row_boxes != nullptr) {
+    row_boxes->assign(history.commits.size(), Box());
+  }
 
   Elements rows;
   rows.reserve(history.commits.size() + 1);
@@ -139,6 +147,9 @@ Element CommitList(const model::HistorySnapshot& history, int selected) {
 
     if (is_selected) {
       row = row | bgcolor(t.surface_alt) | focus;
+    }
+    if (row_boxes != nullptr) {
+      row = std::move(row) | reflect((*row_boxes)[i]);
     }
     rows.push_back(std::move(row));
   }
@@ -228,10 +239,14 @@ Element ActivityPanel(const model::HistorySnapshot& history) {
   return vbox(std::move(grid_rows));
 }
 
-Element BranchList(const model::HistorySnapshot& history, int selected) {
+Element BranchList(const model::HistorySnapshot& history, int selected,
+                   std::vector<Box>* row_boxes) {
   const Theme& t = theme();
 
   if (history.branches.empty()) {
+    if (row_boxes != nullptr) {
+      row_boxes->clear();
+    }
     return vbox({
         filler(),
         hbox({filler(), text("no local branches") | color(t.text_faint), filler()}),
@@ -240,6 +255,9 @@ Element BranchList(const model::HistorySnapshot& history, int selected) {
   }
 
   const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  if (row_boxes != nullptr) {
+    row_boxes->assign(history.branches.size(), Box());
+  }
   Elements rows;
 
   for (std::size_t i = 0; i < history.branches.size(); ++i) {
@@ -280,6 +298,9 @@ Element BranchList(const model::HistorySnapshot& history, int selected) {
 
     if (is_selected) {
       row = row | bgcolor(t.surface_alt) | focus;
+    }
+    if (row_boxes != nullptr) {
+      row = std::move(row) | reflect((*row_boxes)[i]);
     }
     rows.push_back(std::move(row));
   }
