@@ -115,14 +115,6 @@ std::string ProviderGlyph(Provider provider) {
   return "○";
 }
 
-std::string SpinnerFrame(int frame) {
-  static constexpr std::array<const char*, 10> kFrames{"⠋", "⠙", "⠹", "⠸", "⠼",
-                                                       "⠴", "⠦", "⠧", "⠇", "⠏"};
-  const int index = ((frame % static_cast<int>(kFrames.size())) + static_cast<int>(kFrames.size())) %
-                    static_cast<int>(kFrames.size());
-  return kFrames[static_cast<std::size_t>(index)];
-}
-
 Element Section(const std::string& title, Element body) {
   const Theme& t = theme();
   return window(text(" " + title + " ") | bold | color(t.text_dim), std::move(body)) |

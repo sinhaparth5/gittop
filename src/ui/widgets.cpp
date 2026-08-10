@@ -102,4 +102,12 @@ Element PathText(const std::string& path, bool emphasised) {
   });
 }
 
+std::string SpinnerFrame(int frame) {
+  static constexpr std::array<const char*, 10> kFrames{"⠋", "⠙", "⠹", "⠸", "⠼",
+                                                       "⠴", "⠦", "⠧", "⠇", "⠏"};
+  const auto count = static_cast<int>(kFrames.size());
+  const int index = ((frame % count) + count) % count;
+  return kFrames[static_cast<std::size_t>(index)];
+}
+
 }  // namespace gittop::ui

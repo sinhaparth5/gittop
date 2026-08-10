@@ -3,9 +3,9 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phases 0–3 complete and running. Next: Phase 4 (pipelines & CI).
+**Status:** Phases 0–4 complete and running. Next: Phase 5 (pull requests, push/pull, themes).
 **Started:** 2026-08-09
-**Last updated:** 2026-08-09
+**Last updated:** 2026-08-10
 
 ---
 
@@ -148,14 +148,59 @@ code path that prints the value, masked or otherwise — checked by grepping a f
 for the test token. A remote configured as `https://user:token@host/...` has its userinfo replaced
 before the URL reaches the screen.
 
-### Phase 4 — Pipelines & CI
-- [ ] GitHub: list workflow runs for current branch
-- [ ] GitLab: list pipelines for current branch
-- [ ] Normalize both into `model::Pipeline`
-- [ ] Status indicators: success / failed / running / pending / cancelled
-- [ ] Job-level drill-down
-- [ ] Live refresh on interval, respecting rate limits
-- [ ] Rate-limit display (GitHub exposes remaining/reset headers)
+### Phase 4 — Pipelines & CI ✅
+- [x] GitHub: list workflow runs for current branch
+- [x] GitLab: list pipelines for current branch
+- [x] Normalize both into `model::Pipeline`
+- [x] Status indicators: success / failed / running / pending / cancelled
+- [x] Job-level drill-down
+- [x] Live refresh on interval, respecting rate limits
+- [x] Rate-limit display (GitHub exposes remaining/reset headers)
+
+**The `model::Pipeline` warning from the risks list was the real work.** GitHub splits a run's
+state across two fields — `status` while it is alive, `conclusion` only once it is not — so nine
+conclusions and six statuses fold into one enum; GitLab answers with one field and eleven values.
+Reading `conclusion` alone reports every in-flight run as unknown, which is the bug the two-field
+shape is there to cause. `RunStatus` has eight values because that is what a person can actually
+tell apart on a dashboard: GitHub's `neutral` is folded into skipped, since GitHub itself greys
+them identically and pretending to distinguish them would be a lie the colour cannot tell.
+
+**What each provider does not send is as much of the design as what it does.** GitLab's pipeline
+list carries no commit title and no author — both need a request per pipeline — so those fields
+stay empty and the panel omits them, exactly as `RepoInfo::watchers` does. GitHub has no stage
+concept, so the jobs pane grows a stage column only when something fills it. GitLab reports job
+`duration` itself and it is the better number: it excludes time spent queued, which a derived
+finished-minus-started does not.
+
+**Polling had to be designed against the rate limit, not bolted to a timer.** Auto-refresh runs
+only while the CI view is on screen, only when there is a token, and stops below a fifth of the
+remaining budget — anonymous GitHub gets sixty requests an hour and a twenty-second poll would
+spend it in twenty minutes. Every one of those states says so in the panel header rather than
+looking stuck. Jobs are fetched on `enter` rather than following the cursor, because following it
+would put one request on every keystroke; a refresh under an open drill-down re-reads jobs only
+while the run is unfinished.
+
+**A ticker thread, not animation frames.** An idle dashboard requests no frames, so nothing would
+notice an interval elapsing. Driving it with `RequestAnimationFrame` would mean repainting at
+sixty hertz for twenty seconds to watch a clock. `remote::Ticker` posts one event a second while
+the CI view is open, which also lets the countdown be honest.
+
+**Verified against a stub for both providers and against the live API.** Both status foldings
+including GitHub's `neutral` and a null `conclusion`; the project path as one encoded segment
+(`/projects/eng%2Fpayments-service/pipelines?ref=master`) against GitHub's
+`/actions/runs?branch=master`; `PRIVATE-TOKEN` versus `Authorization: Bearer`, logged by header
+name only; GitLab's newest-first jobs re-sorted into execution order and its own `duration` used;
+a detached HEAD dropping the branch filter and saying "all branches"; anonymous and
+budget-below-20% both pausing the poll with a reason on screen; three run-list requests in a
+26-second visit at a ten-second interval; an unreachable API rendering as an error panel with a
+hint; and quitting mid-fetch returning in about a second rather than waiting out the ten-second
+timeout. Live, anonymous, against `api.github.com`: `sinhaparth5/gittop` has no workflows, which
+draws the designed empty state.
+
+**Known simplification:** one page of runs, thirty of them, and no pagination. GitLab's list gives
+no way to tell a pipeline's own duration from its created/updated pair when it is still running,
+so a running GitLab pipeline's elapsed time is measured from creation and includes any time it sat
+queued.
 
 ### Phase 5 — Full remote features
 - [ ] Pull Requests / Merge Requests panel
@@ -274,6 +319,17 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-10** — Phase 4 done. CI view on tab 6: workflow runs and pipelines for the current
+  branch, both folded into `model::Pipeline`, a job drill-down on `enter`, and a refresh interval
+  that stops itself when anonymous or when the budget runs low. Three things came out of it. The
+  provider-shared parts of client.cpp — percent-encoding, ISO 8601, rate-limit headers, auth
+  headers, status-to-sentence — moved to `remote/api.cpp` the moment a second endpoint family
+  needed them; duplicating `DescribeStatus` would have been the start of two of them drifting.
+  `remote::Fetcher` became a template over its result type rather than gaining two near-copies,
+  and App now holds one per concern so a timer refresh can never sit in front of a fetch the user
+  asked for. And the refresh interval needed a ticker thread, because the whole point of the
+  animation-frame arrangement is that an idle screen asks for no frames and therefore cannot
+  notice a clock. Next: Phase 5.
 - **2026-08-09** — Phase 3 done. Config, tokens, provider detection, a libcurl client with
   retry and cancellation, the async fetch layer, and the Remote view on tab 5. Two things
   learned: FTXUI's `flex` has to go on the panel itself rather than a `vbox` wrapped around

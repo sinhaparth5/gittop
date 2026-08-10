@@ -21,4 +21,10 @@ ftxui::Element Chip(const std::string& key, const std::string& label);
 // by filename instead of by prefix.
 ftxui::Element PathText(const std::string& path, bool emphasised);
 
+// One frame of the braille spinner. `frame` is App's counter, which advances on
+// wall time rather than per rendered frame so the spin rate does not follow the
+// frame rate. Negative values are handled, because the counter is a plain int
+// and will eventually wrap.
+std::string SpinnerFrame(int frame);
+
 }  // namespace gittop::ui

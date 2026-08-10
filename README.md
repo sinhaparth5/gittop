@@ -33,13 +33,13 @@ GitHub and GitLab REST APIs and degrades to the local view when there is no toke
 connection.
 
 > [!NOTE]
-> The local half runs today, and so does reading repository state from GitHub and GitLab.
-> Pipelines, pull requests, and themes are not built yet. See
+> The local half runs today, and so does reading repository state and CI from GitHub and GitLab.
+> Pull requests, push/pull, and themes are not built yet. See
 > [Current status](#current-status) for what exists and what does not.
 
 ## What works today
 
-Five views, switched with `1` through `5` or cycled with `tab`.
+Six views, switched with `1` through `6` or cycled with `tab`.
 
 **Status.**
 
@@ -83,6 +83,21 @@ able to separate green from amber.
 - Self-hosted GitHub Enterprise and GitLab are detected from the hostname, and a host that gives
   nothing away can be named in the config
 
+**CI.**
+
+- Workflow runs from GitHub Actions and pipelines from GitLab CI, for the branch you are on
+- Passed, failed, running, queued, manual, cancelled and skipped, each with its own glyph and word
+  as well as its own colour
+- Duration per run, counting up while one is still going, and how long ago it started
+- `enter` opens the jobs of the selected run — with GitLab's stages when there are stages
+- Refreshes on a timer while the view is open, and says in the header when the next one is due
+
+The refresh loop is built around the rate limit rather than a stopwatch. It only runs while the CI
+view is on screen, only when there is a token — sixty anonymous requests an hour does not survive a
+twenty-second poll — and it stops on its own below a fifth of the remaining budget. Every one of
+those cases says why in the header instead of quietly going still. Jobs are read when you ask for
+them rather than for every row, so scrolling a list of runs costs nothing.
+
 The fetch runs on a worker thread. The dashboard keeps drawing while it is in flight, and quitting
 mid-request does not wait for it. Every failure has its own screen: a rejected token says which
 variable or file it came from, a 404 while anonymous points out that private repositories need
@@ -122,14 +137,13 @@ the file it came from and nothing else.
 
 **From GitHub and GitLab:**
 
-- Workflow runs (GitHub Actions) and pipelines (GitLab CI) for the current branch
-- Live status per job: passing, failing, running, queued, cancelled
 - Open pull requests and merge requests
 - Push and pull with progress, plus remote tracking state
+- More than one page of CI history, and more than one remote
 
 ## Current status
 
-Four phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
+Five phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
 the source layout, per-task checkboxes, known risks, and a work log.
 
 | Phase | Scope | State |
@@ -138,8 +152,8 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | 1 | Local status dashboard, staging, discard, commit | Done |
 | 2 | History, commit graph, activity heatmap, branches | Done |
 | 3 | Config, tokens, provider detection, async HTTP | Done |
-| 4 | Pipelines and CI panels | Next |
-| 5 | Pull requests, push/pull, themes, mouse | Planned |
+| 4 | Pipelines and CI panels | Done |
+| 5 | Pull requests, push/pull, themes, mouse | Next |
 | 6 | Diff viewer, stash, rebase helpers, search | Planned |
 | 7 | Visual design pass | Partly landed early |
 
@@ -147,7 +161,7 @@ the source layout, per-task checkboxes, known risks, and a work log.
 
 | Key | Action |
 |---|---|
-| `1` … `5` | Status / History / Branches / Graph / Remote |
+| `1` … `6` | Status / History / Branches / Graph / Remote / CI |
 | `tab` | Cycle through the views |
 | `j` `k` or arrows | Move the selection |
 | `g` `G` | First / last, or oldest / newest on the graph |
@@ -158,7 +172,8 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | `a` | Stage everything |
 | `d` | Discard the selection, after a confirm |
 | `c` | Write a commit |
-| `r` | Re-read the repository, or re-fetch on the remote view |
+| `enter` | Jobs of the selected CI run |
+| `r` | Re-read the repository, or re-fetch on the remote and CI views |
 | `?` | Help |
 | `q` | Quit |
 

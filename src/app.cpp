@@ -12,10 +12,14 @@
 #include <cmath>
 #include <utility>
 
+#include "remote/client.hpp"
+#include "remote/http.hpp"
+#include "remote/pipelines.hpp"
 #include "remote/provider.hpp"
 #include "remote/token.hpp"
 #include "ui/history_panel.hpp"
 #include "ui/panels.hpp"
+#include "ui/pipeline_panel.hpp"
 #include "ui/remote_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -23,6 +27,26 @@
 namespace gittop {
 
 using namespace ftxui;  // NOLINT: the component DSL reads badly when qualified.
+
+namespace {
+
+// One page. More runs than anyone scrolls in a sitting, and one request rather
+// than the pagination that a second page would need.
+constexpr int kPipelineLimit = 30;
+
+// Fast enough that a pipeline finishing feels live, slow enough that an
+// authenticated GitHub token spends 180 of its 5000 hourly requests watching
+// one view for an hour.
+constexpr int kDefaultRefreshSeconds = 20;
+constexpr int kMinRefreshSeconds = 10;
+constexpr int kMaxRefreshSeconds = 3600;
+
+// Below this share of the budget the poll loop stops on its own. Whatever the
+// user came to the terminal to do, spending the last of their rate limit on a
+// view they left open is not it.
+constexpr int kBudgetFloorPercent = 20;
+
+}  // namespace
 
 App::App(git::Repository repo, config::Config config, std::string config_path)
     : repo_(std::move(repo)),
@@ -123,7 +147,13 @@ bool App::Animating() const {
   }
   // A fetch in flight keeps the spinner turning. It stops the moment the
   // request lands, so this is bounded by the HTTP timeout rather than open.
-  if (fetcher_.Running()) {
+  if (fetcher_.Running() || pipeline_fetcher_.Running() || job_fetcher_.Running()) {
+    return true;
+  }
+  // A live pipeline has a spinner per row. Bounded by the run finishing and by
+  // the view being open — leaving the CI view stops it, and the ticker's one
+  // frame a second is not enough to animate anything.
+  if (view_ == ui::View::Pipelines && pipelines_.running > 0) {
     return true;
   }
   // Keeps frames coming through the toast's hold so the fade actually starts
@@ -144,6 +174,8 @@ int& App::ActiveSelection() {
       return commit_selected_;
     case ui::View::Branches:
       return branch_selected_;
+    case ui::View::Pipelines:
+      return pipeline_selected_;
     case ui::View::Graph:
     case ui::View::Remote:
     case ui::View::Status:
@@ -158,6 +190,8 @@ int App::ActiveCount() const {
       return static_cast<int>(history_.commits.size());
     case ui::View::Branches:
       return static_cast<int>(history_.branches.size());
+    case ui::View::Pipelines:
+      return static_cast<int>(pipelines_.runs.size());
     case ui::View::Graph:
       return 0;  // the graph pans instead of selecting
     case ui::View::Remote:
@@ -198,6 +232,15 @@ void App::DiscoverRemotes() {
     remotes_.push_back(std::move(ref));
   }
   remote_.ref = remote::ChooseRemote(remotes_);
+
+  // Where the token came from is settled once, here, rather than at the first
+  // fetch: the CI view has to know whether it is authenticated before it
+  // decides to poll, and that can happen before any request has been made. The
+  // value itself is not kept — it is resolved again, per fetch, by the task
+  // that needs it, so nothing long-lived in App holds a secret.
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  remote_.token_source = token.source;
+  remote_.token_origin = token.origin;
 }
 
 void App::StartFetch() {
@@ -215,7 +258,13 @@ void App::StartFetch() {
   remote_.error.clear();
   remote_.hint.clear();
 
-  fetcher_.Start(remote_.ref, token);
+  // Everything the worker touches is copied into the task. It outlives this
+  // call and must not reach back into App from another thread.
+  const model::RemoteRef ref = remote_.ref;
+  fetcher_.Start([ref, token](const std::atomic<bool>& cancel) {
+    remote::HttpClient client;
+    return remote::FetchRepoInfo(ref, token, client, &cancel);
+  });
 }
 
 void App::EnsureRemote() {
@@ -245,13 +294,217 @@ void App::CollectFetch() {
   }
 }
 
+void App::StartPipelineFetch() {
+  DiscoverRemotes();
+  if (!remote_.ref.valid() || pipeline_fetcher_.Running()) {
+    return;
+  }
+
+  // A detached or unborn HEAD has no branch to filter by, and ReadStatus
+  // reports those as a parenthesised placeholder rather than a ref anything
+  // would match. Asking for every branch beats asking for one that cannot
+  // exist and rendering the empty answer as "no CI".
+  const bool on_a_branch = !snapshot_.head_detached && !snapshot_.head_unborn &&
+                           !snapshot_.branch.empty() && snapshot_.branch.front() != '(';
+  const std::string branch = on_a_branch ? snapshot_.branch : std::string();
+
+  pipelines_.state = model::FetchState::Loading;
+  pipelines_.branch = branch;
+  pipelines_.error.clear();
+  pipelines_.hint.clear();
+  last_pipeline_fetch_ = std::chrono::steady_clock::now();
+
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const model::RemoteRef ref = remote_.ref;
+  pipeline_fetcher_.Start([ref, token, branch](const std::atomic<bool>& cancel) {
+    remote::HttpClient client;
+    return remote::FetchPipelines(ref, token, branch, kPipelineLimit, client, &cancel);
+  });
+}
+
+void App::EnsurePipelines() {
+  DiscoverRemotes();
+  if (pipelines_.state == model::FetchState::Idle) {
+    StartPipelineFetch();
+  }
+}
+
+void App::CollectPipelines() {
+  model::PipelineSnapshot result;
+  if (!pipeline_fetcher_.Consume(&result)) {
+    return;
+  }
+  if (result.error == "cancelled") {
+    return;
+  }
+
+  pipelines_ = std::move(result);
+  pipeline_selected_ = std::clamp(pipeline_selected_, 0,
+                                  std::max(0, static_cast<int>(pipelines_.runs.size()) - 1));
+
+  if (pipelines_.state == model::FetchState::Failed) {
+    Note(pipelines_.error, true);
+    return;
+  }
+
+  // A refresh that arrives under an open drill-down re-reads the jobs, but only
+  // while the run is still going. A finished run's jobs will not change again,
+  // and re-asking every twenty seconds would spend the budget the poll interval
+  // was chosen to protect.
+  if (jobs_open_ && pipeline_selected_ < static_cast<int>(pipelines_.runs.size())) {
+    const model::Pipeline& run = pipelines_.runs[static_cast<std::size_t>(pipeline_selected_)];
+    if (jobs_.pipeline_id != run.id || !model::RunFinished(run.status)) {
+      StartJobFetch();
+    }
+  }
+}
+
+void App::StartJobFetch() {
+  if (!remote_.ref.valid() || job_fetcher_.Running()) {
+    return;
+  }
+  if (pipeline_selected_ < 0 || pipeline_selected_ >= static_cast<int>(pipelines_.runs.size())) {
+    return;
+  }
+  const model::Pipeline& run = pipelines_.runs[static_cast<std::size_t>(pipeline_selected_)];
+  if (run.id.empty()) {
+    return;
+  }
+
+  // Rows already on screen for this same run stay there while the refresh is in
+  // flight; a different run starts from nothing, so the pane cannot briefly
+  // label one run's jobs with another's number.
+  if (jobs_.pipeline_id != run.id) {
+    jobs_ = model::JobList{};
+    jobs_.pipeline_id = run.id;
+  }
+  jobs_.state = model::FetchState::Loading;
+
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const model::RemoteRef ref = remote_.ref;
+  const std::string id = run.id;
+  job_fetcher_.Start([ref, token, id](const std::atomic<bool>& cancel) {
+    remote::HttpClient client;
+    return remote::FetchJobs(ref, token, id, client, &cancel);
+  });
+}
+
+void App::CollectJobs() {
+  model::JobList result;
+  if (!job_fetcher_.Consume(&result)) {
+    return;
+  }
+  if (result.error == "cancelled") {
+    return;
+  }
+  jobs_ = std::move(result);
+  if (jobs_.state == model::FetchState::Failed) {
+    Note(jobs_.error, true);
+  }
+}
+
+void App::ToggleJobs() {
+  if (pipelines_.runs.empty()) {
+    Note("no runs to open", false);
+    return;
+  }
+  jobs_open_ = !jobs_open_;
+  if (jobs_open_) {
+    StartJobFetch();
+  }
+}
+
+int App::RefreshInterval() const {
+  const int seconds = config_.GetInt("pipelines.refresh_seconds", kDefaultRefreshSeconds);
+  return std::clamp(seconds, kMinRefreshSeconds, kMaxRefreshSeconds);
+}
+
+bool App::AutoRefreshAllowed(std::string* reason) const {
+  reason->clear();
+
+  if (!config_.GetBool("pipelines.auto_refresh", true)) {
+    *reason = "auto-refresh off in config";
+    return false;
+  }
+  if (!remote_.ref.valid()) {
+    *reason = "no remote";
+    return false;
+  }
+  // Sixty requests an hour is GitHub's anonymous allowance, and a twenty-second
+  // poll would spend it in twenty minutes on this view alone. Anonymous means
+  // manual, and the panel says so rather than looking stuck.
+  if (remote_.token_source == model::TokenSource::None) {
+    *reason = "anonymous — refresh with r";
+    return false;
+  }
+
+  const model::RateLimit& rate = pipelines_.rate;
+  if (rate.known && rate.limit > 0 && rate.remaining >= 0 &&
+      rate.remaining * 100 < rate.limit * kBudgetFloorPercent) {
+    *reason = "API budget low — refresh with r";
+    return false;
+  }
+  return true;
+}
+
+int App::SecondsToRefresh() const {
+  if (last_pipeline_fetch_.time_since_epoch().count() == 0) {
+    return -1;
+  }
+  const float age =
+      std::chrono::duration<float>(std::chrono::steady_clock::now() - last_pipeline_fetch_)
+          .count();
+  return std::max(0, RefreshInterval() - static_cast<int>(age));
+}
+
+void App::MaybeAutoRefresh() {
+  // Only where it can be seen. Polling a view nobody is looking at is how a
+  // dashboard turns into a background job.
+  if (view_ != ui::View::Pipelines || pipeline_fetcher_.Running()) {
+    return;
+  }
+  if (pipelines_.state == model::FetchState::Idle) {
+    return;  // the first load is EnsurePipelines' job, not the timer's
+  }
+  std::string reason;
+  if (!AutoRefreshAllowed(&reason)) {
+    return;
+  }
+  if (SecondsToRefresh() != 0) {
+    return;
+  }
+  StartPipelineFetch();
+}
+
+ui::PipelineView App::PipelineViewState() const {
+  ui::PipelineView view;
+  view.selected = pipeline_selected_;
+  view.jobs_open = jobs_open_;
+
+  std::string reason;
+  const bool allowed = AutoRefreshAllowed(&reason);
+  view.auto_paused = !allowed;
+  view.paused_reason = std::move(reason);
+  view.next_refresh = allowed ? SecondsToRefresh() : -1;
+  return view;
+}
+
 void App::Move(int delta) {
   const int count = ActiveCount();
   if (count == 0) {
     return;
   }
   int& selection = ActiveSelection();
+  const int before = selection;
   selection = std::clamp(selection + delta, 0, count - 1);
+
+  // Moving off a run closes its jobs rather than fetching the next run's.
+  // Following the cursor would put one request on every keystroke, which on an
+  // anonymous GitHub budget is a dozen rows of scrolling and then nothing for
+  // an hour. `enter` opens the new one, and that keypress is the consent.
+  if (view_ == ui::View::Pipelines && jobs_open_ && selection != before) {
+    jobs_open_ = false;
+  }
 }
 
 void App::SelectFirst() {
@@ -282,18 +535,50 @@ void App::EnsureHistory() {
 
 void App::SetView(ui::View view) {
   view_ = view;
-  if (view == ui::View::Remote) {
-    EnsureRemote();
-    return;
+
+  // The ticker exists for the CI view's refresh interval and its countdown, so
+  // it runs exactly while that view is on screen. Anywhere else it would be a
+  // thread waking a terminal once a second to change nothing.
+  if (view == ui::View::Pipelines) {
+    ticker_.Start();
+  } else {
+    ticker_.Stop();
   }
-  if (view != ui::View::Status) {
-    EnsureHistory();
+
+  switch (view) {
+    case ui::View::Remote:
+      EnsureRemote();
+      return;
+    case ui::View::Pipelines:
+      EnsurePipelines();
+      return;
+    case ui::View::Status:
+      return;
+    case ui::View::History:
+    case ui::View::Branches:
+    case ui::View::Graph:
+      break;
   }
+  EnsureHistory();
 }
 
 void App::Reload() {
-  // On the remote view `r` means the network, everywhere else it means the
-  // repository. Refreshing whichever one is not on screen would be a surprise.
+  // On the remote and CI views `r` means the network, everywhere else it means
+  // the repository. Refreshing whichever one is not on screen is a surprise.
+  if (view_ == ui::View::Pipelines) {
+    if (pipeline_fetcher_.Running()) {
+      Note("already fetching", false);
+      return;
+    }
+    if (!remote_.ref.valid()) {
+      Note("no remote to fetch", true);
+      return;
+    }
+    StartPipelineFetch();
+    Note("refreshing CI", false);
+    return;
+  }
+
   if (view_ == ui::View::Remote) {
     if (fetcher_.Running()) {
       Note("already fetching", false);
@@ -423,16 +708,25 @@ void App::CloseOverlay() {
   overlay_open_ = false;
 }
 
-// Posted from the fetch worker to wake the event loop. A named special event
-// rather than a keystroke, so nothing in the key routing can collide with it.
+// Posted from the workers to wake the event loop. Named special events rather
+// than keystrokes, so nothing in the key routing can collide with them, and one
+// per source so a wake-up says which result to go and look for.
 const Event kRemoteReady = Event::Special("gittop:remote-ready");
+const Event kPipelinesReady = Event::Special("gittop:pipelines-ready");
+const Event kJobsReady = Event::Special("gittop:jobs-ready");
+const Event kTick = Event::Special("gittop:tick");
 
 int App::Run() {
   Refresh();
 
   auto screen = ScreenInteractive::Fullscreen();
 
+  // Every one of these captures the screen by reference, which is why all four
+  // are shut down before it goes out of scope at the end of this function.
   fetcher_.SetNotifier([&screen] { screen.PostEvent(kRemoteReady); });
+  pipeline_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPipelinesReady); });
+  job_fetcher_.SetNotifier([&screen] { screen.PostEvent(kJobsReady); });
+  ticker_.SetNotifier([&screen] { screen.PostEvent(kTick); });
 
   // ---------------------------------------------------------- commit overlay
   InputOption input_option;
@@ -529,6 +823,11 @@ int App::Run() {
       case ui::View::Remote:
         body.push_back(ui::RemotePanel(remote_, width, height, spinner_));
         break;
+
+      case ui::View::Pipelines:
+        body.push_back(ui::PipelinePanel(pipelines_, jobs_, remote_.ref, PipelineViewState(),
+                                         width, height, spinner_));
+        break;
     }
 
     body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_));
@@ -557,6 +856,20 @@ int App::Run() {
     // the UI thread, where every other piece of state is touched.
     if (event == kRemoteReady) {
       CollectFetch();
+      return true;
+    }
+    if (event == kPipelinesReady) {
+      CollectPipelines();
+      return true;
+    }
+    if (event == kJobsReady) {
+      CollectJobs();
+      return true;
+    }
+    // One a second while the CI view is open. It repaints the countdown and
+    // asks whether the interval is up; the answer is usually no.
+    if (event == kTick) {
+      MaybeAutoRefresh();
       return true;
     }
 
@@ -671,6 +984,16 @@ int App::Run() {
       SetView(ui::View::Remote);
       return true;
     }
+    if (event == Event::Character('6')) {
+      SetView(ui::View::Pipelines);
+      return true;
+    }
+    // Opening a run's jobs is a request, so it takes a keypress rather than
+    // following the cursor. See the note in Move().
+    if (view_ == ui::View::Pipelines && event == Event::Return) {
+      ToggleJobs();
+      return true;
+    }
     if (event == Event::Tab) {
       switch (view_) {
         case ui::View::Status:
@@ -686,6 +1009,9 @@ int App::Run() {
           SetView(ui::View::Remote);
           break;
         case ui::View::Remote:
+          SetView(ui::View::Pipelines);
+          break;
+        case ui::View::Pipelines:
           SetView(ui::View::Status);
           break;
       }
@@ -734,10 +1060,13 @@ int App::Run() {
 
   screen.Loop(root);
 
-  // Before `screen` goes out of scope, because the notifier captured it by
+  // Before `screen` goes out of scope, because every notifier captured it by
   // reference. A worker still in a ten-second timeout would otherwise post an
   // event into a destroyed screen on its way out.
+  ticker_.Stop();
   fetcher_.Shutdown();
+  pipeline_fetcher_.Shutdown();
+  job_fetcher_.Shutdown();
   return 0;
 }
 

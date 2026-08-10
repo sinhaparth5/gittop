@@ -229,6 +229,14 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # provider = "gitlab"          # "github" or "gitlab"
 # api = "https://git.example.com/api/v4"
 # token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+[pipelines]
+# The CI view re-reads runs on a timer while it is the view on screen, and only
+# when there is a token: sixty anonymous requests an hour does not survive a
+# twenty-second poll. It also stops on its own below a fifth of the remaining
+# budget, and says so rather than looking stuck.
+# auto_refresh = true
+# refresh_seconds = 20         # clamped to 10 … 3600
 )";
 
 }  // namespace

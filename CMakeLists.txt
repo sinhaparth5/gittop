@@ -72,14 +72,16 @@ add_executable(gittop
   src/config/config.cpp
   src/git/graph.cpp
   src/git/repository.cpp
+  src/remote/api.cpp
   src/remote/client.cpp
-  src/remote/fetcher.cpp
   src/remote/http.cpp
+  src/remote/pipelines.cpp
   src/remote/provider.cpp
   src/remote/token.cpp
   src/ui/graph_panel.cpp
   src/ui/history_panel.cpp
   src/ui/panels.cpp
+  src/ui/pipeline_panel.cpp
   src/ui/remote_panel.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp

@@ -7,11 +7,14 @@
 #include "config/config.hpp"
 #include "git/repository.hpp"
 #include "model/history.hpp"
+#include "model/pipeline.hpp"
 #include "model/remote.hpp"
 #include "model/status.hpp"
 #include "remote/fetcher.hpp"
+#include "remote/ticker.hpp"
 #include "ui/graph_panel.hpp"
 #include "ui/panels.hpp"
+#include "ui/pipeline_panel.hpp"
 
 namespace gittop {
 
@@ -64,6 +67,25 @@ class App {
   void StartFetch();
   void CollectFetch();
 
+  // CI runs sit on the same lazy terms as the remote, plus an interval: a
+  // pipeline that finishes while you watch is the whole point of the view.
+  void EnsurePipelines();
+  void StartPipelineFetch();
+  void CollectPipelines();
+  void StartJobFetch();
+  void CollectJobs();
+  void ToggleJobs();
+
+  // How long until the next automatic refresh, and whether there should be one
+  // at all. Anonymous GitHub gets sixty requests an hour, so polling on a timer
+  // without asking this first is how a view spends a budget the user wanted for
+  // something else.
+  int RefreshInterval() const;
+  bool AutoRefreshAllowed(std::string* reason) const;
+  int SecondsToRefresh() const;
+  void MaybeAutoRefresh();
+  ui::PipelineView PipelineViewState() const;
+
   const model::StatusEntry* Selected() const;
 
   void ToggleStage();
@@ -98,10 +120,23 @@ class App {
 
   std::vector<model::RemoteRef> remotes_;
   model::RemoteSnapshot remote_;
-  remote::Fetcher fetcher_;
+  remote::Fetcher<model::RemoteSnapshot> fetcher_;
   bool remotes_discovered_ = false;
   int spinner_ = 0;
   float spinner_accum_ = 0.0F;
+
+  // A fetcher of its own rather than a queue on the shared one: a refresh that
+  // fires on a timer must never sit in front of a repository fetch the user
+  // just asked for by pressing `r`.
+  model::PipelineSnapshot pipelines_;
+  model::JobList jobs_;
+  remote::Fetcher<model::PipelineSnapshot> pipeline_fetcher_;
+  remote::Fetcher<model::JobList> job_fetcher_;
+  remote::Ticker ticker_;
+
+  int pipeline_selected_ = 0;
+  bool jobs_open_ = false;
+  std::chrono::steady_clock::time_point last_pipeline_fetch_{};
 
   ui::View view_ = ui::View::Status;
 

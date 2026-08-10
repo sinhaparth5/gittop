@@ -23,6 +23,7 @@ enum class View {
   Branches,
   Graph,
   Remote,
+  Pipelines,
 };
 
 ftxui::Element Header(const model::StatusSnapshot& snapshot);
