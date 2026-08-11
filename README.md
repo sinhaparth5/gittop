@@ -33,14 +33,14 @@ GitHub and GitLab REST APIs and degrades to the local view when there is no toke
 connection.
 
 > [!NOTE]
-> The local half runs today, and so does everything remote except the things listed under
-> [Planned](#planned): repository state, CI, pull requests, push and pull, themes, and the mouse
-> all work. A diff viewer, stash management and search do not. See
+> Everything on this page runs today except the things listed under [Planned](#planned):
+> repository state, diffs, stashes, rebase helpers, filtering, CI, pull requests, push and pull,
+> themes, custom layouts and the mouse all work. What is left is the visual design pass. See
 > [Current status](#current-status) for the full picture.
 
 ## What works today
 
-Seven views, switched with `1` through `7` or cycled with `tab`.
+Nine views, switched with `1` through `9` or cycled with `tab`.
 
 **Status.**
 
@@ -74,6 +74,46 @@ able to separate green from amber.
 - Switch granularity between day, week, and month with `d`, `w`, and `m`
 - A scroll handle shows where the visible window sits in the full timeline
 - Top authors, weekday distribution, and a commits-by-hour sparkline in the author's own timezone
+
+**Diff.**
+
+- The unstaged diff, the staged diff, or any commit's, with old and new line numbers side by side
+- `enter` on a file in the status view opens that file's diff; `enter` on a commit in the history
+  view opens that commit's, against its first parent
+- `s` swaps between the unstaged and staged halves; `[` and `]` jump between files
+- Per-file additions and deletions on the banner, and a total in the header
+- A new file shows its contents rather than announcing that a file appeared and stopping there;
+  a binary file is named rather than dumped; a rename is drawn as a rename
+- Capped at 20,000 lines, and it says where it stopped rather than trailing off
+
+**Stashes.**
+
+- `S` puts the whole working tree away, untracked files included — a "clean" tree with new files
+  still in it is not what anyone means by stashing their work
+- The list shows each entry's index, the branch it came from, its subject and its age
+- `a` applies and keeps the entry, `p` pops and `d` drops, the last two behind a confirm
+- Apply and pop are `GIT_CHECKOUT_SAFE`, so one that would write over an uncommitted edit stops
+  and says which file is in the way, and pop keeps the entry when it cannot apply cleanly
+
+**Rebase and interrupted work.**
+
+- `B` rebases the current branch onto its upstream, behind a confirm. It refuses on a dirty tree
+  rather than stashing behind your back
+- A merge, rebase, cherry-pick, revert or bisect left half-finished gets a banner above the file
+  list saying which it is and, for a rebase, how far through
+- `o` opens it: continue, or abort. Both go through a second confirm, so neither is one keystroke
+- Continue commits what is staged and carries on to the next conflict; abort puts the branch back
+  exactly where it started
+- Committing during a merge writes every parent and clears the merge state, which is the part
+  that is easy to get silently wrong
+
+**Filtering.**
+
+- `/` narrows whichever list is on screen — files, commits, branches, stashes, CI runs, pulls
+- The box counts matches as you type, so a query that matches nothing says so before you finish
+  the word rather than showing you a blank list
+- `enter` keeps it and `esc` clears it; the footer keeps showing it, because a list hiding nine
+  rows out of ten and a list with one row in it look identical otherwise
 
 **Remote.**
 
@@ -161,6 +201,23 @@ used to be.
 The mouse works too: the wheel scrolls, a click selects a row or switches to a tab, and clicking
 the row already under the cursor opens it.
 
+## Custom layouts
+
+`[layout]` decides which tabs exist and in what order:
+
+```toml
+[layout]
+views = "status diff history branches stashes"
+start_view = "status"
+compact = false
+```
+
+Any view left out is simply not there — a reasonable thing to want on a repository with no remote
+worth watching. The digit keys are positional, so `2` reaches whatever you put second and the tab
+prints the same number; there is no way for a tab to advertise a key that goes somewhere else.
+`compact` forces the narrow layout at any width, which gittop otherwise switches to under 84
+columns on its own.
+
 ## Tokens
 
 Public repositories need no token. GitHub allows 60 anonymous requests an hour; a token raises
@@ -187,17 +244,19 @@ the file it came from and nothing else.
 
 **Locally, offline:**
 
-- Diff viewer, stash management, rebase helpers, search
+- Staging a hunk rather than a whole file, and a word-level highlight inside a changed line
+- Interactive rebase proper: reword, squash, drop, reorder — `B` today is `rebase @{upstream}`
+- Stash messages, and stashing only what is staged
 
 **From GitHub and GitLab:**
 
 - More than one page of CI and pull request history
-- Merge and rebase, so a pull that is not a fast-forward has somewhere to go
+- Merge, so a pull that is not a fast-forward has a second option besides rebasing
 - Review state and check status on a pull request row
 
 ## Current status
 
-Six phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
+Seven phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
 the source layout, per-task checkboxes, known risks, and a work log.
 
 | Phase | Scope | State |
@@ -208,17 +267,20 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | 3 | Config, tokens, provider detection, async HTTP | Done |
 | 4 | Pipelines and CI panels | Done |
 | 5 | Pull requests, push/pull, themes, mouse | Done |
-| 6 | Diff viewer, stash, rebase helpers, search | Next |
-| 7 | Visual design pass | Partly landed early |
+| 6 | Diff viewer, stash, rebase helpers, search, layouts | Done |
+| 7 | Visual design pass | Next, partly landed early |
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `1` … `7` | Status / History / Branches / Graph / Remote / CI / Pulls |
+| `1` … `9` | Jump to a tab by its number |
 | `tab` | Cycle through the views |
 | `j` `k` or arrows | Move the selection |
 | `g` `G` | First / last, or oldest / newest on the graph |
+| `ctrl-u` `ctrl-d` | Move a screen at a time |
+| `/` | Filter the list on screen; `esc` clears it |
+| `enter` | Diff a file or a commit, jobs of a CI run, details of a pull request |
 | `h` `l` | Pan the graph through time |
 | `d` `w` `m` | Graph bucket: day, week, month |
 | `space` | Stage or unstage the selection |
@@ -226,14 +288,22 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | `a` | Stage everything |
 | `d` | Discard the selection, after a confirm |
 | `c` | Write a commit |
-| `ctrl-u` `ctrl-d` | Move a screen at a time |
-| `enter` | Jobs of a CI run, or details of a pull request |
+| `s` | Diff view: swap between unstaged and staged |
+| `[` `]` | Diff view: previous / next file |
+| `S` | Stash the whole working tree |
+| `a` `p` `d` | Stash view: apply / pop / drop, the last two after a confirm |
+| `B` | Rebase this branch onto its upstream, after a confirm |
+| `o` | Continue or abort a rebase, merge or cherry-pick |
 | `f` `p` `P` | Fetch / pull / push |
 | `R` | Switch to the next remote |
 | `t` | Next theme |
 | `r` | Re-read the repository, or re-fetch on the remote views |
 | `?` | Help |
 | `q` | Quit |
+
+Keys that appear twice are scoped to a view: `s` stages on the status view and swaps sides on the
+diff view, `d` discards, changes the graph bucket, and drops a stash. Which one a key means is a
+fact about where you are, not something the config decides.
 
 ## Built with
 

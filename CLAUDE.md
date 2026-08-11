@@ -79,8 +79,13 @@ program. Drive it through a fifo on fd 3 and poll `kill -0` on the pid instead.
 src/
 ├── main.cpp        argument parsing, library init, repository discovery
 ├── app.cpp/.hpp    all application state, all key routing, the render tree
-├── model/          provider-neutral types: status, history, remote, pipeline. Headers only
-├── git/            libgit2 wrapper (repository.cpp) and lane assignment (graph.cpp)
+├── model/          provider-neutral types: status, history, diff, stash, operation, remote,
+│                   pipeline, pull. Headers only, so anything needing a definition is inline
+├── git/            the libgit2 wrapper, split by concern. `Repository`'s methods live across
+│                   repository.cpp, diff.cpp, stash.cpp and rebase.cpp — a class's methods can be
+│                   defined in any translation unit, and four libgit2 callbacks for the diff have
+│                   nothing to say to the revwalk. internal.hpp is the little they share.
+│                   Also graph.cpp (lane assignment), transfer.cpp and askpass.cpp
 ├── config/         a hand-written strict-TOML-subset reader and writer (no parser dependency)
 ├── remote/         provider detection, tokens, HTTP, the shared api.cpp, one file per endpoint
 │                   family (client = repo, pipelines = CI), plus the worker and the ticker
@@ -93,7 +98,7 @@ src/
 `ftxui::Color` literal anywhere under `src/ui/` outside `theme.cpp` is a bug, and it is the only
 thing keeping the Phase 7 visual pass a restyling job rather than a rewrite of every panel. It is
 also what made seven themes and the 256/16/monochrome fallback a change to one file: palettes are
-written in sixteen roles and composed into the thirty semantic tokens, and every color funnels
+written in sixteen roles and composed into the semantic tokens, and every color funnels
 through `ToColor`, which is where quantization happens. Add a token by adding it to `Compose`, not
 by reaching for a literal at the call site.
 
@@ -116,7 +121,11 @@ Since Phase 5 that handler does not compare against `Event` literals: it asks `u
 `Perform`, and it becomes rebindable for free. `Scope` is how the graph takes `d`, `g` and `G`
 while it is on screen — `Lookup` tries the view's scope before the global one — and it is a
 property of the action rather than something the config can set, because where an action applies
-is a fact about what it does.
+is a fact about what it does. Phase 6 added two more scopes: `Diff` takes `s` for switching sides
+and `Stash` takes `a`, `p` and `d`. Two scoped bindings in different views never meet, so the
+diff's `s` and the status view's `s` are not a conflict; a scoped key over a *global* one is
+(the stash view's `p` over `pull`), and the checker only reports that when the config is what
+arranged it.
 
 **Reads are pure and return snapshots.** `ReadStatus`, `ReadHistory`, `FetchRepoInfo`,
 `FetchPipelines`, `FetchJobs` and `FetchPulls` allocate their own results and touch no UI state,
@@ -126,13 +135,19 @@ is why `git/transfer.cpp` opens its own `git_repository` from a path rather than
 
 ## Adding a view
 
-A view is not one file, but Phase 5 removed three of the places it used to be. `ui::AllViews()` in
-`panels.cpp` is now the single ordered list, and the tab bar, the `tab`/`backtab` cycle and the
-tab hit-boxes all read it — adding an entry there gets all three. What is still manual: the
-`ui::View` enum, `TabLabel`, a `view_*` action in `keymap.cpp` with its digit, `ActiveSelection`
-and `ActiveCount` for the selection state, `CurrentScope` if the view claims keys of its own,
-`SetView` if it loads anything, the render tree, `Footer`'s per-view hints, and the help overlay.
-Miss one and the view exists but cannot be reached, or scrolls the wrong list.
+A view is not one file, but Phases 5 and 6 removed four of the places it used to be.
+`ui::AllViews()` in `panels.cpp` is the single ordered list, and the tab bar, the `tab`/`backtab`
+cycle, the tab hit-boxes and now the digit keys all read it — adding an entry there gets all four.
+The digit keys are `view_1` … `view_9`, positional actions that index `AllViews()`, so a new view
+needs no key of its own and `[layout] views` can reorder the lot without the tab bar lying about
+which number reaches what.
+
+What is still manual: the `ui::View` enum, `TabLabel`, the `kViewNames` table (both directions at
+once, so a view can never be parseable under a name it does not print), `ActiveSelection` and
+`ActiveCount` for the selection state, `CurrentScope` if the view claims keys of its own, `SetView`
+if it loads anything, `FilterTotal` and `RebuildFilter` if it has a list worth filtering, the render
+tree, `Footer`'s per-view hints, and the help overlay. Miss one and the view exists but cannot be
+reached, or scrolls the wrong list.
 
 ## Transfers
 
@@ -192,6 +207,49 @@ Pull fast-forwards or refuses, push never forces, and push is the only operation
 it is the only one that changes something other people can see. Keep it that way; the
 destructive-operations rule in `progress.md` is what these implement.
 
+## Diffs, stashes and interrupted operations
+
+**The diff is one flat list of lines.** `model::DiffSnapshot::lines` holds file banners, hunk
+headers and content rows in reading order, and `DiffFile::first_line` indexes back into it. That is
+what makes scrolling a single integer; a cursor that is a (file, line) pair has to be kept agreeing
+with itself through every fold and filter, and this one cannot disagree. The panel renders a window
+around the cursor rather than every row, because twenty thousand dom nodes to show forty of them is
+not free.
+
+**Only a rebase has a continue.** A merge or a cherry-pick is finished by writing an ordinary
+commit, so `ui::OperationPane` offers abort alone for those and says what to do instead — a `c` key
+that answers "no rebase in progress" is worse than no `c` key. `RebaseAbort` is two operations under
+one word: `git_rebase_abort` for a rebase, and a hard reset plus `git_repository_state_cleanup` for
+everything else, which is what `git merge --abort` is. The second discards the working tree and its
+confirm says so.
+
+**`Repository::Commit` writes every parent, and this is not optional.** Committing during a merge
+with one parent produces a commit claiming the other side never happened, leaves `MERGE_HEAD` on
+disk, and looks like it worked — which is how it survived from Phase 1 to Phase 6 unnoticed. It
+reads `MERGE_HEAD` through `git_repository_mergehead_foreach` and cleans the state up afterwards.
+It also refuses during a rebase: those commits have to go through `git_rebase_commit`, which
+advances the plan as well as the branch.
+
+**Stash indices renumber.** `stash@{n}` is the only handle libgit2 offers and dropping one shifts
+every entry below it, so every mutation sets `stashes_loaded_ = false` and re-reads rather than
+adjusting the list it has.
+
+## Filtering
+
+`/` filters whichever list is on screen. App keeps one query and a filtered **mirror** of each
+snapshot; `VisibleStatus()` and its four siblings return the untouched original when the query is
+empty, so the common case copies nothing. Panels take the mirror and are otherwise unchanged, which
+is the whole reason for this design over passing every list a vector of visible indices: the
+selection is an index into what is on screen *by construction* rather than by five call sites
+remembering to map through. `RebuildFilter()` is eager — called from `Refresh`, `EnsureStashes`,
+every `Collect*` and every keystroke in the box — because a dirty flag is one more thing to forget
+and the sources change on a keystroke, never on a frame.
+
+A filtered commit list drops the lane gutter. Hiding the rows between two commits makes the gutter
+draw connections to somewhere off screen, and a filtered log is a list, not a graph. The filter is
+cleared on every view switch: it belongs to the list it was typed against, and the box explaining it
+has already closed.
+
 ## The mouse and hit-testing
 
 FTXUI cannot be asked where a dom node ended up: a node's box is only filled in during layout, and
@@ -204,13 +262,16 @@ follows the same shape rather than computing rows from a y offset.
 
 ## Lazy reads and cache invalidation
 
-Only the status snapshot is read at startup. History is read on the first switch to a view that
-needs it (`EnsureHistory`) and cached; the remote, the CI runs and the pull requests are fetched on
-the first switch to their tabs (`EnsureRemote`, `EnsurePipelines`, `EnsurePulls`), on worker
-threads. Switching remotes with `R` drops all three, because none of them describes the new one. Opening a repository must
-never pay for a revwalk or an HTTP round-trip nobody asked to see. Committing invalidates the
-history cache and `r` forces a reload of whichever view is active. Anything new that costs real
-time belongs on the same terms.
+Only the status snapshot is read at startup — plus `ReadOperation`, which is a handful of stat
+calls and has to be in the same frame as the files it explains. History is read on the first switch
+to a view that needs it (`EnsureHistory`) and cached; the diff and the stash list likewise
+(`EnsureDiff`, `EnsureStashes`); the remote, the CI runs and the pull requests are fetched on the
+first switch to their tabs (`EnsureRemote`, `EnsurePipelines`, `EnsurePulls`), on worker threads.
+Switching remotes with `R` drops the last three, because none of them describes the new one.
+Opening a repository must never pay for a revwalk or an HTTP round-trip nobody asked to see.
+Committing invalidates the history cache, `Refresh` invalidates the diff unless it is a commit's
+(a commit cannot go stale), every stash mutation invalidates the stash list, and `r` forces a reload
+of whichever view is active. Anything new that costs real time belongs on the same terms.
 
 A request is also a cost the *user* did not ask for, which is why job drill-down is on `enter`
 rather than on the cursor: following the selection would put a request on every keystroke. The
@@ -230,8 +291,9 @@ patch. The reader accepts comments, table headers, and `key = value` for strings
 that is the entire language. It is a strict subset rather than a lookalike, so a real TOML parser
 can be dropped in later without migrating anyone's file.
 
-`[theme]`, `[theme.colors]` and `[keys]` are read in `App::ApplyConfig`, which runs in the
-constructor so nothing is ever drawn in a palette the user replaced. It scans by key prefix rather
+`[layout]`, `[theme]`, `[theme.colors]` and `[keys]` are read in `App::ApplyConfig`, which runs in
+the constructor so nothing is ever drawn in a palette the user replaced — and `[layout] views` has
+to be applied there too, before anything reads `AllViews()`, since the digit keys are positional. It scans by key prefix rather
 than by a list of known names, which is what makes `theme.colors.*` and `keys.*` open sets. Every
 rejection is reported by name — an unknown role, an unparseable colour, an unknown action, a key
 spec gittop cannot read — and since the toast is one line, they are counted and the first is
