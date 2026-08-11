@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -49,18 +50,19 @@ struct Decoration {
 // from amber: shape and letter say it before color does.
 Decoration Decorate(const StatusEntry& e) {
   const Theme& t = theme();
+  const GlyphSet& g = glyphs();
   switch (e.stage) {
     case Stage::Conflict:
-      return {"◆", "U", t.conflict};
+      return {g.conflict, "U", t.conflict};
     case Stage::Index:
-      return {"●", ChangeLetter(e.change), t.staged};
+      return {g.staged, ChangeLetter(e.change), t.staged};
     case Stage::Worktree:
       if (e.change == Change::Untracked) {
-        return {"○", "?", t.untracked};
+        return {g.untracked, "?", t.untracked};
       }
-      return {"○", ChangeLetter(e.change), t.unstaged};
+      return {g.unstaged, ChangeLetter(e.change), t.unstaged};
   }
-  return {"·", " ", t.text_dim};
+  return {g.bullet, " ", t.text_dim};
 }
 
 std::string TabLabel(View view) {
@@ -111,18 +113,19 @@ Element KeyChip(const Keymap& keys, Action action, const std::string& label) {
 // "j / ↓", or just the first when only one key is bound. Arrow names are
 // printed as arrows: a hint that reads "down" next to "j" says less.
 std::string KeyList(const Keymap& keys, Action action) {
-  static const struct {
+  const GlyphSet& g = glyphs();
+  const struct {
     const char* name;
     const char* glyph;
-  } kGlyphs[] = {{"up", "↑"}, {"down", "↓"}, {"left", "←"}, {"right", "→"},
-                 {"enter", "⏎"}};
+  } kNamed[] = {{"up", g.arrow_up},       {"down", g.arrow_down}, {"left", g.arrow_left},
+                {"right", g.arrow_right}, {"enter", g.arrow_enter}};
 
   std::string out;
   for (const std::string& key : keys.KeysFor(action)) {
     std::string shown = key;
-    for (const auto& glyph : kGlyphs) {
-      if (key == glyph.name) {
-        shown = glyph.glyph;
+    for (const auto& named : kNamed) {
+      if (key == named.name) {
+        shown = named.glyph;
         break;
       }
     }
@@ -180,33 +183,46 @@ std::size_t CountOf(Group g, const model::StatusSnapshot& s) {
 Element GroupHeader(Group g, std::size_t count) {
   const GroupStyle style = StyleOf(g);
   return hbox({
-      text("  ▍") | color(style.color),
+      text(std::string("  ") + glyphs().rule) | color(style.color),
       text(" " + style.label + "  ") | bold | color(style.color),
       text(std::to_string(count)) | color(theme().text_faint),
       filler(),
   });
 }
 
-Element Row(const StatusEntry& entry, bool selected) {
+Element Row(const StatusEntry& entry, bool selected, int width) {
   const Theme& t = theme();
   const Decoration d = Decorate(entry);
 
-  Element path = PathText(entry.path, selected);
+  const GlyphSet& g = glyphs();
+
+  // Two border columns, the cursor field, then glyph and letter with the spacing
+  // scale between them. What is left is the path's.
+  const int chrome = 2 + 2 + kSpace + 1 + kSpace + 1 + kSpaceWide;
+  int room = std::max(12, width - chrome);
+
+  Element path = PathText(entry.path, selected, room);
   if (entry.change == Change::Renamed && !entry.old_path.empty()) {
+    // A rename is two paths and an arrow. The new one keeps the larger half,
+    // since that is the one the file is called now.
+    const int arrow = kSpace + TextWidth(g.arrow_right) + kSpace;
+    room = std::max(8, (room - arrow) / 2);
     path = hbox({
-        PathText(entry.old_path, false),
-        text("  →  ") | color(t.text_faint),
-        PathText(entry.path, selected),
+        PathText(entry.old_path, false, room),
+        Gap(),
+        text(g.arrow_right) | color(t.text_faint),
+        Gap(),
+        PathText(entry.path, selected, room),
     });
   }
 
   Element row = hbox({
-      text(selected ? " ▌" : "  ") | color(t.accent),
-      text("  "),
+      text(selected ? std::string(" ") + g.cursor : "  ") | color(t.accent),
+      Gap(),
       text(d.glyph) | color(d.color),
-      text("  "),
+      Gap(),
       text(d.letter) | bold | color(d.color),
-      text("   "),
+      Gap(kSpaceWide),
       std::move(path),
       filler(),
   });
@@ -240,7 +256,7 @@ Element EmptyState() {
   const Theme& t = theme();
   return vbox({
       filler(),
-      hbox({filler(), text("✓") | bold | color(t.success), filler()}),
+      hbox({filler(), text(glyphs().check) | bold | color(t.success), filler()}),
       text(""),
       hbox({filler(), text("working tree clean") | color(t.text), filler()}),
       hbox({filler(), text("nothing to stage or commit") | color(t.text_faint), filler()}),
@@ -251,7 +267,83 @@ Element EmptyState() {
 }  // namespace
 
 Decorator PaneFrame() {
-  return borderRounded | color(theme().border_focus) | bgcolor(theme().surface);
+  return FramedBorder() | color(Emerging(theme().border_focus)) |
+         bgcolor(Emerging(theme().surface));
+}
+
+// The wordmark, five rows of it, as a mask rather than as literal block
+// characters: '#' is filled and '.' is not, which is what lets the same shape be
+// drawn with █ on a terminal that has one and with '#' on a terminal that does
+// not, and lets every cell take its own colour off a ramp.
+constexpr std::array<const char*, 5> kWordmark = {
+    " ###  ### ##### #####  ###  #### ",
+    "#      #    #     #   #   # #   #",
+    "# ##   #    #     #   #   # #### ",
+    "#  #   #    #     #   #   # #    ",
+    " ###  ###   ##    ##   ###  #    ",
+};
+
+Element Splash(const std::string& repo, const std::string& version, float reveal, int width,
+               int height) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+  const float shown = std::clamp(reveal, 0.0F, 1.0F);
+
+  Elements art;
+  for (std::size_t row = 0; row < kWordmark.size(); ++row) {
+    const std::string mask = kWordmark[row];
+    Elements cells;
+    cells.reserve(mask.size());
+    for (std::size_t i = 0; i < mask.size(); ++i) {
+      if (mask[i] != '#') {
+        cells.push_back(text(" "));
+        continue;
+      }
+      // Ramped across the width and down the rows at once, so the wordmark has
+      // a diagonal light on it rather than a flat fill. The fade multiplies the
+      // whole thing toward the background instead of dimming it, which keeps the
+      // hue rather than washing it grey.
+      const float across = static_cast<float>(i) / static_cast<float>(mask.size() - 1);
+      const float down = static_cast<float>(row) / static_cast<float>(kWordmark.size() - 1);
+      const Rgb hue = Mix(t.staged_ramp.from, t.staged_ramp.to, (across * 0.7F) + (down * 0.3F));
+      cells.push_back(text(g.bar_full) | color(ToColor(Mix(t.bg.rgb, hue, shown))));
+    }
+    art.push_back(hbox(std::move(cells)));
+  }
+
+  const Rgb ink = Mix(t.bg.rgb, t.text.rgb, shown);
+  const Rgb faint = Mix(t.bg.rgb, t.text_faint.rgb, shown);
+
+  Elements card{
+      text(""),
+  };
+  for (Element& row : art) {
+    card.push_back(hbox({filler(), std::move(row), filler()}));
+  }
+  card.push_back(text(""));
+  card.push_back(hbox({filler(), text(repo) | bold | color(ToColor(ink)), filler()}));
+  card.push_back(hbox({filler(),
+                       text(std::string("a dashboard for git ") + g.bullet + " " + version) |
+                           color(ToColor(faint)),
+                       filler()}));
+  card.push_back(text(""));
+  card.push_back(hbox({filler(), text("any key to begin") | color(ToColor(faint)), filler()}));
+  card.push_back(text(""));
+
+  // Centred by fillers rather than by arithmetic, so it stays centred through a
+  // resize without anything having to be told the resize happened.
+  Element body = vbox(std::move(card));
+  if (width >= 44 && height >= 18) {
+    body = std::move(body) | FramedBorder() |
+           color(ToColor(Mix(t.bg.rgb, t.border_focus.rgb, shown))) | bgcolor(t.surface);
+  }
+
+  return vbox({
+             filler(),
+             hbox({filler(), std::move(body), filler()}),
+             filler(),
+         }) |
+         bgcolor(t.bg);
 }
 
 Element Header(const model::StatusSnapshot& snapshot) {
@@ -263,8 +355,8 @@ Element Header(const model::StatusSnapshot& snapshot) {
       text("  "),
       text(snapshot.repo_name) | bold | color(t.text),
       text("   "),
-      text("◆") | color(t.staged),
-      text(" " + snapshot.branch) | color(t.text_dim),
+      text(glyphs().branch) | color(t.staged),
+      text(" " + Truncate(snapshot.branch, 40)) | color(t.text_dim),
       filler(),
   };
 
@@ -326,13 +418,35 @@ std::string ViewName(View view) {
   return "?";
 }
 
-Element TabBar(View active, std::vector<Box>* tabs) {
+Element TabBar(View active, int width, std::vector<Box>* tabs) {
   const Theme& t = theme();
   const std::vector<View>& views = AllViews();
 
   if (tabs != nullptr) {
     tabs->assign(views.size(), Box());
   }
+
+  // Three tiers rather than letting FTXUI clip. A clipped tab bar loses its last
+  // tabs entirely and leaves the one before them cut mid-word — which reads as a
+  // rendering bug, and worse, hides that those views exist at all. Every tier
+  // keeps all nine, because the digit is the key that reaches them and a tab you
+  // cannot see is a key you will not press.
+  constexpr int kShortLabel = 4;
+  int full = 1;
+  int abbreviated = 1;
+  for (const View view : views) {
+    full += 3 + TextWidth(TabLabel(view)) + 3 + 1;
+    abbreviated += 3 + 1 + std::min(kShortLabel, TextWidth(TabLabel(view))) + 1;
+  }
+  const int digits_only =
+      1 + (static_cast<int>(views.size()) * 4) + TextWidth(TabLabel(active)) + 2;
+
+  const bool labelled = full <= width;
+  const bool shortened = !labelled && abbreviated <= width;
+  // Last tier: digits alone, with the name of the one you are on. Nine of those
+  // fit inside forty columns, which is narrower than anything else here stays
+  // usable at, so there is no fifth tier below it.
+  const bool active_only = !labelled && !shortened && digits_only <= width;
 
   Elements row{text(" ")};
   for (std::size_t i = 0; i < views.size(); ++i) {
@@ -342,12 +456,28 @@ Element TabBar(View active, std::vector<Box>* tabs) {
     // view's own position rather than from a literal that could drift.
     const std::string key = std::to_string(i + 1);
 
-    Element chip = hbox({
-        text(" " + key + " ") | bold | color(on ? t.bg : t.text_faint) |
-            bgcolor(on ? t.accent : t.surface),
-        text(" " + TabLabel(view) + "  ") | bold | color(on ? t.text : t.text_faint) |
-            bgcolor(on ? t.surface_alt : t.surface),
-    });
+    std::string label;
+    if (labelled) {
+      label = " " + TabLabel(view) + "  ";
+    } else if (shortened) {
+      // A hard prefix, not Truncate: an abbreviation is not a value that ran out
+      // of room, so it should not carry an ellipsis saying it did — and the
+      // ellipsis would cost one of the four cells it has. substr is safe because
+      // every label in this file is an ASCII literal a few lines up.
+      label = " " + TabLabel(view).substr(0, static_cast<std::size_t>(kShortLabel));
+    } else if (active_only && on) {
+      label = " " + TabLabel(view) + " ";
+    }
+    // Otherwise nothing: the digits alone still say how many views there are
+    // and which one is lit, and each is still the key that reaches it.
+
+    Elements chip_parts{text(" " + key + " ") | bold | color(on ? t.bg : t.text_faint) |
+                        bgcolor(on ? t.accent : t.surface)};
+    if (!label.empty()) {
+      chip_parts.push_back(text(label) | bold | color(on ? t.text : t.text_faint) |
+                           bgcolor(on ? t.surface_alt : t.surface));
+    }
+    Element chip = hbox(std::move(chip_parts));
     if (tabs != nullptr) {
       chip = std::move(chip) | reflect((*tabs)[i]);
     }
@@ -380,7 +510,7 @@ Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
                hbox({gap(), std::move(untracked), gap(), rule(), gap(), std::move(conflicts),
                      gap()}),
            }) |
-           borderRounded | color(t.border) | bgcolor(t.surface);
+           FramedBorder() | color(t.border) | bgcolor(t.surface);
   }
 
   return hbox({
@@ -400,12 +530,11 @@ Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
              std::move(conflicts),
              gap(),
          }) |
-         borderRounded | color(t.border) | bgcolor(t.surface);
+         FramedBorder() | color(t.border) | bgcolor(t.surface);
 }
 
-Element FileList(const model::StatusSnapshot& snapshot, int selected,
+Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
                  std::vector<Box>* row_boxes) {
-  const Theme& t = theme();
   Elements rows;
 
   if (row_boxes != nullptr) {
@@ -427,7 +556,7 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected,
         rows.push_back(GroupHeader(group, CountOf(group, snapshot)));
         current = group;
       }
-      Element row = Row(entry, static_cast<int>(i) == selected);
+      Element row = Row(entry, static_cast<int>(i) == selected, width);
       if (row_boxes != nullptr) {
         // The group headers and blank spacers mean a row's screen position has
         // nothing to do with its index, which is exactly why this is reflected
@@ -439,10 +568,7 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected,
     rows.push_back(text(""));
   }
 
-  Element title = text(" CHANGES ") | bold | color(t.text_dim);
-
-  return window(title, vbox(std::move(rows)) | vscroll_indicator | yframe) | color(t.border) |
-         bgcolor(t.surface);
+  return Panel("CHANGES", Scrollable(vbox(std::move(rows))));
 }
 
 Element Footer(const std::string& message, bool is_error, float fade, View view,
@@ -456,7 +582,8 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     const Rgb accent_rgb = is_error ? t.danger.rgb : t.success.rgb;
     toast = hbox({
                 text("  "),
-                text(is_error ? "✗" : "✓") | bold | color(ToColor(Mix(t.bg.rgb, accent_rgb, fade))),
+                text(is_error ? glyphs().cross : glyphs().check) | bold |
+                    color(ToColor(Mix(t.bg.rgb, accent_rgb, fade))),
                 text("  " + message) | color(ToColor(Mix(t.bg.rgb, t.text.rgb, fade))),
                 filler(),
             }) |
@@ -539,7 +666,7 @@ Element OperationBanner(const model::OperationState& state, const Keymap& keys) 
   const Theme& t = theme();
 
   Elements parts{
-      text(" ⚠ ") | bold | color(t.bg) | bgcolor(t.warning),
+      text(std::string(" ") + glyphs().alert + " ") | bold | color(t.bg) | bgcolor(t.warning),
       text("  "),
       text(std::string(model::OperationName(state.operation)) + " in progress") | bold |
           color(t.text),
@@ -566,7 +693,7 @@ Element OperationPane(const model::OperationState& state) {
 
   Elements rows{
       hbox({
-          text(" ▲ ") | bold | color(t.warning),
+          text(std::string(" ") + glyphs().warning + " ") | bold | color(t.warning),
           text(name.empty() ? "Nothing in progress" : name + " in progress") | bold |
               color(t.text),
           filler(),
@@ -660,11 +787,17 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
   // Sixteen, not twelve: "ctrl-u / ctrl-d" is fifteen cells and was being cut
   // in half by the description next to it.
   constexpr int kKeyColumn = 16;
+  constexpr int kColumnWidth = 58;
+  // What a description has left in the narrower of the two layouts. Every line
+  // below is written to fit it; the truncation is the guard that stops the next
+  // one added from being cut in half by the column edge with nothing saying so.
+  constexpr int kWhatColumn = kColumnWidth - 2 - kKeyColumn;
+
   const auto row = [&t](const std::string& shown, const std::string& what) {
     return hbox({
         text("  "),
         text(shown) | bold | color(t.accent) | size(WIDTH, EQUAL, kKeyColumn),
-        text(what) | color(t.text_dim),
+        text(Truncate(what, kWhatColumn)) | color(t.text_dim),
     });
   };
   // Every key here is read out of the live keymap, so a config that rebinds one
@@ -683,7 +816,8 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       heading("MOVING"),
       // Slots rather than names, because [layout] views decides which view each
       // digit reaches and the tab bar prints the same number.
-      row(keys.KeyFor(Action::View1) + " … " + keys.KeyFor(Action::View9),
+      row(keys.KeyFor(Action::View1) + " " + glyphs().ellipsis + " " +
+              keys.KeyFor(Action::View9),
           "jump to a tab by its number"),
       line(Action::NextView, "cycle through the views"),
       line(Action::Down, "move down"),
@@ -691,7 +825,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       pair(Action::First, Action::Last, "first / last, or the ends of the graph"),
       pair(Action::PageUp, Action::PageDown, "move a screen at a time"),
       line(Action::Filter, "filter this list; esc clears it"),
-      line(Action::Open, "diff a file or commit, jobs, pull details"),
+      line(Action::Open, "diff a file, a commit, jobs, PR detail"),
       text(""),
       heading("THE GRAPH"),
       pair(Action::PanLeft, Action::PanRight, "pan through time"),
@@ -719,7 +853,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::StashDrop, "drop it, after a confirm"),
       text(""),
       heading("HISTORY SURGERY"),
-      line(Action::Rebase, "rebase onto the upstream, after a confirm"),
+      line(Action::Rebase, "rebase onto upstream, after a confirm"),
       line(Action::Operation, "continue or abort what is in progress"),
       text(""),
       heading("THE REMOTE"),
@@ -732,40 +866,69 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Theme, "next theme"),
       line(Action::Reload, "re-read the repository or the remote"),
       line(Action::Quit, "quit"),
-      row("mouse", "wheel scrolls, click selects a row or tab"),
-      // What the screen is actually being drawn with. The first question about
-      // a terminal that looks wrong is which of these two it is.
-      row("theme", ThemeLabel() + " · " + ColorDepthName(ColorDepthNow())),
+      row("mouse", "wheel scrolls, click selects a row/tab"),
   };
 
+  const GlyphSet& g = glyphs();
+  const std::string sep = std::string(" ") + g.bullet + " ";
   Elements legend{
-      text("  "),
-      text("●") | color(t.staged),
+      Gap(),
+      text(g.staged) | color(t.staged),
       text(" staged   ") | color(t.text_faint),
-      text("○") | color(t.unstaged),
+      text(g.unstaged) | color(t.unstaged),
       text(" unstaged   ") | color(t.text_faint),
-      text("○") | color(t.untracked),
+      text(g.untracked) | color(t.untracked),
       text(" untracked   ") | color(t.text_faint),
-      text("◆") | color(t.conflict),
-      text(" conflict") | color(t.text_faint),
+      text(g.conflict) | color(t.conflict),
+      text(" conflict   ") | color(t.text_faint),
+      filler(),
+      // What the screen is being drawn with. When a terminal looks wrong, which
+      // of these three it is is the first question, and it is answered here
+      // rather than made into a flag somebody has to know exists.
+      text(ThemeLabel() + sep + ColorDepthName(ColorDepthNow()) + sep +
+           GlyphModeName(GlyphModeNow()) + "  ") |
+          color(t.text_faint),
   };
 
-  // Two columns wherever both fit. One column is forty-odd rows and gets its
-  // bottom half clipped off a standard terminal with nothing saying so, which
-  // is a help screen that hides half the help.
-  constexpr int kColumnWidth = 58;
+  // Two columns wherever both fit side by side, which halves the height.
   constexpr int kChrome = 6;  // title, two separators, the legend, the chip
-  const bool side_by_side =
-      width >= (2 * kColumnWidth) + 4 &&
-      height < static_cast<int>(left.size() + right.size()) + kChrome;
+  const bool side_by_side = width >= (2 * kColumnWidth) + 4;
+
+  // How tall the chosen layout wants to be. Two columns is as tall as the
+  // *longer* of them, and getting that wrong is what the first version of this
+  // did: it compared the terminal against left.size() + right.size(), which is
+  // the one-column height, so on a 24-row terminal it chose two columns, decided
+  // they fit, and clipped the bottom of both. Which is the same bug the two
+  // columns were added to fix, one layout further along.
+  const auto tallest = std::max(left.size(), right.size());
+  const int wanted =
+      static_cast<int>(side_by_side ? tallest : left.size() + right.size() + 1) + kChrome;
+  const bool scrolls = height < wanted;
 
   Element body;
   if (side_by_side) {
-    body = hbox({
+    // Both columns padded to the same length and scrolled as one block. A wide
+    // but short terminal keeps both columns rather than dropping to one, which
+    // would be twice as tall as the thing that already did not fit.
+    if (scrolls) {
+      const auto index = static_cast<std::size_t>(
+          std::clamp(scroll, 0, std::max(0, static_cast<int>(tallest) - 1)));
+      if (index < left.size()) {
+        left[index] = std::move(left[index]) | ftxui::focus;
+      }
+    }
+    while (left.size() < tallest) {
+      left.push_back(text(""));
+    }
+    while (right.size() < tallest) {
+      right.push_back(text(""));
+    }
+    Element columns = hbox({
         vbox(std::move(left)) | size(WIDTH, EQUAL, kColumnWidth),
         separator() | color(t.border),
         vbox(std::move(right)) | size(WIDTH, EQUAL, kColumnWidth),
     });
+    body = scrolls ? Scrollable(std::move(columns)) : std::move(columns);
   } else {
     Elements all = std::move(left);
     all.push_back(text(""));
@@ -779,7 +942,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
     const auto index = static_cast<std::size_t>(
         std::clamp(scroll, 0, std::max(0, static_cast<int>(all.size()) - 1)));
     all[index] = std::move(all[index]) | ftxui::focus;
-    body = vbox(std::move(all)) | vscroll_indicator | yframe;
+    body = Scrollable(vbox(std::move(all)));
   }
 
   return vbox({
@@ -790,9 +953,9 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
              hbox(std::move(legend)),
              separator() | color(t.border),
              hbox({filler(),
-                   side_by_side ? Chip("any key", "close")
-                                : hbox({Chip("j / k", "scroll"), text("  "),
-                                        Chip("any other key", "close")}),
+                   scrolls ? hbox({Chip("j / k", "scroll"), text("  "),
+                                   Chip("any other key", "close")})
+                           : Chip("any key", "close"),
                    filler()}),
          }) |
          PaneFrame() | size(WIDTH, GREATER_THAN, 74);
@@ -808,7 +971,7 @@ Element ConfirmPane(const std::string& question, const std::string& detail,
 
   Elements rows{
       hbox({
-          text(" ▲ ") | bold | color(tone),
+          text(std::string(" ") + glyphs().warning + " ") | bold | color(tone),
           text(question) | bold | color(t.text),
           filler(),
       }),
@@ -829,8 +992,8 @@ Element ConfirmPane(const std::string& question, const std::string& detail,
       Chip("n / esc", "cancel"),
   }));
 
-  return vbox(std::move(rows)) | borderRounded | color(tone) | bgcolor(t.surface) |
-         size(WIDTH, GREATER_THAN, 54);
+  return vbox(std::move(rows)) | FramedBorder() | color(Emerging(tone)) |
+         bgcolor(Emerging(t.surface)) | size(WIDTH, GREATER_THAN, 54);
 }
 
 Element PassphrasePane(Element input, bool rejected) {
@@ -849,7 +1012,7 @@ Element PassphrasePane(Element input, bool rejected) {
                 color(t.text_dim)}),
       text(""),
       hbox({
-          text("  ❯ ") | color(t.accent),
+          text(std::string("  ") + glyphs().prompt + " ") | color(t.accent),
           std::move(input) | flex,
       }),
   };
@@ -900,7 +1063,8 @@ Element TransferPane(const TransferView& view, int frame) {
   } else {
     // No totals yet. A bar that guesses at a percentage during the negotiation
     // phase is worse than one that says it is still counting.
-    rows.push_back(hbox({text("  "), text("counting…") | color(t.text_faint), filler()}));
+    rows.push_back(hbox({Gap(), text(std::string("counting") + glyphs().ellipsis) |
+                                    color(t.text_faint), filler()}));
   }
 
   if (!view.detail.empty()) {

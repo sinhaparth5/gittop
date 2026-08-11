@@ -34,6 +34,11 @@ struct Commit {
   std::vector<GraphCell> row;
 };
 
+// How many weeks of commit counts a branch carries. Twelve is a quarter, which
+// is long enough that a branch's rhythm shows and short enough to draw in a
+// dozen cells beside its name.
+inline constexpr std::size_t kVelocityWeeks = 12;
+
 struct Branch {
   std::string name;
   std::string upstream;
@@ -42,6 +47,14 @@ struct Branch {
   std::size_t ahead = 0;
   std::size_t behind = 0;
   std::int64_t time = 0;
+
+  // Commits on this branch per week, oldest first, ending with the week in
+  // progress. `velocity_max` is zero when nothing landed in the window at all —
+  // which is not the same as twelve zeroes from a branch that was never walked,
+  // and the panel draws the two differently.
+  std::array<int, kVelocityWeeks> velocity{};
+  int velocity_max = 0;
+  bool velocity_known = false;
 };
 
 struct HistorySnapshot {

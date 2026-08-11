@@ -49,18 +49,34 @@ bool SetViews(const std::vector<View>& views);
 bool ParseViewName(const std::string& name, View* out);
 std::string ViewName(View view);
 
+// The startup card: the wordmark, the repository, the version. `reveal` runs 0
+// to 1 as it comes up and back down as it leaves, and is pinned at 1 under
+// reduced motion — the splash still appears, it simply does not move.
+//
+// Deliberately not a separate screen that has to finish before the dashboard
+// loads: the status read has already happened by the time this is drawn, so
+// dismissing it is instant and nobody waits on an animation for information
+// that is sitting right behind it.
+ftxui::Element Splash(const std::string& repo, const std::string& version, float reveal,
+                      int width, int height);
+
 ftxui::Element Header(const model::StatusSnapshot& snapshot);
 
 // `tabs` is filled during layout with the box each tab landed in, so a click can
 // be turned back into a view. FTXUI computes a node's geometry only while
 // rendering it, so reflect() is the only way to learn it.
-ftxui::Element TabBar(View active, std::vector<ftxui::Box>* tabs = nullptr);
+// `width` is the terminal's. The bar sheds its labels rather than being clipped:
+// a clipped bar drops its last tabs entirely, which hides that those views exist.
+ftxui::Element TabBar(View active, int width, std::vector<ftxui::Box>* tabs = nullptr);
 
 // `compact` stacks the four cards two-by-two, for terminals too narrow to give
 // each one a readable bar side by side.
 ftxui::Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
                           bool compact);
-ftxui::Element FileList(const model::StatusSnapshot& snapshot, int selected,
+// `width` is the terminal's. The path is truncated against it rather than left
+// to FTXUI, which clips at the panel edge without saying it did — a path that
+// ran out of room and one that happens to end there look identical.
+ftxui::Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
                         std::vector<ftxui::Box>* rows = nullptr);
 
 // `fade` runs 1 down to 0 as a message ages out. The keymap is read rather than

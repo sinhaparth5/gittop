@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "git/graph.hpp"
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -21,16 +22,44 @@ using namespace ftxui;  // NOLINT: the dom DSL reads badly when qualified.
 // lanes still get their commits listed, just without a column of their own.
 constexpr int kMaxDrawnLanes = 8;
 
+// Fixed columns. A column whose width follows its longest current value is a
+// column that shifts every time the list scrolls, and a number that moves while
+// you are reading it is worse than a number that is cut short.
+constexpr int kAuthorCells = 16;
+constexpr int kBranchNameCells = 24;
+constexpr int kTrackingCells = 12;
+
+// A heatmap cell's colour *and* its shape, from one place.
+//
+// Five tints of one hue is five identical squares to a terminal in sixteen-colour
+// mode and to a reader with deuteranopia; the shade ramp carries the same reading
+// without any colour at all. Floored at a quarter of the way up the colour ramp
+// so a single-commit day is visibly a day something happened rather than one that
+// fades into the empty cells.
+std::pair<Rgb, const char*> HeatCell(int count, int peak) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+  if (count <= 0) {
+    return {t.surface_alt.rgb, g.heat_ramp[0]};
+  }
+  const float ratio =
+      peak > 0 ? std::min(1.0F, static_cast<float>(count) / static_cast<float>(peak)) : 1.0F;
+  const auto step = static_cast<std::size_t>(
+      std::clamp(1 + static_cast<int>(ratio * 3.999F), 1, 4));
+  return {Mix(t.staged_ramp.from, t.staged_ramp.to, 0.25F + (0.75F * ratio)), g.heat_ramp[step]};
+}
+
 std::string CellGlyph(GraphCell cell, bool head) {
+  const GlyphSet& g = glyphs();
   switch (cell) {
     case GraphCell::Node:
-      return head ? "◉" : "●";
+      return head ? g.node_head : g.node;
     case GraphCell::Through:
-      return "│";
+      return g.lane_vertical;
     case GraphCell::Merge:
-      return "╯";
+      return g.lane_close;
     case GraphCell::Branch:
-      return "╮";
+      return g.lane_open;
     case GraphCell::Empty:
       break;
   }
@@ -56,6 +85,21 @@ Element Gutter(const model::Commit& commit, int width) {
   return hbox(std::move(cells));
 }
 
+// The cells RefBadges is about to take. Computed from the same rule it renders
+// by rather than estimated, because the summary's budget is what is left after
+// it and an estimate that is one cell out puts an ellipsis where there was room.
+int RefBadgeWidth(const model::Commit& commit) {
+  const std::size_t shown = std::min<std::size_t>(commit.refs.size(), 2);
+  int cells = 0;
+  for (std::size_t i = 0; i < shown; ++i) {
+    cells += TextWidth(commit.refs[i]) + 3;  // a space either side, then the gap
+  }
+  if (commit.refs.size() > shown) {
+    cells += TextWidth("+" + std::to_string(commit.refs.size() - shown)) + 1;
+  }
+  return cells;
+}
+
 Element RefBadges(const model::Commit& commit) {
   const Theme& t = theme();
   Elements badges;
@@ -77,9 +121,10 @@ Element RefBadges(const model::Commit& commit) {
 
 }  // namespace
 
-Element CommitList(const model::HistorySnapshot& history, int selected,
+Element CommitList(const model::HistorySnapshot& history, int selected, int width,
                    std::vector<Box>* row_boxes) {
   const Theme& t = theme();
+  const GlyphSet& g = glyphs();
 
   if (history.empty()) {
     if (row_boxes != nullptr) {
@@ -108,20 +153,30 @@ Element CommitList(const model::HistorySnapshot& history, int selected,
     const model::Commit& commit = history.commits[i];
     const bool is_selected = static_cast<int>(i) == selected;
 
+    // Cursor, space, gutter, gap, short id, gap  |  gap, author, gap, age, space
+    // — plus the panel's own two border columns. Everything on the row except
+    // the summary and the badges is a fixed width, which is what makes this
+    // arithmetic rather than a guess.
+    const int chrome = 2 + 1 + 1 + lanes + 2 + 7 + 2 + 2 + kAuthorCells + 2 + 4 + 1;
+    const int summary_cells = std::max(8, width - chrome - RefBadgeWidth(commit));
+
     Element row = hbox({
-        text(is_selected ? "▌" : " ") | color(t.accent),
+        text(is_selected ? g.cursor : " ") | color(t.accent),
         text(" "),
         Gutter(commit, lanes),
         text("  "),
         text(commit.short_id) | color(t.accent),
         text("  "),
         RefBadges(commit),
-        text(commit.summary) | color(is_selected ? t.text : t.text_dim),
+        text(Truncate(commit.summary, summary_cells)) |
+            color(is_selected ? t.text : t.text_dim),
         filler(),
         text("  "),
-        text(commit.author) | color(t.text_faint),
+        // Fixed width, so the author column has a left edge instead of one that
+        // moves with whoever happens to be on the row above.
+        text(Fit(commit.author, kAuthorCells)) | color(t.text_faint),
         text("  "),
-        text(RelativeTime(commit.time, now)) | color(t.text_faint) | size(WIDTH, EQUAL, 4),
+        text(Rjust(RelativeTime(commit.time, now), 4)) | color(t.text_faint),
         text(" "),
     });
 
@@ -142,7 +197,7 @@ Element CommitList(const model::HistorySnapshot& history, int selected,
     }));
   }
 
-  return vbox(std::move(rows)) | vscroll_indicator | yframe;
+  return Scrollable(vbox(std::move(rows)));
 }
 
 Element ActivityPanel(const model::HistorySnapshot& history) {
@@ -182,27 +237,20 @@ Element ActivityPanel(const model::HistorySnapshot& history) {
         continue;
       }
       const int count = history.activity[static_cast<std::size_t>(bucket)];
-      Rgb fill = t.surface_alt.rgb;
-      if (count > 0) {
-        const float ratio = history.activity_max > 0
-                                ? static_cast<float>(count) / static_cast<float>(history.activity_max)
-                                : 1.0F;
-        // Floored at a quarter so a single-commit day is still clearly a day
-        // something happened, rather than fading into the empty cells.
-        fill = Mix(t.staged_ramp.from, t.staged_ramp.to, 0.25F + (0.75F * ratio));
-      }
-      cells.push_back(text("■ ") | color(ToColor(fill)));
+      const auto [fill, glyph] = HeatCell(count, history.activity_max);
+      cells.push_back(text(std::string(glyph) + " ") | color(ToColor(fill)));
     }
     grid_rows.push_back(hbox(std::move(cells)));
   }
 
   Elements legend;
   legend.push_back(text("    less ") | color(t.text_faint));
+  // Drawn from the same function as the grid rather than from a parallel copy
+  // of the formula, which is how a legend ends up describing a ramp the cells
+  // above it no longer use.
   for (int step = 0; step < 5; ++step) {
-    const float ratio = static_cast<float>(step) / 4.0F;
-    const Rgb fill = step == 0 ? t.surface_alt.rgb
-                               : Mix(t.staged_ramp.from, t.staged_ramp.to, 0.25F + (0.75F * ratio));
-    legend.push_back(text("■ ") | color(ToColor(fill)));
+    const auto [fill, glyph] = HeatCell(step, 4);
+    legend.push_back(text(std::string(glyph) + " ") | color(ToColor(fill)));
   }
   legend.push_back(text("more") | color(t.text_faint));
   legend.push_back(filler());
@@ -219,9 +267,10 @@ Element ActivityPanel(const model::HistorySnapshot& history) {
   return vbox(std::move(grid_rows));
 }
 
-Element BranchList(const model::HistorySnapshot& history, int selected,
+Element BranchList(const model::HistorySnapshot& history, int selected, int width,
                    std::vector<Box>* row_boxes) {
   const Theme& t = theme();
+  const GlyphSet& g = glyphs();
 
   if (history.branches.empty()) {
     if (row_boxes != nullptr) {
@@ -244,37 +293,65 @@ Element BranchList(const model::HistorySnapshot& history, int selected,
     const model::Branch& branch = history.branches[i];
     const bool is_selected = static_cast<int>(i) == selected;
 
+    // Both counts padded to the same field whether or not they are present, so
+    // the upstream name after them starts in the same column on every row.
     Elements tracking;
     if (!branch.has_upstream) {
-      tracking.push_back(text("no upstream") | color(t.text_faint));
+      tracking.push_back(text(Fit("no upstream", kTrackingCells)) | color(t.text_faint));
+    } else if (branch.ahead == 0 && branch.behind == 0) {
+      tracking.push_back(text(Fit("in sync", kTrackingCells)) | color(t.text_faint));
     } else {
-      if (branch.ahead > 0) {
-        tracking.push_back(text("↑" + std::to_string(branch.ahead)) | color(t.staged));
-        tracking.push_back(text(" "));
-      }
-      if (branch.behind > 0) {
-        tracking.push_back(text("↓" + std::to_string(branch.behind)) | color(t.unstaged));
-        tracking.push_back(text(" "));
-      }
-      if (branch.ahead == 0 && branch.behind == 0) {
-        tracking.push_back(text("in sync") | color(t.text_faint));
-      }
+      tracking.push_back(text(Rjust(branch.ahead > 0 ? g.ahead + std::to_string(branch.ahead)
+                                                     : std::string(),
+                                    5)) |
+                         color(t.staged));
+      tracking.push_back(text(" "));
+      tracking.push_back(text(Fit(branch.behind > 0 ? g.behind + std::to_string(branch.behind)
+                                                    : std::string(),
+                                  kTrackingCells - 6)) |
+                         color(t.unstaged));
     }
 
-    Element row = hbox({
-        text(is_selected ? "▌" : " ") | color(t.accent),
+    Elements parts{
+        text(is_selected ? g.cursor : " ") | color(t.accent),
         text(" "),
-        text(branch.is_head ? "◆" : "·") | bold | color(branch.is_head ? t.staged : t.text_faint),
+        text(branch.is_head ? g.branch : g.bullet) | bold |
+            color(branch.is_head ? t.staged : t.text_faint),
         text("  "),
-        text(branch.name) | bold | color(is_selected || branch.is_head ? t.text : t.text_dim) |
-            size(WIDTH, GREATER_THAN, 22),
+        text(Fit(branch.name, kBranchNameCells)) | bold |
+            color(is_selected || branch.is_head ? t.text : t.text_dim),
         text("  "),
-        hbox(std::move(tracking)) | size(WIDTH, GREATER_THAN, 14),
-        text(branch.upstream) | color(t.text_faint),
+        hbox(std::move(tracking)),
+        text(Fit(branch.upstream, 24)) | color(t.text_faint),
         filler(),
-        text(branch.time > 0 ? RelativeTime(branch.time, now) : "") | color(t.text_faint),
-        text("  "),
-    });
+    };
+
+    // The sparkline is the first thing to go as the terminal narrows: it is the
+    // only column on the row that is a nicety rather than a fact you came for.
+    if (width >= 96) {
+      parts.push_back(text("  "));
+      if (branch.velocity_known && branch.velocity_max > 0) {
+        parts.push_back(Sparkline(branch.velocity.data(), branch.velocity.size(),
+                                  branch.velocity_max, t.untracked_ramp));
+      } else {
+        // Twelve quiet weeks, drawn as twelve floor dots — the same mark the
+        // sparkline itself uses for a zero. A blank gap here would be
+        // indistinguishable from a column that failed to render, and a branch
+        // nobody has touched this quarter is a thing worth being able to see.
+        std::string floor;
+        for (std::size_t week = 0; week < model::kVelocityWeeks; ++week) {
+          floor += g.bullet;
+        }
+        parts.push_back(text(floor) | color(t.surface_alt));
+      }
+      parts.push_back(text("  "));
+    }
+
+    parts.push_back(text(Rjust(branch.time > 0 ? RelativeTime(branch.time, now) : "", 4)) |
+                    color(t.text_faint));
+    parts.push_back(text("  "));
+
+    Element row = hbox(std::move(parts));
 
     if (is_selected) {
       row = row | bgcolor(t.surface_alt) | focus;
@@ -285,7 +362,7 @@ Element BranchList(const model::HistorySnapshot& history, int selected,
     rows.push_back(std::move(row));
   }
 
-  return vbox(std::move(rows)) | vscroll_indicator | yframe;
+  return Scrollable(vbox(std::move(rows)));
 }
 
 }  // namespace gittop::ui

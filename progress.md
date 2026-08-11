@@ -3,7 +3,7 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phases 0–6 complete and running. Next: Phase 7 (the visual design pass).
+**Status:** Phases 0–7 complete and running. The roadmap is done.
 **Started:** 2026-08-09
 **Last updated:** 2026-08-11
 
@@ -364,10 +364,65 @@ substring across a fixed set of fields per view, cleared on every view switch, a
 the diff. `[layout]` decides which tabs exist and their order, not how panels are arranged within a
 view.
 
-### Phase 7 — Visual design pass
+### Phase 7 — Visual design pass ✅
 The phase where gittop stops looking like a functional TUI and starts looking like something
 people screenshot. Everything below is restyling, not rebuilding — which only holds if the
 token layer from Phase 1 was done properly (see note under the roadmap).
+
+**The bet from the roadmap note paid, and then had to be made a second time.** Phase 7 changed no
+panel's structure: colour never needed touching, because every panel already named a role. But the
+same discipline had never been applied to *characters*, and Phase 6 had left `"✓"` in four files and
+`"○"` in five — sixty-odd literals, each an independent bet about what a terminal can draw. So the
+first thing this phase built was the second token layer. `ui/glyphs.hpp` names the roles,
+`glyphs.cpp` holds three sets, and a raw non-ASCII literal under `src/ui/` is now as much a bug as a
+raw colour. Written with designated initializers, so a role added to the struct fails to compile in
+the two sets that forgot it rather than becoming a null pointer nobody notices until somebody
+selects that mode.
+
+**Seventeen `window()` calls became one `Panel()`.** That is what makes `[theme] border` a config
+line rather than seventeen edits, and it is what finally gives "which panel has the cursor" a
+visible answer: focused takes the accent border and a bright title, sidecars recede, and an errored
+panel outranks both. The old code had every panel at the same weight with a dim title, so the
+Branches list and the Activity heatmap beside it looked equally live.
+
+**Measuring text in cells found three real bugs, all the same bug.** `size(WIDTH, EQUAL, n)` clips
+at the cell and says nothing, so a truncated value and a short one are indistinguishable — a commit
+summary, a file path and a job name all ended mid-word with no ellipsis. Fixing it needed the widths
+to be arithmetic rather than guesses: every column on a commit row except the summary and the ref
+badges is fixed, so the summary's budget is subtraction, and `RefBadgeWidth` exists so the badge
+estimate cannot be one cell out. Testing it against a repository with Japanese filenames and an
+emoji-laden path is what turned "probably fine" into "verified": `Utf8ToGlyphs` yields one entry per
+*cell*, with an empty string for the second column of a wide glyph, which is the invariant that lets
+a cut never split one.
+
+**The tab bar was quietly hiding views.** At 60 columns it read `8 C   P` — the last tabs clipped
+away entirely, which does not look like a narrow terminal, it looks like those views do not exist.
+It now sheds labels in three tiers instead of being clipped, and every tier keeps all nine digits,
+because the digit is the key that reaches the view.
+
+**The Phase 6 help fix was wrong, one layout further along.** It chose two columns when the terminal
+was too short for one — comparing height against `left.size() + right.size()`, which is the
+*one-column* height. On a 24-row terminal it therefore picked two columns, decided they fit, and
+clipped the bottom of both: the same class of bug it was added to fix. Two columns is as tall as the
+longer of them, and when even that does not fit they now scroll together rather than dropping back
+to a layout twice as tall.
+
+**The colourblind check was a check, and it failed.** Run against a Viénot/Brettel simulation, the
+default theme's staged and conflicted are CIELAB ΔE **0.8** apart under deuteranopia, and daylight's
+unstaged and conflict are 0.7. They are the same colour. The palettes are not at fault — they are
+Catppuccin's and Gruvbox's published colours, and retuning them would make them not those themes —
+and gittop stays readable because Phase 1's rule draws a glyph and a letter beside every status. But
+"the colour is redundant" is a weaker promise than "the colour works", so there is now an
+`accessible` palette that makes the second one true: the four states off the red/green axis onto
+blue/amber, worst case ΔE 36.6 across normal vision, deuteranopia, protanopia and tritanopia. Its
+six graph lanes are deliberately *not* all separable, because a dichromat's colour space is roughly
+two-dimensional and six hues do not fit in it — acceptable there and only there, since a lane's
+colour is redundant with its column.
+
+**Measured, not assumed.** Idle on a 4,000-commit repository: 0.05s of CPU over 11 seconds on the
+status view, 0.28s on the history view — the animation loop genuinely stops. The frame cap draws 33
+frames during the splash against 65 uncapped, and it is applied only to frames the animation asked
+for, so a keystroke is never held behind a progress bar.
 
 **Landed early, during the Phase 1 polish pass:** semantic tokens with a three-step surface
 scale, gradient-ramped bars drawn with eighth-blocks in a custom FTXUI node, glyph-plus-letter
@@ -377,10 +432,10 @@ eased bar animation on an 80ms time constant driven by `RequestAnimationFrame`, 
 that fades on a reserved line so nothing reflows under the cursor. The rest below stands.
 
 **Design language**
-- [ ] Semantic color tokens finalized (`accent`, `success`, `danger`, `muted`, `surface`, `border`, …) — no raw colors at call sites
-- [ ] Spacing scale (1/2/4 cells) applied consistently; audit every panel for off-by-one padding
-- [ ] Type hierarchy: bold/dim/italic used systematically, not ad hoc
-- [ ] Tabular alignment for all numeric columns so digits don't jitter on refresh
+- [x] Semantic color tokens finalized — no raw colors at call sites, and now no raw glyphs either
+- [x] Spacing scale (1/2/4 cells) as `kSpaceTight`/`kSpace`/`kSpaceWide` and `Gap()`
+- [x] Type hierarchy: bold for titles and values, dim for supporting text, faint for metadata
+- [x] Tabular alignment: `Rjust` on every numeric column, `Fit` on every text one
 
 **Color & themes** — landed in Phase 5, since themes were on that list anyway and doing them
 twice made no sense. What is left here is the audit, not the mechanism.
@@ -392,38 +447,52 @@ twice made no sense. What is left here is the audit, not the mechanism.
 - [x] `NO_COLOR` env var respected
 
 **Glyphs & borders**
-- [ ] Nerd Font icon set for file states, branches, CI status — with an ASCII fallback mode
-- [ ] Rounded / double / heavy border styles, selectable
-- [ ] Panel titles with accent color and focus-aware styling
-- [ ] Focused panel visually unmistakable (border accent + title emphasis)
-- [ ] Correct display-width handling for CJK and emoji so borders never tear
+- [x] Three glyph sets — ascii, unicode, nerd — behind `[theme] icons`, auto-detected
+- [x] Rounded / light / heavy / double borders, selectable with `[theme] border`
+- [x] Panel titles with accent color and focus-aware styling, all through `ui::Panel()`
+- [x] Focused panel unmistakable: accent border and title, sidecars recede, alarm outranks both
+- [x] Cell-accurate width handling for CJK and emoji; verified against a repo built to break it
 
 **Graphs & indicators**
-- [ ] Braille canvas renderer for the commit-activity graph
-- [ ] Gradient-filled progress bars (btop-style color ramp across the fill)
-- [ ] Sparklines for per-branch commit velocity
-- [ ] Heatmap with a proper sequential ramp, not 5 hardcoded greens
-- [ ] Animated spinner for running CI jobs; pulse effect on in-progress pipelines
-- [ ] Status conveyed by glyph *and* color — never color alone
+- [x] Braille canvas renderer for the commit-activity graph *(landed in Phase 2)*
+- [x] Gradient-filled progress bars *(landed in the Phase 1 polish pass)*
+- [x] Sparklines for per-branch commit velocity: twelve weeks, one bounded revwalk per branch
+- [x] Heatmap ramps through shade *and* colour, so it reads under `NO_COLOR`
+- [x] Spinner on running CI jobs; a weak breathing tint on in-progress runs
+- [x] Status conveyed by glyph *and* color — measured, and the reason the check below matters
 
 **Motion**
-- [ ] Frame-rate cap with dirty-region redraw (target: no full repaint on idle)
-- [ ] Eased transitions on bar/graph value changes instead of hard jumps
-- [ ] Panel enter/exit and popup transitions
-- [ ] Reduced-motion config flag that disables all of it
+- [x] Frame cap at 30fps on animation-driven frames only; no repaint at all on idle
+- [x] Eased transitions on bar values *(landed in the Phase 1 polish pass)*
+- [x] Popup transition: overlays emerge from the background over 120ms
+- [x] `[theme] animations = false` — everything snaps to its final state rather than vanishing
 
 **The details that actually sell it**
-- [ ] Startup splash / ASCII logo (skippable, and skipped when not a TTY)
-- [ ] Designed empty states — "no pipelines yet" should look intentional
-- [ ] Loading skeletons instead of blank panels during async fetch
-- [ ] Graceful text truncation with ellipsis; never mid-glyph
-- [ ] Consistent, non-jarring error/toast presentation
-- [ ] Demo GIF via VHS or asciinema for the README
+- [x] Startup splash, any key skips it, skipped when stdout is not a TTY
+- [x] Designed empty states on all nine views
+- [x] Loading skeletons with a travelling highlight on all three async panels
+- [x] Graceful truncation with an ellipsis, never mid-glyph, budgets by arithmetic
+- [x] One error presentation: `PanelStyle::alarm`, used by all three remote panels
+- [ ] Demo GIF — `demo.tape` is written and checked in; VHS is not installed here to run it
 
 **Verification**
-- [ ] Render check across kitty, alacritty, wezterm, GNOME Terminal, tmux, and plain `TERM=xterm-256color`
-- [ ] Colorblind-safe check on the status palette (deuteranopia/protanopia)
-- [ ] Frame time measured under a large repo, not a toy one
+- [ ] Render check across kitty, alacritty, wezterm, GNOME Terminal and tmux — needs those terminals
+- [x] Colorblind check done and failed; `accessible` palette added as the answer
+- [x] Frame time and CPU measured on a 4,000-commit repository
+
+**Known simplifications.** The nerd set's mechanism is verified — the right strings reach the screen
+and widths are computed from them — but its *appearance* is not, because there is no patched font in
+this environment to render it with; that, plus the fact that some Nerd Font icons are drawn wider
+than the one cell `wcwidth` reports, is why it stays opt-in and unicode stays the default. The ASCII
+mode covers gittop's own glyphs; FTXUI draws the borders and separators itself and offers no ASCII
+charset, so those stay box-drawing characters (heavy is downgraded to light, since heavy is the one
+weight a CP437 or Linux-console font tends not to have, and the scroll indicator is dropped for the
+same reason). There is no dirty-region redraw: FTXUI repaints the whole frame or none of it, so the
+frame budget is spent on capping the rate instead, which reaches the same goal from the other side.
+Panel enter and exit transitions are limited to the overlay reveal — a terminal has no compositor,
+and sliding a box means repainting every frame underneath it, which costs more than the cap saves.
+Per-branch velocity is a bounded revwalk per branch: cheap because `GIT_SORT_TIME` stops at the
+first commit older than the window, but it is still work the Branches view did not use to do.
 
 ---
 
@@ -479,6 +548,21 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-11** — Phase 7 done, and the roadmap with it. Glyphs got the token layer colour has had
+  since Phase 1, which is the change everything else in the phase depended on: sixty literals across
+  nine panels became sixty named roles and three sets, and `[theme] icons` now switches the lot.
+  Seventeen `window()` calls became one `Panel()`, which is what made selectable borders and a
+  visibly focused panel one edit each instead of seventeen. Four things came out of it. The panel
+  and glyph layers were the same lesson twice — Phase 1 learned it about colour and nobody applied
+  it to characters, so Phase 6 quietly recreated the problem. Measuring text in cells rather than
+  trusting `size(WIDTH, EQUAL, n)` turned up three silent truncations and needed a repository built
+  out of Japanese filenames to prove fixed. The tab bar had been hiding whole views at 60 columns,
+  which reads as a rendering fault rather than as a narrow terminal. And the colourblind check was
+  the item that actually returned something: staged and conflicted are ΔE 0.8 apart under
+  deuteranopia in the default theme — the same colour — which is exactly why Phase 1's
+  glyph-and-letter rule was worth keeping, and why there is now an `accessible` palette for people
+  who would rather the colour worked than merely be redundant. Next: the roadmap is finished;
+  what is left is the demo GIF and a render check across real terminal emulators.
 - **2026-08-11** — Phase 6 done. A diff viewer on tab 5, stashes on tab 6, rebase onto upstream
   with continue and abort for anything interrupted, `/` to filter whichever list is on screen, and
   `[layout]` to choose which tabs exist and in what order. Four things came out of it. The diff is

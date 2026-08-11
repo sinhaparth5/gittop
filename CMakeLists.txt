@@ -95,6 +95,7 @@ add_executable(gittop
   src/remote/pulls.cpp
   src/remote/token.cpp
   src/ui/diff_panel.cpp
+  src/ui/glyphs.cpp
   src/ui/graph_panel.cpp
   src/ui/history_panel.cpp
   src/ui/keymap.cpp

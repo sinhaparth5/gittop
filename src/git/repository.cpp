@@ -99,6 +99,63 @@ int MergeHeadCb(const git_oid* oid, void* payload) {
   return 0;
 }
 
+// A quarter of weekly commit counts for one branch, for the sparkline beside it.
+//
+// This is a revwalk per branch, which sounds expensive and is not: GIT_SORT_TIME
+// yields newest first, so the walk stops at the first commit older than the
+// window rather than traversing the whole history behind it. On a branch that
+// has been quiet for a year that is one commit. The cap is there for the case
+// GIT_SORT_TIME cannot help with — a repository whose commit timestamps are out
+// of order, where "older than the window" is not a reason to believe the rest
+// are too.
+void ReadVelocity(git_repository* repo, const git_oid* tip, std::int64_t today,
+                  model::Branch* branch) {
+  constexpr std::size_t kMaxPerBranch = 4000;
+
+  const auto weeks = static_cast<std::int64_t>(model::kVelocityWeeks);
+  // Aligned to the week HEAD's own arithmetic uses: epoch day 0 was a Thursday,
+  // so +3 puts Monday at zero and every bucket starts on a Monday.
+  const std::int64_t this_week = today - ((((today + 3) % 7) + 7) % 7);
+  const std::int64_t first_week = this_week - ((weeks - 1) * 7);
+
+  git_revwalk* walk = nullptr;
+  if (git_revwalk_new(&walk, repo) != 0) {
+    return;
+  }
+  git_revwalk_sorting(walk, GIT_SORT_TIME);
+  if (git_revwalk_push(walk, tip) != 0) {
+    git_revwalk_free(walk);
+    return;
+  }
+
+  branch->velocity_known = true;
+
+  git_oid oid;
+  std::size_t seen = 0;
+  while (seen < kMaxPerBranch && git_revwalk_next(&oid, walk) == 0) {
+    ++seen;
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &oid) != 0) {
+      continue;
+    }
+    const std::int64_t day = static_cast<std::int64_t>(git_commit_time(commit)) / kSecondsPerDay;
+    git_commit_free(commit);
+
+    if (day < first_week) {
+      break;
+    }
+    const std::int64_t week = day - ((((day + 3) % 7) + 7) % 7);
+    const std::int64_t bucket = (week - first_week) / 7;
+    if (bucket >= 0 && bucket < weeks) {
+      branch->velocity[static_cast<std::size_t>(bucket)]++;
+    }
+  }
+  git_revwalk_free(walk);
+
+  branch->velocity_max =
+      *std::max_element(branch->velocity.begin(), branch->velocity.end());
+}
+
 }  // namespace
 
 Library::Library() {
@@ -526,6 +583,7 @@ model::HistorySnapshot Repository::ReadHistory(std::size_t max_commits,
           branch.time = static_cast<std::int64_t>(git_commit_time(tip_commit));
           git_commit_free(tip_commit);
         }
+        ReadVelocity(repo, tip, today, &branch);
       }
 
       snap.branches.push_back(std::move(branch));

@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -29,7 +30,7 @@ std::int64_t Now() {
 // at a glance, and 12483 reads slower than 12 483 does.
 std::string Grouped(int value) {
   if (value < 0) {
-    return "—";
+    return glyphs().absent;
   }
   const std::string digits = std::to_string(value);
   std::string out;
@@ -86,21 +87,20 @@ std::string Until(std::int64_t when) {
 }
 
 std::string ProviderGlyph(Provider provider) {
+  const GlyphSet& g = glyphs();
   switch (provider) {
     case Provider::GitHub:
-      return "⬢";
+      return g.github;
     case Provider::GitLab:
-      return "⬡";
+      return g.gitlab;
     case Provider::Unknown:
       break;
   }
-  return "○";
+  return g.provider_unknown;
 }
 
-Element Section(const std::string& title, Element body) {
-  const Theme& t = theme();
-  return window(text(" " + title + " ") | bold | color(t.text_dim), std::move(body)) |
-         color(t.border) | bgcolor(t.surface);
+Element Section(const std::string& title, Element body, bool focused = false) {
+  return Panel(title, std::move(body), {.focused = focused});
 }
 
 // Label above, number below. Same shape as the status cards, so the two views
@@ -134,7 +134,7 @@ Element DetailRow(const std::string& label, Element value) {
 
 Element DetailText(const std::string& label, const std::string& value, bool dim = false) {
   const Theme& t = theme();
-  return DetailRow(label, text(value.empty() ? "—" : value) |
+  return DetailRow(label, text(value.empty() ? glyphs().absent : value) |
                               color(value.empty() || dim ? t.text_faint : t.text));
 }
 
@@ -149,10 +149,10 @@ Element Identity(const RemoteSnapshot& snapshot) {
   // it belongs in the details list, where there is room for it.
   Elements auth;
   if (snapshot.authenticated()) {
-    auth.push_back(text("✓") | color(t.success));
+    auth.push_back(text(glyphs().check) | color(t.success));
     auth.push_back(text(" authenticated") | color(t.text_dim));
   } else {
-    auth.push_back(text("○") | color(t.text_faint));
+    auth.push_back(text(glyphs().provider_unknown) | color(t.text_faint));
     auth.push_back(text(" anonymous") | color(t.text_faint));
   }
 
@@ -195,7 +195,7 @@ Element Identity(const RemoteSnapshot& snapshot) {
   }
   body.push_back(text(""));
 
-  return vbox(std::move(body)) | borderRounded | color(t.border) | bgcolor(t.surface);
+  return vbox(std::move(body)) | FramedBorder() | color(t.border) | bgcolor(t.surface);
 }
 
 Element Tiles(const RemoteSnapshot& snapshot) {
@@ -205,13 +205,15 @@ Element Tiles(const RemoteSnapshot& snapshot) {
   const auto rule = [&t] { return separator() | color(t.border); };
 
   std::vector<Element> tiles;
-  tiles.push_back(Tile("★", "STARS", Grouped(info.stars), t.warning, info.stars >= 0));
-  tiles.push_back(Tile("⑂", "FORKS", Grouped(info.forks), t.untracked, info.forks >= 0));
+  const GlyphSet& g = glyphs();
+  tiles.push_back(Tile(g.star, "STARS", Grouped(info.stars), t.warning, info.stars >= 0));
+  tiles.push_back(Tile(g.fork, "FORKS", Grouped(info.forks), t.untracked, info.forks >= 0));
   tiles.push_back(
-      Tile("◎", "ISSUES", Grouped(info.open_issues), t.unstaged, info.open_issues >= 0));
+      Tile(g.issue, "ISSUES", Grouped(info.open_issues), t.unstaged, info.open_issues >= 0));
   // GitLab has no watcher count. Showing an em dash beats showing a zero that
   // would read as a fact about the repository rather than about the API.
-  tiles.push_back(Tile("◉", "WATCHERS", Grouped(info.watchers), t.staged, info.watchers >= 0));
+  tiles.push_back(Tile(g.watcher, "WATCHERS", Grouped(info.watchers), t.staged,
+                       info.watchers >= 0));
 
   Elements row{gap()};
   for (std::size_t i = 0; i < tiles.size(); ++i) {
@@ -223,7 +225,7 @@ Element Tiles(const RemoteSnapshot& snapshot) {
     }
   }
 
-  return hbox(std::move(row)) | borderRounded | color(t.border) | bgcolor(t.surface);
+  return hbox(std::move(row)) | FramedBorder() | color(t.border) | bgcolor(t.surface);
 }
 
 Element Budget(const RemoteSnapshot& snapshot) {
@@ -292,14 +294,16 @@ Element Details(const RemoteSnapshot& snapshot, bool include_counts,
   // move here rather than disappearing.
   if (include_counts) {
     const auto& info = snapshot.info;
-    rows.push_back(DetailRow("activity", hbox({
-                                             text("★ " + Grouped(info.stars)) | color(t.warning),
-                                             text("   ⑂ " + Grouped(info.forks)) |
-                                                 color(t.untracked),
-                                             text("   ◎ " + Grouped(info.open_issues)) |
-                                                 color(t.unstaged),
-                                             filler(),
-                                         })));
+    const GlyphSet& g = glyphs();
+    rows.push_back(DetailRow(
+        "activity", hbox({
+                        text(std::string(g.star) + " " + Grouped(info.stars)) | color(t.warning),
+                        text(std::string("   ") + g.fork + " " + Grouped(info.forks)) |
+                            color(t.untracked),
+                        text(std::string("   ") + g.issue + " " + Grouped(info.open_issues)) |
+                            color(t.unstaged),
+                        filler(),
+                    })));
   }
 
   // Names the variable or the file, never the value. There is deliberately no
@@ -313,7 +317,7 @@ Element Details(const RemoteSnapshot& snapshot, bool include_counts,
       auth = snapshot.token_origin + "  (config file)";
       break;
     case TokenSource::None:
-      auth = "none — reading anonymously";
+      auth = std::string("none ") + glyphs().absent + " reading anonymously";
       break;
   }
 
@@ -340,20 +344,11 @@ Element Details(const RemoteSnapshot& snapshot, bool include_counts,
   // Scrollable rather than silently truncated: this is the panel that gives up
   // its rows when the terminal is short, and a list that just stops has no way
   // to say it was cut off.
-  return Section("DETAILS", vbox(std::move(rows)) | vscroll_indicator | yframe);
+  return Section("DETAILS", Scrollable(vbox(std::move(rows))));
 }
 
 // Skeletons rather than a blank panel: the shape of the answer is known before
 // the answer is, and showing it stops the layout from jumping when data lands.
-Element SkeletonLine(int width) {
-  return hbox({
-             text("  "),
-             text(std::string(static_cast<std::size_t>(std::max(4, width)), ' ')) |
-                 bgcolor(theme().surface_alt),
-             filler(),
-         });
-}
-
 Element Waiting(const RemoteSnapshot& snapshot, int frame) {
   const Theme& t = theme();
   return Section("LOADING", vbox({
@@ -366,11 +361,7 @@ Element Waiting(const RemoteSnapshot& snapshot, int frame) {
                                     filler(),
                                 }),
                                 text(""),
-                                SkeletonLine(28),
-                                text(""),
-                                SkeletonLine(44),
-                                text(""),
-                                SkeletonLine(18),
+                                SkeletonRows(5, frame),
                                 text(""),
                             }));
 }
@@ -380,7 +371,7 @@ Element Problem(const RemoteSnapshot& snapshot) {
   Elements rows{
       hbox({
           text("  "),
-          text("✗") | bold | color(t.danger),
+          text(glyphs().cross) | bold | color(t.danger),
           text("  " + snapshot.error) | bold | color(t.text),
           filler(),
       }),
@@ -393,9 +384,7 @@ Element Problem(const RemoteSnapshot& snapshot) {
   rows.push_back(hbox({text("  "), Chip("r", "try again"), filler()}));
   rows.push_back(text(""));
 
-  return window(text(" COULD NOT REACH THE REMOTE ") | bold | color(t.danger),
-                vbox(std::move(rows))) |
-         color(t.danger) | bgcolor(t.surface);
+  return Panel("COULD NOT REACH THE REMOTE", vbox(std::move(rows)), {.alarm = true});
 }
 
 // Not an error. Plenty of repositories have no remote, or a remote gittop does
@@ -406,7 +395,7 @@ Element Unsupported(const RemoteSnapshot& snapshot) {
 
   Elements rows{
       filler(),
-      hbox({filler(), text("◇") | bold | color(t.text_dim), filler()}),
+      hbox({filler(), text(glyphs().empty_generic) | bold | color(t.text_dim), filler()}),
       text(""),
       hbox({filler(),
             text(has_url ? "no GitHub or GitLab remote" : "this repository has no remote") |

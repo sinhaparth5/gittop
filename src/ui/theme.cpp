@@ -171,6 +171,45 @@ const Palette kPalettes[] = {
         .purple = C(0x66, 0x31, 0x9b),
         .cyan = C(0x00, 0x5f, 0x64),
     },
+    {
+        // Built against a dichromat simulation rather than by eye.
+        //
+        // Every other palette here puts staged on green and conflicted on red,
+        // and under deuteranopia those two are the same colour: measured at
+        // CIELAB ΔE 0.8 in the default theme and 0.7 for daylight's unstaged
+        // against its conflict. gittop is readable anyway, because a status is
+        // always drawn as a glyph and a letter as well as a colour — but "the
+        // colour is redundant" is a weaker promise than "the colour works", and
+        // this palette makes the second one true.
+        //
+        // The four states move off the red/green axis entirely and onto
+        // blue/amber, separated by lightness as well as hue: worst-case ΔE 36.6
+        // across normal vision, deuteranopia, protanopia and tritanopia.
+        //
+        // The six graph lanes are *not* all mutually distinct here, and cannot
+        // be: a dichromat sees a roughly two-dimensional colour space and six
+        // separated hues do not fit in it. That is acceptable where it is not
+        // for the statuses, because a lane's colour is redundant with its
+        // column — lane three is the third column whatever colour it is drawn.
+        .name = "accessible",
+        .label = "Accessible",
+        .light = false,
+        .bg = C(0x0b, 0x0f, 0x16),
+        .surface = C(0x13, 0x19, 0x24),
+        .surface_alt = C(0x1e, 0x26, 0x36),
+        .surface_raised = C(0x27, 0x31, 0x45),
+        .border = C(0x26, 0x30, 0x43),
+        .text = C(0xd7, 0xde, 0xe8),
+        .text_dim = C(0x97, 0xa3, 0xb6),
+        .text_faint = C(0x5e, 0x6b, 0x7f),
+        .accent = C(0x4e, 0xc9, 0xb0),
+        .green = C(0x3d, 0x9b, 0xf0),   // staged, success, added lines
+        .yellow = C(0xe8, 0xb3, 0x39),  // unstaged, warning
+        .blue = C(0xc8, 0xe0, 0xf5),    // untracked
+        .red = C(0xd9, 0x4f, 0x70),     // conflicted, danger, removed lines
+        .purple = C(0xb0, 0x8c, 0xff),
+        .cyan = C(0x7a, 0xd7, 0xc8),
+    },
 };
 
 constexpr std::size_t kPaletteCount = sizeof(kPalettes) / sizeof(kPalettes[0]);

@@ -265,6 +265,26 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # One of: auto, truecolor, 256, 16, none.
 # depth = "auto"
 
+# Which characters gittop draws with. "auto" picks ascii when the locale is not
+# UTF-8 or TERM says the terminal has no shapes, and unicode otherwise — it
+# never picks nerd, because there is no way to ask a terminal whether its font
+# has the icons and guessing wrong fills the screen with empty boxes.
+# One of: auto, ascii, unicode, nerd.
+# icons = "auto"
+
+# Panel borders. One of: rounded, light, heavy, double.
+# heavy falls back to light under icons = "ascii", where its characters are the
+# one part of the line-drawing set a non-UTF-8 terminal tends not to have.
+# border = "rounded"
+
+# Motion: the eased bars, the spinners, the toast fade and the splash. Off makes
+# each of them snap to its final state rather than removing it, so nothing on
+# screen disappears — only the movement does.
+# animations = true
+
+# The startup card. Skipped automatically when stdout is not a terminal.
+# splash = true
+
 # A theme of your own is the chosen one with roles replaced — the same sixteen
 # every built-in palette is written in. Anything not named here keeps its value.
 # [theme.colors]

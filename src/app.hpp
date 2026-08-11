@@ -235,6 +235,16 @@ class App {
   ui::StatBars TargetBars() const;
   float ToastFade() const;
 
+  // Sleeps out the rest of the frame budget, but only on a frame the animation
+  // asked for. An input-driven repaint is never held back.
+  void ThrottleFrame();
+
+  // Above zero while the startup card is on screen; the value is how far up it
+  // is. Returns true from DismissSplash only when there was one to dismiss, so
+  // the key that closed it is not also handed to the dashboard behind it.
+  float SplashReveal() const;
+  bool DismissSplash();
+
   git::Repository repo_;
   config::Config config_;
   std::string config_path_;
@@ -243,6 +253,7 @@ class App {
   // about it on every repaint and the config cannot change under a running
   // program, so a map lookup in the hot path buys nothing.
   bool compact_ = false;
+  bool splash_ = true;
 
   model::StatusSnapshot snapshot_;
   model::HistorySnapshot history_;
@@ -341,6 +352,19 @@ class App {
   ui::StatBars bars_;
   std::chrono::steady_clock::time_point last_frame_{};
   std::chrono::steady_clock::time_point message_at_{};
+
+  // Set only when the previous frame was one the animation loop asked for, which
+  // is what keeps the frame cap off the input path.
+  bool animation_pending_ = false;
+
+  // Default-constructed means "no splash": either it was turned off, or this is
+  // not a terminal, or it has already been dismissed.
+  static constexpr float kSplashSeconds = 1.6F;
+  std::chrono::steady_clock::time_point splash_until_{};
+
+  // When the overlay on top opened, for its arrival. Cleared the moment none is
+  // open, so the next one starts from zero rather than from the last one's age.
+  std::chrono::steady_clock::time_point overlay_since_{};
 
   std::string commit_message_;
   model::StatusEntry discard_target_;

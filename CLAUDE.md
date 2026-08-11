@@ -9,10 +9,11 @@ this file describes the architecture only.
 ## What this is
 
 `gittop` is a btop-inspired terminal dashboard for Git: local repository state that works with no
-network, plus GitHub and GitLab panels. Phases 0 through 6 are done, so there are nine views —
+network, plus GitHub and GitLab panels. Phases 0 through 7 are done, so there are nine views —
 status, history, branches, graph, diff, stashes, remote, CI, and pull requests — plus push/pull,
-stashing, rebase helpers, a `/` filter, themes, rebindable keys, a configurable tab set and the
-mouse.
+stashing, rebase helpers, a `/` filter, eight themes, rebindable keys, a configurable tab set and
+the mouse. Phase 7 added the second token layer (glyphs), one `Panel()` every frame goes through,
+cell-accurate text measurement, and a motion budget.
 
 Trust `progress.md` for phase state, not the git log: the commit messages are off by one and
 misspell "phase", so `phrase 4 finished` is the commit that landed Phase 3.
@@ -94,13 +95,25 @@ src/
 
 ## Four rules that keep this codebase working
 
-**`ui/` names semantic roles, never colors.** Everything comes from `ui::theme()`. A raw
+**`ui/` names semantic roles, never colors — and since Phase 7, never characters either.** Everything comes from `ui::theme()`. A raw
 `ftxui::Color` literal anywhere under `src/ui/` outside `theme.cpp` is a bug, and it is the only
 thing keeping the Phase 7 visual pass a restyling job rather than a rewrite of every panel. It is
 also what made seven themes and the 256/16/monochrome fallback a change to one file: palettes are
 written in sixteen roles and composed into the semantic tokens, and every color funnels
 through `ToColor`, which is where quantization happens. Add a token by adding it to `Compose`, not
 by reaching for a literal at the call site.
+
+The same rule now covers glyphs, for the same reason and with the same shape. Phase 6 left `"✓"` in
+four files and `"○"` in five, each an independent bet about what a terminal can draw, which is the
+trap the colour tokens exist to avoid. `ui/glyphs.hpp` names sixty-odd roles; `glyphs.cpp` holds
+three sets (`ascii`, `unicode`, `nerd`) written with designated initializers so a new role fails to
+compile in the two sets that forgot it rather than becoming a null pointer. **A raw non-ASCII
+literal anywhere under `src/ui/` outside `glyphs.cpp` is a bug**, with one exception: the box
+drawing FTXUI itself emits for borders and separators, which gittop does not choose.
+
+`auto` never selects the nerd set. There is no way to ask a terminal whether its font has the
+private-use icons, and guessing wrong fills the screen with tofu — so it is opt-in and nothing else
+is. Ascii is chosen for a non-UTF-8 locale, `TERM=dumb` or `TERM=linux`; unicode otherwise.
 
 **`model/` types are provider-neutral.** GitHub says `stargazers_count` and GitLab says
 `star_count`; both become `RepoInfo::stars` in `remote/client.cpp`. If a file under `ui/` ever
@@ -110,6 +123,22 @@ GitLab sends one field with eleven values, and both foldings live in `remote/pip
 What a provider does not send stays empty rather than defaulted — GitLab has no watchers and no
 commit title on a pipeline, GitHub has no stages — so a panel can omit a field instead of printing
 a zero that reads as a fact about the repository.
+
+**Every framed panel goes through `ui::Panel()`, and every measurement through `ui::Truncate`.**
+`Panel(title, content, style)` in `widgets.cpp` is the only place a border style, a title colour or
+a focus state is decided, which is what makes `[theme] border` one config line instead of seventeen
+call sites and makes "which panel has the cursor" a question with a visible answer — `focused`
+takes the accent border, sidecars recede, and `alarm` outranks both because an error nobody looked
+at is still an error. The three frames that are not panels (the summary card row, the overlays) take
+`FramedBorder()` for the same reason.
+
+Text is measured in **cells**, never bytes or code points. `TextWidth`, `Truncate`, `Fit` and
+`Rjust` wrap FTXUI's `string_width` and `Utf8ToGlyphs`; the latter returns one entry per *cell*,
+with an empty string standing in for the second column of a double-width glyph, which is exactly the
+invariant a truncation needs — cutting at index n is safe unless entry n is that empty half. Get
+this wrong and a Japanese commit message tears the right-hand border. `size(WIDTH, EQUAL, n)` on
+server text is the bug this replaced: FTXUI clips at the cell and says nothing, so a value that ran
+out of room and one that happens to end there look identical.
 
 **All key routing lives in one `CatchEvent` on the root component in `app.cpp`.** This is not
 style. `Container::Stacked` and `Container::Tab` only deliver events to a *focused* child, and the
@@ -148,6 +177,29 @@ once, so a view can never be parseable under a name it does not print), `ActiveS
 if it loads anything, `FilterTotal` and `RebuildFilter` if it has a list worth filtering, the render
 tree, `Footer`'s per-view hints, and the help overlay. Miss one and the view exists but cannot be
 reached, or scrolls the wrong list.
+
+## Motion
+
+Four settings, one flag, one cap.
+
+`ui::ReducedMotion()` is asked by every moving thing — the eased bars, the spinners, the toast fade,
+the skeleton shimmer, the CI pulse, the overlay reveal and the splash. Off makes each of them *snap
+to its final state* rather than disappear: a reduced-motion setting that also removes information is
+a worse setting than none, so a running CI row still gets its glyph and its tint, just a still one.
+
+`App::ThrottleFrame()` is the frame cap, and it only ever runs on a frame the animation loop asked
+for — `animation_pending_` is set beside the `RequestAnimationFrame` call and cleared on entry, so
+an input-driven repaint is never delayed. A keystroke that waits 33ms for a progress bar is a
+keystroke that feels broken. Measured on this machine: 33 frames drawn during the splash with the
+cap, 65 without.
+
+An idle dashboard still requests no frames at all — that is what `Animating()` is for and it is the
+reason `remote::Ticker` exists. Do not add anything that repaints unconditionally.
+
+The overlay arrival is the one transition a terminal can actually do. There is no compositor, so a
+popup cannot slide or scale, but it can be drawn emerging from the background: `SetOverlayReveal`
+ramps 0 to 1 over 120ms and `PaneFrame()` mixes the border and surface toward `bg` by it. One number
+read in one place, rather than a `reveal` parameter threaded through seven panes.
 
 ## Transfers
 
@@ -322,6 +374,25 @@ after `Loop()` returns. Any future worker needs the same treatment.
 `RequestAnimationFrame` arrangement in `App::Tick` — so nothing would ever notice a refresh
 interval elapsing. Asking for animation frames instead would mean repainting at sixty hertz for
 twenty seconds to watch a clock. It posts one event a second, and only while the CI view is open.
+
+## Colour and accessibility
+
+The seven curated palettes were measured against a Viénot/Brettel dichromat simulation in Phase 7
+and most of them fail on the status colours: staged against conflicted is **CIELAB ΔE 0.8** under
+deuteranopia in the default theme, and daylight's unstaged against its conflict is 0.7. Those are
+the same colour. This is not a bug in the palettes — they are Catppuccin's and Gruvbox's real
+published colours and retuning them would make them not those themes — and gittop stays readable
+because a status is drawn as a **glyph and a letter** as well as a colour. That rule is load-bearing,
+not decorative; it is why `Decorate()` returns three things.
+
+`theme.name = "accessible"` is the palette for when the colour should work rather than merely be
+redundant: the four states move off the red/green axis onto blue/amber, separated by lightness as
+well as hue, worst case ΔE 36.6 across normal vision, deuteranopia, protanopia and tritanopia. Its
+six graph lanes are *not* all mutually distinct and cannot be — a dichromat sees a roughly
+two-dimensional colour space and six separated hues do not fit in it. That is acceptable where it is
+not for the statuses, because a lane's colour is redundant with its column.
+
+If you add a palette, run the four status roles through a simulation before shipping it.
 
 ## Secrets
 

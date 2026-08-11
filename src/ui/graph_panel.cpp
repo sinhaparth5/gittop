@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -109,26 +110,6 @@ Element BarRow(const std::string& label, int value, int peak, int label_width, R
   });
 }
 
-Element Sparkline(const int* values, std::size_t count, int peak, Ramp ramp) {
-  static constexpr std::array<const char*, 8> kBlocks = {"▁", "▂", "▃", "▄",
-                                                         "▅", "▆", "▇", "█"};
-  const Theme& t = theme();
-  Elements cells;
-  cells.reserve(count);
-
-  for (std::size_t i = 0; i < count; ++i) {
-    if (values[i] <= 0 || peak <= 0) {
-      cells.push_back(text("·") | color(t.surface_alt));
-      continue;
-    }
-    const int level = std::clamp((values[i] * 8) / peak, 1, 8);
-    const float ratio = static_cast<float>(level) / 8.0F;
-    cells.push_back(text(kBlocks[static_cast<std::size_t>(level) - 1]) |
-                    color(ToColor(Mix(ramp.from, ramp.to, ratio))));
-  }
-  return hbox(std::move(cells));
-}
-
 // One character per hour so each tick sits under the bar it labels.
 std::string HourAxis() {
   std::string axis(24, ' ');
@@ -183,15 +164,11 @@ int GraphSeriesSize(const model::HistorySnapshot& history, Bucket bucket) {
 Element GraphPanel(const model::HistorySnapshot& history, const GraphView& view, int width,
                    int rows) {
   const Theme& t = theme();
+  const GlyphSet& g = glyphs();
   const Series series = Bucketize(history, view.bucket);
 
-  Element title = hbox({
-      text(" COMMIT ACTIVITY ") | bold | color(t.text_dim),
-  });
-
   if (series.values.empty()) {
-    return window(std::move(title), EmptyChart("no commits to plot")) | color(t.border) |
-           bgcolor(t.surface);
+    return Panel("COMMIT ACTIVITY", EmptyChart("no commits to plot"), {.focused = false});
   }
 
   const auto total = static_cast<int>(series.values.size());
@@ -272,7 +249,8 @@ Element GraphPanel(const model::HistorySnapshot& history, const GraphView& view,
     axis_rows.push_back(hbox({
         filler(),
         text(label) | color(t.text_faint),
-        text(row == chart_rows - 1 ? " ┼" : " ┤") | color(t.border),
+        text(std::string(" ") + (row == chart_rows - 1 ? g.axis_origin : g.axis_tick)) |
+            color(t.border),
     }));
   }
 
@@ -295,7 +273,7 @@ Element GraphPanel(const model::HistorySnapshot& history, const GraphView& view,
   Elements track;
   for (int cell = 0; cell < chart_cells; ++cell) {
     const bool on_handle = cell >= handle_start && cell < handle_start + handle_length;
-    track.push_back(text(on_handle ? "━" : "─") |
+    track.push_back(text(on_handle ? g.track_handle : g.track) |
                     color(on_handle ? t.accent : t.surface_alt));
   }
 
@@ -314,9 +292,11 @@ Element GraphPanel(const model::HistorySnapshot& history, const GraphView& view,
       }),
       text(""),
       hbox({
-          text(" ◀ ") | color(offset < max_offset ? t.accent : t.surface_alt),
+          text(std::string(" ") + g.pan_left + " ") |
+              color(offset < max_offset ? t.accent : t.surface_alt),
           hbox(std::move(track)),
-          text(" ▶ ") | color(offset > 0 ? t.accent : t.surface_alt),
+          text(std::string(" ") + g.pan_right + " ") |
+              color(offset > 0 ? t.accent : t.surface_alt),
           filler(),
       }),
       hbox({
@@ -327,7 +307,7 @@ Element GraphPanel(const model::HistorySnapshot& history, const GraphView& view,
       }),
   });
 
-  return window(std::move(title), std::move(body)) | color(t.border) | bgcolor(t.surface);
+  return Panel("COMMIT ACTIVITY", std::move(body), {.note = BucketName(view.bucket) + " buckets"});
 }
 
 Element InsightsRow(const model::HistorySnapshot& history, int width) {
@@ -341,19 +321,17 @@ Element InsightsRow(const model::HistorySnapshot& history, int width) {
   }
   const std::size_t shown = std::min<std::size_t>(history.authors.size(), 6);
   for (std::size_t i = 0; i < shown; ++i) {
-    std::string name = history.authors[i].first;
-    if (name.size() > 14) {
-      name = name.substr(0, 13) + "…";
-    }
+    // Truncate() rather than substr(): an author name is arbitrary user text and
+    // cutting it at byte 13 lands mid-glyph on any name that is not ASCII.
+    const std::string name = Truncate(history.authors[i].first, 14);
     author_rows.push_back(
         BarRow(name, history.authors[i].second, author_peak, 16, t.untracked_ramp));
   }
   if (author_rows.empty()) {
     author_rows.push_back(text("  no authors") | color(t.text_faint));
   }
-  Element authors = window(text(" TOP AUTHORS ") | bold | color(t.text_dim),
-                           vbox(std::move(author_rows))) |
-                    color(t.border) | bgcolor(t.surface) | xflex;
+  Element authors =
+      Panel("TOP AUTHORS", vbox(std::move(author_rows)), {.focused = false}) | xflex;
 
   // -------------------------------------------------------------- weekday
   static constexpr std::array<const char*, 7> kDayNames = {"Sun", "Mon", "Tue", "Wed",
@@ -370,26 +348,25 @@ Element InsightsRow(const model::HistorySnapshot& history, int width) {
     weekday_rows.push_back(BarRow(kDayNames[index], history.weekday[index], weekday_peak, 5,
                                   t.staged_ramp));
   }
-  Element weekdays = window(text(" BY WEEKDAY ") | bold | color(t.text_dim),
-                            vbox(std::move(weekday_rows))) |
-                     color(t.border) | bgcolor(t.surface) | xflex;
+  Element weekdays =
+      Panel("BY WEEKDAY", vbox(std::move(weekday_rows)), {.focused = false}) | xflex;
 
   // ----------------------------------------------------------------- hour
   int hour_peak = 1;
   for (const int count : history.hour) {
     hour_peak = std::max(hour_peak, count);
   }
-  Element hours =
-      window(text(" BY HOUR ") | bold | color(t.text_dim),
-             vbox({
-                 text(""),
-                 hbox({text(" "), Sparkline(history.hour.data(), history.hour.size(), hour_peak,
-                                            t.unstaged_ramp)}),
-                 hbox({text(" "), text(HourAxis()) | color(t.text_faint)}),
-                 text(""),
-                 hbox({filler(), text("commits by local hour ") | color(t.text_faint)}),
-             })) |
-      color(t.border) | bgcolor(t.surface);
+  Element hours = Panel("BY HOUR",
+                        vbox({
+                            text(""),
+                            hbox({text(" "), Sparkline(history.hour.data(), history.hour.size(),
+                                                       hour_peak, t.unstaged_ramp)}),
+                            hbox({text(" "), text(HourAxis()) | color(t.text_faint)}),
+                            text(""),
+                            hbox({filler(),
+                                  text("commits by local hour ") | color(t.text_faint)}),
+                        }),
+                        {.focused = false});
 
   // Panels drop out as the terminal narrows rather than each being squeezed
   // until none of them are readable.

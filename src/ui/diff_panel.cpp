@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -100,13 +101,14 @@ Element FileBanner(const DiffSnapshot& diff, const std::string& path, bool selec
     }
   }
 
+  const GlyphSet& g = glyphs();
   Elements parts{
-      text(selected ? "▌" : " ") | color(t.accent),
+      text(selected ? g.cursor : " ") | color(t.accent),
       text(" "),
   };
   if (!old_path.empty()) {
     parts.push_back(PathText(old_path, false));
-    parts.push_back(text("  →  ") | color(t.text_faint));
+    parts.push_back(text("  " + std::string(g.arrow_right) + "  ") | color(t.text_faint));
   }
   parts.push_back(PathText(path, true));
   parts.push_back(text("  "));
@@ -116,7 +118,7 @@ Element FileBanner(const DiffSnapshot& diff, const std::string& path, bool selec
     parts.push_back(text("+" + std::to_string(additions) + " ") | color(t.diff_add));
   }
   if (deletions > 0) {
-    parts.push_back(text("−" + std::to_string(deletions) + " ") | color(t.diff_del));
+    parts.push_back(text(g.diff_minus + std::to_string(deletions) + " ") | color(t.diff_del));
   }
 
   return hbox(std::move(parts)) | bold | bgcolor(t.surface_raised);
@@ -124,6 +126,7 @@ Element FileBanner(const DiffSnapshot& diff, const std::string& path, bool selec
 
 Element LineRow(const DiffSnapshot& diff, std::size_t index, bool selected, int gutter) {
   const Theme& t = theme();
+  const GlyphSet& g = glyphs();
   const DiffLine& line = diff.lines[index];
 
   if (line.kind == DiffLineKind::FileHeader) {
@@ -132,7 +135,7 @@ Element LineRow(const DiffSnapshot& diff, std::size_t index, bool selected, int 
 
   if (line.kind == DiffLineKind::HunkHeader) {
     return hbox({
-               text(selected ? "▌" : " ") | color(t.accent),
+               text(selected ? g.cursor : " ") | color(t.accent),
                text(" " + line.text) | color(t.diff_hunk),
                filler(),
            }) |
@@ -141,7 +144,7 @@ Element LineRow(const DiffSnapshot& diff, std::size_t index, bool selected, int 
 
   if (line.kind == DiffLineKind::Binary || line.kind == DiffLineKind::Note) {
     return hbox({
-        text(selected ? "▌" : " ") | color(t.accent),
+        text(selected ? g.cursor : " ") | color(t.accent),
         text("  " + line.text) | color(t.text_faint) | dim,
         filler(),
     });
@@ -163,7 +166,7 @@ Element LineRow(const DiffSnapshot& diff, std::size_t index, bool selected, int 
     tint = t.diff_del_bg;
   }
 
-  Elements parts{text(selected ? "▌" : " ") | color(t.accent)};
+  Elements parts{text(selected ? g.cursor : " ") | color(t.accent)};
   if (gutter > 0) {
     parts.push_back(text(Number(line.old_lineno, gutter) + " " +
                          Number(line.new_lineno, gutter) + " ") |
@@ -190,7 +193,7 @@ Element EmptyState(const DiffSnapshot& diff) {
   }
   return vbox({
       filler(),
-      hbox({filler(), text("≡") | bold | color(t.text_faint), filler()}),
+      hbox({filler(), text(glyphs().empty_diff) | bold | color(t.text_faint), filler()}),
       text(""),
       hbox({filler(), text(headline) | color(t.text), filler()}),
       hbox({filler(), text(hint) | color(t.text_faint), filler()}),
@@ -218,29 +221,30 @@ Element DiffPanel(const DiffSnapshot& diff, const DiffView& view, int width, int
                           (diff.files.size() == 1 ? " file  " : " files  ")) |
                      color(t.text_faint));
     header.push_back(text("+" + std::to_string(diff.additions) + " ") | color(t.diff_add));
-    header.push_back(text("−" + std::to_string(diff.deletions) + " ") | color(t.diff_del));
+    header.push_back(text(glyphs().diff_minus + std::to_string(diff.deletions) + " ") |
+                     color(t.diff_del));
   }
 
   Element title = hbox(std::move(header)) | bgcolor(t.surface);
 
   if (!diff.error.empty()) {
-    return window(text(" DIFF ") | bold | color(t.text_dim),
-                  vbox({
-                      title,
-                      separator() | color(t.border),
-                      filler(),
-                      hbox({filler(), text("✗") | bold | color(t.danger), filler()}),
-                      text(""),
-                      hbox({filler(), text(diff.error) | color(t.text), filler()}),
-                      filler(),
-                  })) |
-           color(t.border) | bgcolor(t.surface) | flex;
+    return Panel("DIFF",
+                 vbox({
+                     title,
+                     separator() | color(t.border),
+                     filler(),
+                     hbox({filler(), text(glyphs().cross) | bold | color(t.danger), filler()}),
+                     text(""),
+                     hbox({filler(), text(diff.error) | color(t.text), filler()}),
+                     filler(),
+                 }),
+                 {.alarm = true}) |
+           flex;
   }
 
   if (diff.lines.empty()) {
-    return window(text(" DIFF ") | bold | color(t.text_dim),
-                  vbox({title, separator() | color(t.border), EmptyState(diff) | flex})) |
-           color(t.border) | bgcolor(t.surface) | flex;
+    return Panel("DIFF", vbox({title, separator() | color(t.border), EmptyState(diff) | flex})) |
+           flex;
   }
 
   // The slice is centred on the cursor and padded by a screen either side, so
@@ -255,9 +259,11 @@ Element DiffPanel(const DiffSnapshot& diff, const DiffView& view, int width, int
 
   Elements body;
   body.reserve(static_cast<std::size_t>(last - first) + 2);
+  const GlyphSet& g = glyphs();
   if (first > 0) {
-    body.push_back(hbox({text("   "), text("… " + std::to_string(first) + " lines above") |
-                                          color(t.text_faint)}));
+    body.push_back(hbox({Gap(kSpaceWide),
+                         text(g.ellipsis + (" " + std::to_string(first) + " lines above")) |
+                             color(t.text_faint)}));
   }
   for (int i = first; i < last; ++i) {
     Element row = LineRow(diff, static_cast<std::size_t>(i), i == selected, gutter);
@@ -267,17 +273,18 @@ Element DiffPanel(const DiffSnapshot& diff, const DiffView& view, int width, int
     body.push_back(std::move(row));
   }
   if (last < total) {
-    body.push_back(hbox({text("   "), text("… " + std::to_string(total - last) + " lines below") |
-                                          color(t.text_faint)}));
+    body.push_back(hbox({Gap(kSpaceWide),
+                         text(g.ellipsis + (" " + std::to_string(total - last) + " lines below")) |
+                             color(t.text_faint)}));
   }
 
-  return window(text(" DIFF ") | bold | color(t.text_dim),
-                vbox({
-                    title,
-                    separator() | color(t.border),
-                    vbox(std::move(body)) | vscroll_indicator | yframe | flex,
-                })) |
-         color(t.border) | bgcolor(t.surface) | flex;
+  return Panel("DIFF", vbox({
+                           title,
+                           separator() | color(t.border),
+                           Scrollable(vbox(std::move(body))) | flex,
+                       }),
+               {.note = std::to_string(selected + 1) + " of " + std::to_string(total)}) |
+         flex;
 }
 
 }  // namespace gittop::ui

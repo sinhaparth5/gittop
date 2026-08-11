@@ -7,9 +7,12 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <thread>
 #include <utility>
 
 #include "remote/client.hpp"
@@ -18,6 +21,7 @@
 #include "remote/provider.hpp"
 #include "remote/pulls.hpp"
 #include "remote/token.hpp"
+#include "ui/glyphs.hpp"
 #include "ui/history_panel.hpp"
 #include "ui/panels.hpp"
 #include "ui/pipeline_panel.hpp"
@@ -35,6 +39,11 @@ namespace {
 // One page. More runs than anyone scrolls in a sitting, and one request rather
 // than the pagination that a second page would need.
 constexpr int kPipelineLimit = 30;
+
+// The one place a version string lives on screen. main.cpp prints its own for
+// --version, which is a different question asked by a different reader.
+constexpr const char* kVersion = "0.1.0";
+
 constexpr int kPullLimit = 30;
 
 // Fast enough that a pipeline finishing feels live, slow enough that an
@@ -134,6 +143,32 @@ void App::ApplyConfig() {
   if (!name.empty() && !ui::SetTheme(name)) {
     complain("unknown theme '" + name + "'");
   }
+
+  // Glyphs are the second half of the same question the depth setting asks —
+  // what this terminal can actually draw — so they are resolved in the same
+  // place and before anything is rendered in a set the user replaced.
+  ui::GlyphMode icons = ui::DetectGlyphMode();
+  const std::string wanted_icons = config_.Get("theme.icons", "auto");
+  if (!ui::ParseGlyphMode(wanted_icons, &icons)) {
+    complain("unknown theme.icons '" + wanted_icons + "' — detecting instead");
+    icons = ui::DetectGlyphMode();
+  }
+  ui::SetGlyphMode(icons);
+
+  ui::PanelBorder border = ui::PanelBorder::Rounded;
+  const std::string wanted_border = config_.Get("theme.border", "rounded");
+  if (!ui::ParsePanelBorder(wanted_border, &border)) {
+    complain("unknown theme.border '" + wanted_border + "'");
+    border = ui::PanelBorder::Rounded;
+  }
+  ui::SetPanelBorder(border);
+
+  // One flag for every moving thing: the eased bars, the spinners, the toast
+  // fade, the skeleton shimmer and the splash. Off makes each of them snap to
+  // its final state rather than disappear — a reduced-motion setting that also
+  // removes information is a worse setting than none.
+  ui::SetReducedMotion(!config_.GetBool("theme.animations", true));
+  splash_ = config_.GetBool("theme.splash", true);
 
   // A user theme is the built-in one with roles replaced, which is why there is
   // no separate file format for it: the palette a config edits is the same
@@ -284,7 +319,7 @@ void App::Tick() {
   // in 240ms, which lands in the window that reads as responsive instead of
   // either instant or sluggish.
   constexpr float kTau = 0.08F;
-  const float k = 1.0F - std::exp(-dt / kTau);
+  const float k = ui::ReducedMotion() ? 1.0F : 1.0F - std::exp(-dt / kTau);
 
   const ui::StatBars target = TargetBars();
   const auto approach = [k](float& value, float goal) {
@@ -307,6 +342,62 @@ void App::Tick() {
     spinner_accum_ -= kSpinnerStep;
     ++spinner_;
   }
+
+  // The overlay's own arrival. Tracked here rather than in the panes because
+  // there are seven of them and they would all have to be told the same thing.
+  if (!overlay_open_) {
+    overlay_since_ = std::chrono::steady_clock::time_point{};
+    ui::SetOverlayReveal(1.0F);
+  } else {
+    if (overlay_since_.time_since_epoch().count() == 0) {
+      overlay_since_ = now;
+    }
+    // Short: a dialog you have to wait for is a dialog in the way. This is long
+    // enough to read as the box arriving and too short to be a delay.
+    constexpr float kOverlayRise = 0.12F;
+    const float open_for = std::chrono::duration<float>(now - overlay_since_).count();
+    ui::SetOverlayReveal(ui::ReducedMotion() ? 1.0F : open_for / kOverlayRise);
+  }
+}
+
+// How far up the splash is, 1 while it holds and running back to 0 as it goes.
+// Zero means it is not on screen at all, which is how the renderer decides
+// whether to draw it — one number rather than a flag and a number that can
+// disagree.
+float App::SplashReveal() const {
+  if (splash_until_.time_since_epoch().count() == 0) {
+    return 0.0F;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now >= splash_until_) {
+    return 0.0F;
+  }
+  if (ui::ReducedMotion()) {
+    return 1.0F;
+  }
+
+  constexpr float kRise = 0.25F;
+  constexpr float kFall = 0.35F;
+  const float left = std::chrono::duration<float>(splash_until_ - now).count();
+  const float shown = kSplashSeconds - left;
+  if (shown < kRise) {
+    return std::clamp(shown / kRise, 0.0F, 1.0F);
+  }
+  if (left < kFall) {
+    return std::clamp(left / kFall, 0.0F, 1.0F);
+  }
+  return 1.0F;
+}
+
+// Any key gets past it, and the dashboard is already behind it — the status read
+// happens in the constructor — so this is a card being dismissed rather than a
+// loading screen being skipped.
+bool App::DismissSplash() {
+  if (SplashReveal() <= 0.0F) {
+    return false;
+  }
+  splash_until_ = std::chrono::steady_clock::time_point{};
+  return true;
 }
 
 float App::ToastFade() const {
@@ -327,7 +418,37 @@ float App::ToastFade() const {
   return 1.0F - ((age - kHold) / kFade);
 }
 
+// Without a cap the animation loop repaints as fast as the machine allows, which
+// on an idle terminal easing one bar is a fan spinning up to do nothing. Thirty
+// a second is the rate the 80ms time constant was tuned against, and it is only
+// ever applied to a frame the animation asked for — an input-driven repaint is
+// never delayed, because a keystroke that waits 33ms for a progress bar is a
+// keystroke that feels broken.
+void App::ThrottleFrame() {
+  if (!animation_pending_) {
+    return;
+  }
+  animation_pending_ = false;
+
+  constexpr auto kBudget = std::chrono::duration<float>(1.0F / 30.0F);
+  const auto now = std::chrono::steady_clock::now();
+  const auto since = std::chrono::duration<float>(now - last_frame_);
+  if (since < kBudget) {
+    std::this_thread::sleep_for(kBudget - since);
+  }
+}
+
 bool App::Animating() const {
+  // Nothing eases, spins or fades when the user has asked for none of it, so
+  // there is no reason to ask for a frame either.
+  if (ui::ReducedMotion()) {
+    return splash_until_.time_since_epoch().count() != 0 &&
+           std::chrono::steady_clock::now() < splash_until_;
+  }
+  if (splash_until_.time_since_epoch().count() != 0 &&
+      std::chrono::steady_clock::now() < splash_until_) {
+    return true;
+  }
   const ui::StatBars target = TargetBars();
   const auto moving = [](float a, float b) { return std::abs(a - b) > 0.0005F; };
   if (moving(bars_.staged, target.staged) || moving(bars_.unstaged, target.unstaged) ||
@@ -345,6 +466,11 @@ bool App::Animating() const {
   // nothing else is happening, because the numbers behind it change on a worker
   // thread that posts no events.
   if (transfer_fetcher_.Running()) {
+    return true;
+  }
+  // An overlay that has not finished arriving. Bounded by 120ms, and by the
+  // reveal being pinned at 1 when motion is off.
+  if (overlay_open_ && ui::OverlayReveal() < 1.0F) {
     return true;
   }
   // A live pipeline has a spinner per row. Bounded by the run finishing and by
@@ -2031,6 +2157,15 @@ const Event kTick = Event::Special("gittop:tick");
 int App::Run() {
   Refresh();
 
+  // Skipped when stdout is not a terminal. A splash is a thing to look at, and
+  // there is nobody looking at a redirected stream — it would only be a second
+  // and a half of escape codes in whatever is reading the output.
+  if (splash_ && isatty(STDOUT_FILENO) == 1) {
+    splash_until_ = std::chrono::steady_clock::now() +
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<float>(kSplashSeconds));
+  }
+
   auto screen = ScreenInteractive::Fullscreen();
 
   // Every one of these captures the screen by reference, which is why all of
@@ -2169,8 +2304,10 @@ int App::Run() {
 
   // --------------------------------------------------------------- main view
   auto main_view = Renderer([this, &screen] {
+    ThrottleFrame();
     Tick();
     if (Animating()) {
+      animation_pending_ = true;
       animation::RequestAnimationFrame();
     }
 
@@ -2179,7 +2316,11 @@ int App::Run() {
     const int width = screen.dimx();
     const int height = screen.dimy();
 
-    Elements body{ui::Header(snapshot_), ui::TabBar(view_, &tab_boxes_)};
+    if (const float reveal = SplashReveal(); reveal > 0.0F) {
+      return ui::Splash(snapshot_.repo_name, kVersion, reveal, width, height);
+    }
+
+    Elements body{ui::Header(snapshot_), ui::TabBar(view_, width, &tab_boxes_)};
 
     // Only the view on screen fills these, so a stale box from another view can
     // never be hit-tested against.
@@ -2194,27 +2335,28 @@ int App::Run() {
         body.push_back(ui::OperationBanner(operation_, keys_));
         body.push_back(ui::SummaryRow(VisibleStatus(), bars_,
                                       width < 84 || compact_));
-        panel = ui::FileList(VisibleStatus(), selected_, &row_boxes_) | flex;
+        panel = ui::FileList(VisibleStatus(), selected_, width, &row_boxes_) | flex;
         break;
 
       case ui::View::History: {
         // The heatmap costs ten rows. On a short terminal the log is worth
         // more than the graph, so it goes first and the heatmap steps aside.
         if (height >= 30 && !compact_) {
-          body.push_back(window(text(" ACTIVITY ") | bold | color(ui::theme().text_dim),
-                                ui::ActivityPanel(history_)) |
-                         color(ui::theme().border) | bgcolor(ui::theme().surface));
+          body.push_back(ui::Panel("ACTIVITY", ui::ActivityPanel(history_),
+                                   {.focused = false}));
         }
-        panel = window(text(" COMMITS ") | bold | color(ui::theme().text_dim),
-                       ui::CommitList(VisibleHistory(), commit_selected_, &row_boxes_)) |
-                color(ui::theme().border) | bgcolor(ui::theme().surface) | flex;
+        panel = ui::Panel("COMMITS",
+                          ui::CommitList(VisibleHistory(), commit_selected_, width,
+                                         &row_boxes_)) |
+                flex;
         break;
       }
 
       case ui::View::Branches:
-        panel = window(text(" BRANCHES ") | bold | color(ui::theme().text_dim),
-                       ui::BranchList(VisibleHistory(), branch_selected_, &row_boxes_)) |
-                color(ui::theme().border) | bgcolor(ui::theme().surface) | flex;
+        panel = ui::Panel("BRANCHES",
+                          ui::BranchList(VisibleHistory(), branch_selected_, width,
+                                         &row_boxes_)) |
+                flex;
         break;
 
       case ui::View::Diff: {
@@ -2324,6 +2466,15 @@ int App::Run() {
     // asks whether the interval is up; the answer is usually no.
     if (event == kTick) {
       MaybeAutoRefresh();
+      return true;
+    }
+
+    // Before every other key, and it swallows the one that closed it. A splash
+    // that hands `q` through to the dashboard is a splash that quits the program
+    // when somebody taps a key to get rid of it.
+    if ((event.is_character() || event.is_mouse() || event == Event::Escape ||
+         event == Event::Return) &&
+        DismissSplash()) {
       return true;
     }
 

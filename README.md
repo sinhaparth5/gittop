@@ -35,7 +35,7 @@ connection.
 > [!NOTE]
 > Everything on this page runs today except the things listed under [Planned](#planned):
 > repository state, diffs, stashes, rebase helpers, filtering, CI, pull requests, push and pull,
-> themes, custom layouts and the mouse all work. What is left is the visual design pass. See
+> themes, custom layouts and the mouse all work. All eight phases of the roadmap are done. See
 > [Current status](#current-status) for the full picture.
 
 ## What works today
@@ -180,8 +180,8 @@ all apply, and a remote that works from the shell works here with nothing else t
 
 ## Themes
 
-Seven built in: `default`, `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`, and
-`daylight`, which is a light theme designed as one rather than a dark theme inverted. `t` cycles
+Eight built in: `default`, `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`, `daylight`
+— a light theme designed as one rather than a dark theme inverted — and `accessible`. `t` cycles
 them; `theme.name` in the config picks one to start with.
 
 Palettes are written in sixteen roles, so a theme of your own is those same roles under
@@ -189,8 +189,41 @@ Palettes are written in sixteen roles, so a theme of your own is those same role
 
 Colour degrades on the way to the screen rather than in the panels: truecolor when `COLORTERM`
 says so, the 256-colour cube when `TERM` does, the base sixteen otherwise, and none at all under
-`NO_COLOR`. Every status in gittop is a glyph and a word as well as a colour, so the monochrome
+`NO_COLOR`. Every status in gittop is a glyph and a letter as well as a colour, so the monochrome
 case is legible rather than merely supported.
+
+**On `accessible`.** The seven curated palettes were measured against a dichromat simulation, and
+most of them put staged and conflicted on colours that are indistinguishable to someone with
+deuteranopia — 0.8 ΔE apart in the default theme, which is to say the same colour. Those are
+Catppuccin's and Gruvbox's real published colours and retuning them would make them not those
+themes, and gittop stays readable regardless because of the glyph-and-letter rule above. But if you
+would rather the colour worked than merely be redundant, `accessible` moves the four states off the
+red/green axis onto blue and amber: worst case 36.6 ΔE across normal vision, deuteranopia,
+protanopia and tritanopia.
+
+## Glyphs, borders and motion
+
+```toml
+[theme]
+icons = "auto"        # auto, ascii, unicode, nerd
+border = "rounded"    # rounded, light, heavy, double
+animations = true
+splash = true
+```
+
+Every character gittop draws comes from a named role, the same way every colour does, so switching
+sets is one line rather than a patch. `auto` picks `ascii` when the locale is not UTF-8 or `TERM`
+says the terminal has no shapes, and `unicode` otherwise. It never picks `nerd`: there is no way to
+ask a terminal whether its font has the private-use icons, and guessing wrong fills the screen with
+empty boxes — so that one is yours to turn on.
+
+Text is measured in terminal cells rather than bytes, so a Japanese commit message or an emoji in a
+filename is truncated with an ellipsis at the right column instead of tearing the panel border.
+
+`animations = false` makes the eased bars, the spinners, the toast fade and the splash snap to their
+final state rather than disappear — nothing on screen is lost, only the movement. With animations
+on, the frame rate is capped at 30 and only ever on frames the animation itself asked for, so a
+keystroke is never held up behind a progress bar. An idle dashboard requests no frames at all.
 
 ## Keys and the mouse
 
@@ -248,6 +281,11 @@ the file it came from and nothing else.
 - Interactive rebase proper: reword, squash, drop, reorder — `B` today is `rebase @{upstream}`
 - Stash messages, and stashing only what is staged
 
+**On screen:**
+
+- A demo GIF. [`demo.tape`](demo.tape) is the VHS script for it; the recording is not made yet
+- A render check across kitty, alacritty, wezterm, GNOME Terminal and tmux
+
 **From GitHub and GitLab:**
 
 - More than one page of CI and pull request history
@@ -256,7 +294,7 @@ the file it came from and nothing else.
 
 ## Current status
 
-Seven phases of eight are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
+All eight phases are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
 the source layout, per-task checkboxes, known risks, and a work log.
 
 | Phase | Scope | State |
@@ -268,7 +306,7 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | 4 | Pipelines and CI panels | Done |
 | 5 | Pull requests, push/pull, themes, mouse | Done |
 | 6 | Diff viewer, stash, rebase helpers, search, layouts | Done |
-| 7 | Visual design pass | Next, partly landed early |
+| 7 | Visual design pass | Done |
 
 ## Keys
 

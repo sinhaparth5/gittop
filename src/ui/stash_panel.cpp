@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -18,7 +19,7 @@ Element EmptyState() {
   const Theme& t = theme();
   return vbox({
       filler(),
-      hbox({filler(), text("⊘") | bold | color(t.text_faint), filler()}),
+      hbox({filler(), text(glyphs().empty_stash) | bold | color(t.text_faint), filler()}),
       text(""),
       hbox({filler(), text("no stashes") | color(t.text), filler()}),
       hbox({filler(),
@@ -37,8 +38,7 @@ Element StashList(const model::StashList& stashes, int selected, std::vector<Box
     if (row_boxes != nullptr) {
       row_boxes->clear();
     }
-    return window(text(" STASHES ") | bold | color(t.text_dim), EmptyState()) | color(t.border) |
-           bgcolor(t.surface) | flex;
+    return Panel("STASHES", EmptyState()) | flex;
   }
 
   if (row_boxes != nullptr) {
@@ -54,7 +54,7 @@ Element StashList(const model::StashList& stashes, int selected, std::vector<Box
     const bool is_selected = static_cast<int>(i) == selected;
 
     Elements parts{
-        text(is_selected ? "▌" : " ") | color(t.accent),
+        text(is_selected ? glyphs().cursor : " ") | color(t.accent),
         text(" "),
         // The index is the handle every stash command takes, so it is printed
         // rather than left to be counted off the screen.
@@ -70,8 +70,8 @@ Element StashList(const model::StashList& stashes, int selected, std::vector<Box
     parts.push_back(text("  "));
     parts.push_back(text(stash.short_id) | color(t.text_faint));
     parts.push_back(text("  "));
-    parts.push_back(text(stash.time > 0 ? RelativeTime(stash.time, now) : "") |
-                    color(t.text_faint) | size(WIDTH, EQUAL, 4));
+    parts.push_back(text(Rjust(stash.time > 0 ? RelativeTime(stash.time, now) : "", 4)) |
+                    color(t.text_faint));
     parts.push_back(text(" "));
 
     Element row = hbox(std::move(parts));
@@ -84,9 +84,10 @@ Element StashList(const model::StashList& stashes, int selected, std::vector<Box
     rows.push_back(std::move(row));
   }
 
-  return window(text(" STASHES ") | bold | color(t.text_dim),
-                vbox(std::move(rows)) | vscroll_indicator | yframe) |
-         color(t.border) | bgcolor(t.surface) | flex;
+  return Panel("STASHES", Scrollable(vbox(std::move(rows))),
+               {.note = std::to_string(stashes.entries.size()) +
+                        (stashes.entries.size() == 1 ? " entry" : " entries")}) |
+         flex;
 }
 
 }  // namespace gittop::ui

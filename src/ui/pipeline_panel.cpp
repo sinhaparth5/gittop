@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -63,7 +64,7 @@ std::string Pad2(std::int64_t value) {
 // zero is a measurement and this is the absence of one.
 std::string Duration(int seconds) {
   if (seconds < 0) {
-    return "—";
+    return glyphs().absent;
   }
   if (seconds < 60) {
     return std::to_string(seconds) + "s";
@@ -84,28 +85,31 @@ std::string Elapsed(const Pipeline& run) {
   if (run.status == RunStatus::Running && run.started_at > 0) {
     return Duration(static_cast<int>(std::max<std::int64_t>(0, Now() - run.started_at)));
   }
-  return "—";
+  return glyphs().absent;
 }
 
 // Glyph *and* word, never colour alone: a red cross and a green tick have to
 // stay distinguishable to someone who cannot separate the two hues, and on a
 // list this dense the word is the thing that does it.
 std::string StatusGlyph(RunStatus status, int frame) {
+  const GlyphSet& g = glyphs();
   switch (status) {
     case RunStatus::Success:
-      return "✓";
+      return g.ci_success;
     case RunStatus::Failed:
-      return "✗";
+      return g.ci_failed;
     case RunStatus::Running:
+      // The one status that is a verb. It spins, which is the difference between
+      // a dashboard that is watching something happen and one that has stopped.
       return SpinnerFrame(frame);
     case RunStatus::Queued:
-      return "◌";
+      return g.ci_pending;
     case RunStatus::Manual:
-      return "▷";
+      return g.ci_running;
     case RunStatus::Cancelled:
-      return "⊘";
+      return g.ci_cancelled;
     case RunStatus::Skipped:
-      return "–";
+      return g.ci_skipped;
     case RunStatus::Unknown:
       break;
   }
@@ -134,15 +138,16 @@ Swatch StatusColor(RunStatus status) {
 }
 
 std::string ProviderGlyph(Provider provider) {
+  const GlyphSet& g = glyphs();
   switch (provider) {
     case Provider::GitHub:
-      return "⬢";
+      return g.github;
     case Provider::GitLab:
-      return "⬡";
+      return g.gitlab;
     case Provider::Unknown:
       break;
   }
-  return "○";
+  return g.provider_unknown;
 }
 
 std::string CiName(Provider provider) {
@@ -157,10 +162,8 @@ std::string CiName(Provider provider) {
   return "CI";
 }
 
-Element Section(const std::string& title, Element body) {
-  const Theme& t = theme();
-  return window(text(" " + title + " ") | bold | color(t.text_dim), std::move(body)) |
-         color(t.border) | bgcolor(t.surface);
+Element Section(const std::string& title, Element body, bool focused = false) {
+  return Panel(title, std::move(body), {.focused = focused});
 }
 
 // Where the refresh loop is up to. A dashboard that has quietly stopped
@@ -176,7 +179,7 @@ Element RefreshNote(const PipelineView& view, bool fetching, int frame) {
   }
   if (view.auto_paused) {
     return hbox({
-        text("‖ ") | color(t.warning),
+        text(std::string(glyphs().paused) + " ") | color(t.warning),
         text(view.paused_reason.empty() ? "auto-refresh paused" : view.paused_reason) |
             color(t.text_faint),
     });
@@ -254,16 +257,19 @@ Element RunRow(const Pipeline& run, bool selected, bool wide, int frame) {
   std::string title = run.title.empty() ? run.event : run.title;
 
   Elements row{
-      text(selected ? "▌" : " ") | color(t.accent),
+      text(selected ? glyphs().cursor : " ") | color(t.accent),
       text(" "),
       text(StatusGlyph(run.status, frame)) | bold | color(status_color),
       text(" "),
       // Ten, not nine: "cancelled" is exactly nine and would touch the run
       // number with no gap at all.
-      text(model::RunStatusName(run.status)) | color(status_color) | size(WIDTH, EQUAL, 10),
-      text(run.number >= 0 ? "#" + std::to_string(run.number) : "") | color(t.text_faint) |
-          size(WIDTH, EQUAL, 7),
-      text(title) | color(selected ? t.text : t.text_dim) | size(WIDTH, EQUAL, 18),
+      text(Fit(model::RunStatusName(run.status), 10)) | color(status_color),
+      text(Fit(run.number >= 0 ? "#" + std::to_string(run.number) : "", 7)) |
+          color(t.text_faint),
+      // Fit rather than size(): FTXUI clips a too-long value at the cell and says
+      // nothing, so a truncated workflow name is indistinguishable from a short
+      // one. The ellipsis is the difference.
+      text(Fit(title, 18)) | color(selected ? t.text : t.text_dim),
       text("  "),
       text(run.short_sha()) | color(t.accent) | size(WIDTH, EQUAL, 8),
   };
@@ -281,13 +287,22 @@ Element RunRow(const Pipeline& run, bool selected, bool wide, int frame) {
   }
 
   row.push_back(text("  "));
-  row.push_back(text(Elapsed(run)) | color(t.text_faint) | size(WIDTH, EQUAL, 8));
-  row.push_back(text(Ago(run.created_at)) | color(t.text_faint) | size(WIDTH, EQUAL, 4));
+  row.push_back(text(Rjust(Elapsed(run), 8)) | color(t.text_faint));
+  row.push_back(text(Rjust(Ago(run.created_at), 4)) | color(t.text_faint));
   row.push_back(text(" "));
 
   Element element = hbox(std::move(row));
   if (selected) {
     element = element | bgcolor(t.surface_alt) | focus;
+  } else if (run.status == RunStatus::Running) {
+    // A tint that breathes, and only on the rows that are actually going. It is
+    // deliberately weak — this is a list where several rows can be live at once,
+    // and a strong pulse on four of them at different phases is a strobe rather
+    // than a status. The glyph beside it is still the thing that says "running";
+    // this only stops a finished list and a working one looking the same at a
+    // glance across the room.
+    const float lit = 0.05F + (0.09F * Pulse(frame));
+    element = element | bgcolor(ToColor(Mix(t.surface.rgb, t.accent.rgb, lit)));
   }
   return element;
 }
@@ -301,7 +316,7 @@ Element RunList(const PipelineSnapshot& snapshot, const PipelineView& view, bool
         snapshot.branch.empty() ? "this repository" : "branch " + snapshot.branch;
     return vbox({
         filler(),
-        hbox({filler(), text("◌") | bold | color(t.text_dim), filler()}),
+        hbox({filler(), text(glyphs().empty_ci) | bold | color(t.text_dim), filler()}),
         text(""),
         hbox({filler(), text("no CI runs for " + where) | color(t.text), filler()}),
         text(""),
@@ -325,7 +340,7 @@ Element RunList(const PipelineSnapshot& snapshot, const PipelineView& view, bool
     }
     rows.push_back(std::move(row));
   }
-  return vbox(std::move(rows)) | vscroll_indicator | yframe;
+  return Scrollable(vbox(std::move(rows)));
 }
 
 Element JobRow(const Job& job, bool show_stage, int frame) {
@@ -339,12 +354,11 @@ Element JobRow(const Job& job, bool show_stage, int frame) {
       text(model::RunStatusName(job.status)) | color(status_color) | size(WIDTH, EQUAL, 10),
   };
   if (show_stage) {
-    row.push_back(text(job.stage) | color(t.text_faint) | size(WIDTH, EQUAL, 12));
+    row.push_back(text(Fit(job.stage, 12)) | color(t.text_faint));
   }
   row.push_back(text(job.name) | color(t.text) | xflex);
   row.push_back(text("  "));
-  row.push_back(text(Duration(job.duration_seconds)) | color(t.text_faint) |
-                size(WIDTH, EQUAL, 8));
+  row.push_back(text(Rjust(Duration(job.duration_seconds), 8)) | color(t.text_faint));
   row.push_back(text(" "));
   return hbox(std::move(row));
 }
@@ -352,7 +366,8 @@ Element JobRow(const Job& job, bool show_stage, int frame) {
 Element JobsPane(const JobList& jobs, const Pipeline& run, int frame) {
   const Theme& t = theme();
   const std::string title =
-      "JOBS · " + (run.number >= 0 ? "#" + std::to_string(run.number) : run.short_sha());
+      "JOBS " + std::string(glyphs().bullet) + " " +
+      (run.number >= 0 ? "#" + std::to_string(run.number) : run.short_sha());
 
   // The jobs on screen have to belong to the run under the cursor. Moving the
   // selection while a fetch is in flight would otherwise label the previous
@@ -377,7 +392,7 @@ Element JobsPane(const JobList& jobs, const Pipeline& run, int frame) {
   if (jobs.state == FetchState::Failed) {
     Elements rows{hbox({
         text("  "),
-        text("✗") | bold | color(t.danger),
+        text(glyphs().cross) | bold | color(t.danger),
         text("  " + jobs.error) | color(t.text),
         filler(),
     })};
@@ -405,7 +420,7 @@ Element JobsPane(const JobList& jobs, const Pipeline& run, int frame) {
   for (const Job& job : jobs.jobs) {
     rows.push_back(JobRow(job, show_stage, frame));
   }
-  return Section(title, vbox(std::move(rows)) | vscroll_indicator | yframe);
+  return Section(title, Scrollable(vbox(std::move(rows))));
 }
 
 Element Waiting(const RemoteRef& ref, const PipelineSnapshot& snapshot, int frame) {
@@ -420,13 +435,7 @@ Element Waiting(const RemoteRef& ref, const PipelineSnapshot& snapshot, int fram
                                     filler(),
                                 }),
                                 text(""),
-                                hbox({text("  "),
-                                      text("            ") | bgcolor(t.surface_alt), filler()}),
-                                text(""),
-                                hbox({text("  "),
-                                      text("                              ") |
-                                          bgcolor(t.surface_alt),
-                                      filler()}),
+                                SkeletonRows(4, frame),
                                 text(""),
                             }));
 }
@@ -436,7 +445,7 @@ Element Problem(const PipelineSnapshot& snapshot) {
   Elements rows{
       hbox({
           text("  "),
-          text("✗") | bold | color(t.danger),
+          text(glyphs().cross) | bold | color(t.danger),
           text("  " + snapshot.error) | bold | color(t.text),
           filler(),
       }),
@@ -449,8 +458,7 @@ Element Problem(const PipelineSnapshot& snapshot) {
   rows.push_back(hbox({text("  "), Chip("r", "try again"), filler()}));
   rows.push_back(text(""));
 
-  return window(text(" COULD NOT READ CI ") | bold | color(t.danger), vbox(std::move(rows))) |
-         color(t.danger) | bgcolor(t.surface);
+  return Panel("COULD NOT READ CI", vbox(std::move(rows)), {.alarm = true});
 }
 
 // Not an error, exactly as on the remote view: plenty of repositories have no
@@ -460,7 +468,9 @@ Element Unsupported(const RemoteRef& ref) {
   const bool has_url = !ref.url.empty();
   return Section("PIPELINES", vbox({
                                   filler(),
-                                  hbox({filler(), text("◇") | bold | color(t.text_dim), filler()}),
+                                  hbox({filler(), text(glyphs().empty_generic) | bold |
+                                                      color(t.text_dim),
+                                        filler()}),
                                   text(""),
                                   hbox({filler(),
                                         text(has_url ? "no GitHub or GitLab remote"
@@ -522,7 +532,8 @@ Element PipelinePanel(const PipelineSnapshot& snapshot, const JobList& jobs, con
       // size, rather than leaving two lists each too small to read.
       const bool jobs_take_the_slack = drilling && height < 24;
 
-      Element runs = Section("RUNS", RunList(snapshot, view, wide, frame, rows));
+      Element runs = Section("RUNS", RunList(snapshot, view, wide, frame, rows),
+                             /*focused=*/true);
       if (!jobs_take_the_slack) {
         runs = std::move(runs) | flex;
         stretched = true;

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -53,16 +54,17 @@ std::string Ago(std::int64_t when) {
 // thing a reviewer needs first — a draft is not asking for anything yet — so it
 // takes the state column when it applies.
 std::string StateGlyph(const PullRequest& pull) {
+  const GlyphSet& g = glyphs();
   if (pull.draft && pull.state == PullState::Open) {
-    return "◌";
+    return g.ci_pending;
   }
   switch (pull.state) {
     case PullState::Open:
-      return "○";
+      return g.unstaged;
     case PullState::Merged:
-      return "◆";
+      return g.conflict;
     case PullState::Closed:
-      return "✗";
+      return g.cross;
     case PullState::Unknown:
       break;
   }
@@ -112,15 +114,16 @@ Swatch MergeColor(MergeStatus status) {
 }
 
 std::string ProviderGlyph(Provider provider) {
+  const GlyphSet& g = glyphs();
   switch (provider) {
     case Provider::GitHub:
-      return "⬢";
+      return g.github;
     case Provider::GitLab:
-      return "⬡";
+      return g.gitlab;
     case Provider::Unknown:
       break;
   }
-  return "○";
+  return g.provider_unknown;
 }
 
 // What the provider calls them. Printing "pull requests" at a GitLab user is
@@ -137,10 +140,8 @@ std::string ShortNoun(Provider provider) {
   return provider == Provider::GitLab ? "MR" : "PR";
 }
 
-Element Section(const std::string& title, Element body) {
-  const Theme& t = theme();
-  return window(text(" " + title + " ") | bold | color(t.text_dim), std::move(body)) |
-         color(t.border) | bgcolor(t.surface);
+Element Section(const std::string& title, Element body, bool focused = false) {
+  return Panel(title, std::move(body), {.focused = focused});
 }
 
 Element Tag(const std::string& label, Swatch tone) {
@@ -187,38 +188,39 @@ Element PullRow(const PullRequest& pull, bool selected, bool wide) {
   const Swatch tone = StateColor(pull);
 
   Elements row{
-      text(selected ? "▌" : " ") | color(t.accent),
+      text(selected ? glyphs().cursor : " ") | color(t.accent),
       text(" "),
       text(StateGlyph(pull)) | bold | color(tone),
       text(" "),
-      text(StateWord(pull)) | color(tone) | size(WIDTH, EQUAL, 8),
-      text(pull.number >= 0 ? "#" + std::to_string(pull.number) : "") | color(t.text_faint) |
-          size(WIDTH, EQUAL, 7),
+      text(Fit(StateWord(pull), 8)) | color(tone),
+      text(Fit(pull.number >= 0 ? "#" + std::to_string(pull.number) : "", 7)) |
+          color(t.text_faint),
   };
 
   // The one on the branch you are standing on is nearly always the reason the
   // view was opened, and it is already sorted to the top; this says why it is
   // there rather than leaving the order looking arbitrary.
-  row.push_back(text(pull.from_head ? "◂ " : "  ") | bold | color(t.accent));
+  row.push_back(text(pull.from_head ? std::string(glyphs().pan_left) + " " : "  ") | bold |
+                color(t.accent));
   row.push_back(text(pull.title) | color(selected ? t.text : t.text_dim) | xflex);
 
   if (wide) {
     row.push_back(text("  "));
-    row.push_back(text(pull.source_branch) | color(t.text_faint) | size(WIDTH, EQUAL, 20));
-    row.push_back(text("→ ") | color(t.text_faint));
-    row.push_back(text(pull.target_branch) | color(t.text_faint) | size(WIDTH, EQUAL, 14));
+    row.push_back(text(Fit(pull.source_branch, 20)) | color(t.text_faint));
+    row.push_back(text(std::string(glyphs().arrow_right) + " ") | color(t.text_faint));
+    row.push_back(text(Fit(pull.target_branch, 14)) | color(t.text_faint));
   }
 
   // Only GitLab reports mergeability on a list, so the column exists only when
   // something filled it rather than reading "unknown" down every GitHub row.
   if (pull.merge_status != MergeStatus::Unknown) {
-    row.push_back(text(model::MergeStatusName(pull.merge_status)) |
-                  color(MergeColor(pull.merge_status)) | size(WIDTH, EQUAL, 11));
+    row.push_back(text(Fit(model::MergeStatusName(pull.merge_status), 11)) |
+                  color(MergeColor(pull.merge_status)));
   }
 
   row.push_back(text("  "));
-  row.push_back(text(pull.author) | color(t.text_faint) | size(WIDTH, EQUAL, 14));
-  row.push_back(text(Ago(pull.updated_at)) | color(t.text_faint) | size(WIDTH, EQUAL, 4));
+  row.push_back(text(Fit(pull.author, 14)) | color(t.text_faint));
+  row.push_back(text(Rjust(Ago(pull.updated_at), 4)) | color(t.text_faint));
   row.push_back(text(" "));
 
   Element element = hbox(std::move(row));
@@ -232,7 +234,7 @@ Element EmptyState(const RemoteRef& ref) {
   const Theme& t = theme();
   return vbox({
       filler(),
-      hbox({filler(), text("○") | bold | color(t.text_dim), filler()}),
+      hbox({filler(), text(glyphs().empty_pull) | bold | color(t.text_dim), filler()}),
       text(""),
       hbox({filler(), text("no open " + Noun(ref.provider, true)) | color(t.text), filler()}),
       text(""),
@@ -264,7 +266,7 @@ Element PullList(const PullSnapshot& snapshot, const RemoteRef& ref, const PullV
     }
     rows.push_back(std::move(row));
   }
-  return vbox(std::move(rows)) | vscroll_indicator | yframe;
+  return Scrollable(vbox(std::move(rows)));
 }
 
 // Everything here arrived with the list, which is why `enter` opens it
@@ -289,7 +291,8 @@ Element DetailPane(const PullRequest& pull, const RemoteRef& ref) {
       text(""),
       field("branch", hbox({
                           text(pull.source_branch) | color(t.accent),
-                          text("  →  ") | color(t.text_faint),
+                          text("  " + std::string(glyphs().arrow_right) + "  ") |
+                              color(t.text_faint),
                           text(pull.target_branch) | color(t.text_dim),
                       })),
       field("author", text(pull.author.empty() ? "unknown" : pull.author) | color(t.text_dim)),
@@ -349,14 +352,7 @@ Element Waiting(const RemoteRef& ref, int frame) {
                                     filler(),
                                 }),
                                 text(""),
-                                hbox({text("  "),
-                                      text("                    ") | bgcolor(t.surface_alt),
-                                      filler()}),
-                                text(""),
-                                hbox({text("  "),
-                                      text("                                ") |
-                                          bgcolor(t.surface_alt),
-                                      filler()}),
+                                SkeletonRows(5, frame),
                                 text(""),
                             }));
 }
@@ -366,7 +362,7 @@ Element Problem(const PullSnapshot& snapshot) {
   Elements rows{
       hbox({
           text("  "),
-          text("✗") | bold | color(t.danger),
+          text(glyphs().cross) | bold | color(t.danger),
           text("  " + snapshot.error) | bold | color(t.text),
           filler(),
       }),
@@ -379,9 +375,7 @@ Element Problem(const PullSnapshot& snapshot) {
   rows.push_back(hbox({text("  "), Chip("r", "try again"), filler()}));
   rows.push_back(text(""));
 
-  return window(text(" COULD NOT READ PULL REQUESTS ") | bold | color(t.danger),
-                vbox(std::move(rows))) |
-         color(t.danger) | bgcolor(t.surface);
+  return Panel("COULD NOT READ PULL REQUESTS", vbox(std::move(rows)), {.alarm = true});
 }
 
 Element Unsupported(const RemoteRef& ref) {
@@ -390,7 +384,8 @@ Element Unsupported(const RemoteRef& ref) {
   return Section("PULL REQUESTS",
                  vbox({
                      filler(),
-                     hbox({filler(), text("◇") | bold | color(t.text_dim), filler()}),
+                     hbox({filler(), text(glyphs().empty_generic) | bold | color(t.text_dim),
+                           filler()}),
                      text(""),
                      hbox({filler(),
                            text(has_url ? "no GitHub or GitLab remote"
@@ -444,7 +439,7 @@ Element PullPanel(const PullSnapshot& snapshot, const RemoteRef& ref, const Pull
       Element list =
           Section(Noun(ref.provider, true) == "merge requests" ? "MERGE REQUESTS"
                                                                : "PULL REQUESTS",
-                  PullList(snapshot, ref, view, wide, rows));
+                  PullList(snapshot, ref, view, wide, rows), /*focused=*/true);
       if (!details_take_the_slack) {
         list = std::move(list) | flex;
         stretched = true;
