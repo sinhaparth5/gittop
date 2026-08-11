@@ -110,6 +110,26 @@ std::string SpinnerFrame(int frame) {
   return kFrames[static_cast<std::size_t>(index)];
 }
 
+std::string RelativeTime(std::int64_t when, std::int64_t now) {
+  const std::int64_t delta = now - when;
+  if (delta < 60) {
+    return "now";
+  }
+  if (delta < 3600) {
+    return std::to_string(delta / 60) + "m";
+  }
+  if (delta < 86400) {
+    return std::to_string(delta / 3600) + "h";
+  }
+  if (delta < 86400LL * 30) {
+    return std::to_string(delta / 86400) + "d";
+  }
+  if (delta < 86400LL * 365) {
+    return std::to_string(delta / (86400LL * 30)) + "mo";
+  }
+  return std::to_string(delta / (86400LL * 365)) + "y";
+}
+
 // A remote can be configured as https://user:token@host/path. That token must
 // never reach the screen, so the userinfo is replaced rather than shortened.
 std::string SafeUrl(const std::string& url) {

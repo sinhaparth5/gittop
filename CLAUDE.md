@@ -9,9 +9,10 @@ this file describes the architecture only.
 ## What this is
 
 `gittop` is a btop-inspired terminal dashboard for Git: local repository state that works with no
-network, plus GitHub and GitLab panels. Phases 0 through 5 are done, so there are seven views —
-status, history, branches, graph, remote, CI, and pull requests — plus push/pull, themes,
-rebindable keys and the mouse.
+network, plus GitHub and GitLab panels. Phases 0 through 6 are done, so there are nine views —
+status, history, branches, graph, diff, stashes, remote, CI, and pull requests — plus push/pull,
+stashing, rebase helpers, a `/` filter, themes, rebindable keys, a configurable tab set and the
+mouse.
 
 Trust `progress.md` for phase state, not the git log: the commit messages are off by one and
 misspell "phase", so `phrase 4 finished` is the commit that landed Phase 3.

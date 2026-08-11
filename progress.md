@@ -3,9 +3,9 @@
 A btop-inspired terminal dashboard for Git: local repo state that always works offline, plus
 remote-aware CI/pipeline and PR/MR panels for GitHub and GitLab.
 
-**Status:** Phases 0–5 complete and running. Next: Phase 6 (diff viewer, stash, rebase helpers).
+**Status:** Phases 0–6 complete and running. Next: Phase 7 (the visual design pass).
 **Started:** 2026-08-09
-**Last updated:** 2026-08-10
+**Last updated:** 2026-08-11
 
 ---
 
@@ -293,12 +293,76 @@ only. There is no force push and no way to ask for one. The push confirmation na
 the branch but does not show what is about to be sent, so it cannot tell you that you are about to
 push forty commits rather than one.
 
-### Phase 6 — Power features
-- [ ] Diff viewer
-- [ ] Stash management
-- [ ] Interactive rebase helpers
-- [ ] Search / filter across panels
-- [ ] Custom layouts
+### Phase 6 — Power features ✅
+- [x] Diff viewer (tab `5`): unstaged, staged, or a commit, with line numbers and per-file counts
+- [x] Stash management (tab `6`): save, apply, pop and drop, the last two behind confirms
+- [x] Rebase helpers: rebase onto upstream, and continue or abort anything interrupted
+- [x] Search / filter across panels (`/`), live, with a match count
+- [x] Custom layouts: `[layout] views`, `start_view` and `compact`
+
+**The diff is one flat list of lines, not a tree of files holding hunks.** Scrolling is then a
+single integer. Every alternative makes the cursor a pair — which file, which line within it — that
+has to be kept agreeing with itself through folding and filtering, and `DiffFile::first_line`
+indexes back into the flat list so jumping to the next file is still one lookup. The panel slices a
+window around the cursor rather than building every row: a twenty-thousand-line diff would otherwise
+build twenty thousand dom nodes to show forty of them.
+
+**Committing during a merge was already broken and nobody had noticed.** `Repository::Commit` passed
+exactly one parent, so a commit written while `MERGE_HEAD` existed claimed the other side of the
+merge never happened, left the state files on disk, and *looked like it worked*. Phase 6 is where it
+surfaced, because this is the phase that taught gittop to see an interrupted operation at all. It
+now reads `MERGE_HEAD` through `git_repository_mergehead_foreach`, writes every parent, and runs
+`git_repository_state_cleanup`. Verified against a real `--no-commit` merge: two parents, and the
+graph draws the fork. It also refuses outright during a rebase, where the commit has to go through
+`git_rebase_commit` or the plan is left standing on a step it already applied.
+
+**Only a rebase has a "continue".** A merge or a cherry-pick is finished by writing an ordinary
+commit, so the operation pane offers abort and says so rather than exposing a key that would come
+back with "no rebase in progress". Abort is two different operations behind one word: `git_rebase_abort`
+for a rebase, and a hard reset plus `git_repository_state_cleanup` for everything else, which is what
+`git merge --abort` is. The second is destructive in a way the first is not, and the confirm says so.
+
+**The filter mirrors the data rather than indexing it.** The first design passed every panel a vector
+of visible row indices; the second builds a filtered copy of the snapshot and hands the panel that,
+unchanged. The second is far less code — five panel signatures stayed as they were — and it makes
+the selection an index into what is on screen by construction rather than by everyone remembering.
+`VisibleStatus()` and its four siblings return the untouched snapshot when nothing is being filtered,
+so the common case copies nothing. A filtered commit list drops the lane gutter: hiding the rows
+between two commits makes it draw connections to somewhere off screen, and a filtered log is a list.
+
+**Digit keys had to become positional.** `[layout] views` reorders the tab bar, and the tab bar
+prints `i+1` as its digit, so `view_status = "1"` would have started disagreeing with what the tab
+said the moment anyone reordered anything. The seven named view actions are now nine slots,
+`view_1` … `view_9`, and `Perform` indexes `AllViews()`. A slot past the end of a shortened list
+does nothing.
+
+**The help overlay outgrew a terminal.** Phase 6 roughly doubled the number of keys, taking the
+single-column help to forty-odd rows — which FTXUI clips cleanly and silently, hiding half the help
+on a standard 24-row terminal. It now lays out in two columns when the terminal is wide enough
+(~120 columns) and short enough to need it, and in the one-column fallback `j`/`k` scroll it while
+every other key still closes on one keystroke.
+
+**Verified end to end** against three throwaway repositories. Diffs: unstaged, staged, an untracked
+file's content, a binary file named rather than dumped, a single-file diff from `enter` on the status
+view, a commit's diff from `enter` on the history view, and `s` swapping sides. Stash: save with
+untracked files included leaving a clean tree, the entry listed with its branch and age, pop behind
+its confirm restoring all four changes. Rebase: a clean rebase of a diverged branch producing linear
+history and 1-ahead/0-behind; a conflicting one stopping with the banner reading "rebase in progress
+2 of 2 master onto origin/master" and one conflicted file; resolve, stage, `o`, `c`, confirm →
+"rebase finished" with the branch reattached; and an abort putting HEAD back at exactly the commit it
+started from. Merge: the banner, and a commit with two parents. Filter: live counts stepping 4 → 3 →
+1 as the word was typed, the footer chip, `esc` clearing it, and the lane gutter dropping on a
+filtered log. Layout: three tabs in a configured order, opening on the configured view, `1` reaching
+whatever is first, and both an unknown view name and an out-of-list `start_view` reported by name.
+
+**Known simplifications.** The diff is capped at twenty thousand lines and says so where it stops.
+There is no word-level highlight within a changed line, no side-by-side mode, and no way to stage a
+hunk — staging is still per file. Rebase is onto the upstream only: no `--onto`, no interactive plan,
+no reword, squash or drop, which is what "interactive rebase helpers" would mean taken literally.
+Stash save takes no message and always includes untracked files. The filter is a case-insensitive
+substring across a fixed set of fields per view, cleared on every view switch, and does not reach
+the diff. `[layout]` decides which tabs exist and their order, not how panels are arranged within a
+view.
 
 ### Phase 7 — Visual design pass
 The phase where gittop stops looking like a functional TUI and starts looking like something
@@ -387,6 +451,10 @@ posts events needs the same treatment.
 
 **Destructive operations need guardrails.** Discard, force-push, and rebase helpers can lose
 work. Every one of them gets an explicit confirm step, and nothing gets a single-keystroke path.
+*Held through Phase 6.* Stash pop and drop, the rebase itself, and both answers in the operation
+pane all go through the confirm overlay — the operation pane's own `c` and `a` open a confirm
+rather than acting, so continuing or aborting a rebase is two deliberate keystrokes and not one.
+Stash apply is the one that does not ask, because the entry survives it.
 
 **Token handling.** Never log tokens, never render them in the UI (not even masked-with-a-reveal),
 and config files get `0600`. Env var should win over the config file so CI/ephemeral use doesn't
@@ -411,6 +479,26 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-11** — Phase 6 done. A diff viewer on tab 5, stashes on tab 6, rebase onto upstream
+  with continue and abort for anything interrupted, `/` to filter whichever list is on screen, and
+  `[layout]` to choose which tabs exist and in what order. Four things came out of it. The diff is
+  a flat list of lines because a cursor that is a (file, line) pair has to be kept agreeing with
+  itself and an integer does not. Teaching gittop to see an in-progress operation exposed a bug
+  that had been there since Phase 1: `Commit` wrote one parent, so committing a merge silently
+  dropped the other side and left MERGE_HEAD behind, looking like it had worked. The filter went
+  through two designs and the cheaper one was also the safer one — mirroring the snapshot rather
+  than passing every panel a vector of visible indices makes the selection an index into what is on
+  screen by construction. And making the tab set configurable forced the digit keys to become
+  positional, because a tab printing "3" while `3` went somewhere else is worse than either. Next:
+  Phase 7.
+- **2026-08-11** — ssh key passphrases. libgit2's credential callback is never consulted on a
+  `USE_SSH=exec` build — libgit2 execs `ssh` and every credential decision happens in that child —
+  so a passphrase prompt could not be answered through `git_credential_*` at all, which is why
+  push failed with "could not read the refs" and no way to type anything. The one channel in is
+  `SSH_ASKPASS` with `SSH_ASKPASS_REQUIRE=force`, and gittop now points it at its own binary and
+  serves the passphrase to the child over a unix socket in a 0700 mkdtemp directory. Not argv, not
+  the environment, not a file: `/proc/<pid>/environ` and `/cmdline` are unprivileged same-user
+  reads and a file would put a key's passphrase on disk.
 - **2026-08-10** — Phase 5 done. Pull requests and merge requests on tab 7, push/pull/fetch on a
   worker with a progress overlay, remotes cycled with `R`, seven themes with 256/16/mono fallback,
   configurable keybindings, and the mouse. Four things came out of it. The transports the Phase 0

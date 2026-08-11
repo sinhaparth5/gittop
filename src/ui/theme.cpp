@@ -223,6 +223,17 @@ Theme Compose(const Palette& p) {
   t.warning = {p.yellow};
   t.danger = {p.red};
 
+  // A diff is mostly context, so the changed rows carry a wash of their own
+  // hue rather than the full colour: a screen where every other line is a solid
+  // green block is harder to read than one where the eye can find the changes.
+  // Mixing toward the surface rather than a fixed dark keeps the light theme's
+  // tint light instead of muddy.
+  t.diff_add = {p.green};
+  t.diff_del = {p.red};
+  t.diff_hunk = {p.cyan};
+  t.diff_add_bg = {Mix(p.green, p.surface, 0.86F)};
+  t.diff_del_bg = {Mix(p.red, p.surface, 0.86F)};
+
   t.staged_ramp = ramp(p.green);
   t.unstaged_ramp = ramp(p.yellow);
   t.untracked_ramp = ramp(p.blue);

@@ -11,18 +11,23 @@
 #include "git/askpass.hpp"
 #include "git/repository.hpp"
 #include "git/transfer.hpp"
+#include "model/diff.hpp"
 #include "model/history.hpp"
+#include "model/operation.hpp"
 #include "model/pipeline.hpp"
 #include "model/pull.hpp"
 #include "model/remote.hpp"
+#include "model/stash.hpp"
 #include "model/status.hpp"
 #include "remote/fetcher.hpp"
 #include "remote/ticker.hpp"
+#include "ui/diff_panel.hpp"
 #include "ui/graph_panel.hpp"
 #include "ui/keymap.hpp"
 #include "ui/panels.hpp"
 #include "ui/pipeline_panel.hpp"
 #include "ui/pull_panel.hpp"
+#include "ui/stash_panel.hpp"
 
 namespace gittop {
 
@@ -41,6 +46,8 @@ class App {
     kHelp = 2,
     kTransfer = 3,
     kPassphrase = 4,
+    kFilter = 5,
+    kOperation = 6,
   };
 
   // What a `y` in the confirm overlay is agreeing to. One overlay rather than
@@ -49,6 +56,11 @@ class App {
   enum class ConfirmKind {
     Discard,
     Push,
+    StashPop,
+    StashDrop,
+    Rebase,
+    OperationContinue,
+    OperationAbort,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -79,6 +91,49 @@ class App {
   void SetView(ui::View view);
   void EnsureHistory();
   void Reload();
+
+  // Diffs sit on the same lazy terms as the history: read on the first switch
+  // to the view and cached, thrown away by anything that could change one.
+  void EnsureDiff();
+  void ShowDiff(const git::DiffRequest& request);
+  void OpenSelectedDiff();
+  void SwitchDiffSource();
+  void JumpFile(int delta);
+
+  // Stashes likewise, except that every mutation renumbers the list, so each
+  // one re-reads rather than adjusting what it already has.
+  void EnsureStashes();
+  void SaveStash();
+  void RequestStash(ConfirmKind kind);
+  void PerformStashPop();
+  void PerformStashDrop();
+  void ApplyStash();
+  const model::Stash* SelectedStash() const;
+
+  // An interrupted rebase, merge or cherry-pick. Read on every status refresh,
+  // because the alternative is a screen full of conflicted files with nothing
+  // saying where they came from.
+  void RequestRebase();
+  void PerformRebase();
+  void OpenOperation();
+  void RequestOperation(ConfirmKind kind);
+  void PerformOperationContinue();
+  void PerformOperationAbort();
+
+  // Search. One filter for the whole program rather than one per view: it is
+  // cleared on every view switch, so a second one would only ever be stale.
+  void OpenFilter();
+  void CloseFilter(bool keep);
+  void RebuildFilter();
+  int FilterMatches() const;
+  int FilterTotal() const;
+  // The visible data for whichever view is on screen. Returns the untouched
+  // snapshot when nothing is being filtered, so the common case copies nothing.
+  const model::StatusSnapshot& VisibleStatus() const;
+  const model::HistorySnapshot& VisibleHistory() const;
+  const model::PipelineSnapshot& VisiblePipelines() const;
+  const model::PullSnapshot& VisiblePulls() const;
+  const model::StashList& VisibleStashes() const;
 
   int& ActiveSelection();
   int ActiveCount() const;
@@ -184,10 +239,36 @@ class App {
   config::Config config_;
   std::string config_path_;
   ui::Keymap keys_;
+  // Read once in ApplyConfig rather than per frame. The render lambda asks
+  // about it on every repaint and the config cannot change under a running
+  // program, so a map lookup in the hot path buys nothing.
+  bool compact_ = false;
 
   model::StatusSnapshot snapshot_;
   model::HistorySnapshot history_;
   bool history_loaded_ = false;
+
+  model::OperationState operation_;
+
+  git::DiffRequest diff_request_;
+  model::DiffSnapshot diff_;
+  bool diff_loaded_ = false;
+  int diff_line_ = 0;
+
+  model::StashList stashes_;
+  bool stashes_loaded_ = false;
+  int stash_selected_ = 0;
+
+  // The live search, and the mirrors it produces. Rebuilt eagerly by
+  // RebuildFilter whenever the query or any source changes, rather than lazily
+  // on a dirty flag: the flag is one more thing that can be forgotten, and the
+  // sources here change on a keystroke or a fetch, never on a frame.
+  std::string filter_;
+  model::StatusSnapshot filtered_status_;
+  model::HistorySnapshot filtered_history_;
+  model::PipelineSnapshot filtered_pipelines_;
+  model::PullSnapshot filtered_pulls_;
+  model::StashList filtered_stashes_;
 
   std::vector<model::RemoteRef> remotes_;
   std::size_t remote_index_ = 0;
@@ -273,6 +354,9 @@ class App {
 
   int overlay_index_ = kCommit;
   bool overlay_open_ = false;
+  // Only used by the one-column help, on a terminal too narrow for two and too
+  // short for the whole list. Reset each time the overlay opens.
+  int help_scroll_ = 0;
 };
 
 }  // namespace gittop

@@ -50,13 +50,15 @@ const NamedAction kActionNames[] = {
 
     {"next_view", Action::NextView},
     {"prev_view", Action::PrevView},
-    {"view_status", Action::ViewStatus},
-    {"view_history", Action::ViewHistory},
-    {"view_branches", Action::ViewBranches},
-    {"view_graph", Action::ViewGraph},
-    {"view_remote", Action::ViewRemote},
-    {"view_ci", Action::ViewPipelines},
-    {"view_pulls", Action::ViewPulls},
+    {"view_1", Action::View1},
+    {"view_2", Action::View2},
+    {"view_3", Action::View3},
+    {"view_4", Action::View4},
+    {"view_5", Action::View5},
+    {"view_6", Action::View6},
+    {"view_7", Action::View7},
+    {"view_8", Action::View8},
+    {"view_9", Action::View9},
 
     {"down", Action::Down},
     {"up", Action::Up},
@@ -65,6 +67,7 @@ const NamedAction kActionNames[] = {
     {"page_down", Action::PageDown},
     {"page_up", Action::PageUp},
     {"open", Action::Open},
+    {"filter", Action::Filter},
 
     {"next_remote", Action::NextRemote},
     {"fetch", Action::Fetch},
@@ -77,6 +80,18 @@ const NamedAction kActionNames[] = {
     {"stage_all", Action::StageAll},
     {"discard", Action::Discard},
     {"commit", Action::Commit},
+
+    {"diff_switch", Action::DiffSwitch},
+    {"diff_next_file", Action::DiffNextFile},
+    {"diff_prev_file", Action::DiffPrevFile},
+
+    {"stash_save", Action::StashSave},
+    {"stash_apply", Action::StashApply},
+    {"stash_pop", Action::StashPop},
+    {"stash_drop", Action::StashDrop},
+
+    {"rebase", Action::Rebase},
+    {"operation", Action::Operation},
 
     {"pan_left", Action::PanLeft},
     {"pan_right", Action::PanRight},
@@ -93,6 +108,10 @@ std::string ScopeName(Scope scope) {
       return "status";
     case Scope::Graph:
       return "graph";
+    case Scope::Diff:
+      return "diff";
+    case Scope::Stash:
+      return "stash";
     case Scope::Global:
       break;
   }
@@ -194,13 +213,15 @@ Keymap::Keymap() {
 
   Bind(Action::NextView, Scope::Global, "tab");
   Bind(Action::PrevView, Scope::Global, "backtab");
-  Bind(Action::ViewStatus, Scope::Global, "1");
-  Bind(Action::ViewHistory, Scope::Global, "2");
-  Bind(Action::ViewBranches, Scope::Global, "3");
-  Bind(Action::ViewGraph, Scope::Global, "4");
-  Bind(Action::ViewRemote, Scope::Global, "5");
-  Bind(Action::ViewPipelines, Scope::Global, "6");
-  Bind(Action::ViewPulls, Scope::Global, "7");
+  Bind(Action::View1, Scope::Global, "1");
+  Bind(Action::View2, Scope::Global, "2");
+  Bind(Action::View3, Scope::Global, "3");
+  Bind(Action::View4, Scope::Global, "4");
+  Bind(Action::View5, Scope::Global, "5");
+  Bind(Action::View6, Scope::Global, "6");
+  Bind(Action::View7, Scope::Global, "7");
+  Bind(Action::View8, Scope::Global, "8");
+  Bind(Action::View9, Scope::Global, "9");
 
   Bind(Action::Down, Scope::Global, "j down");
   Bind(Action::Up, Scope::Global, "k up");
@@ -209,11 +230,19 @@ Keymap::Keymap() {
   Bind(Action::PageDown, Scope::Global, "ctrl-d pagedown");
   Bind(Action::PageUp, Scope::Global, "ctrl-u pageup");
   Bind(Action::Open, Scope::Global, "enter");
+  Bind(Action::Filter, Scope::Global, "/");
 
   Bind(Action::NextRemote, Scope::Global, "R");
   Bind(Action::Fetch, Scope::Global, "f");
   Bind(Action::Pull, Scope::Global, "p");
   Bind(Action::Push, Scope::Global, "P");
+
+  // Stashing has to work from the view where you notice you need it, which is
+  // the status view, so saving is global and only the three keys that act on a
+  // selected entry are scoped to the list that has one.
+  Bind(Action::StashSave, Scope::Global, "S");
+  Bind(Action::Rebase, Scope::Global, "B");
+  Bind(Action::Operation, Scope::Global, "o");
 
   Bind(Action::ToggleStage, Scope::Status, "space");
   Bind(Action::Stage, Scope::Status, "s");
@@ -221,6 +250,18 @@ Keymap::Keymap() {
   Bind(Action::StageAll, Scope::Status, "a");
   Bind(Action::Discard, Scope::Status, "d");
   Bind(Action::Commit, Scope::Status, "c");
+
+  // `s` switches sides on the diff view and stages on the status view: two
+  // scoped bindings that never meet, so neither shadows the other.
+  Bind(Action::DiffSwitch, Scope::Diff, "s");
+  Bind(Action::DiffNextFile, Scope::Diff, "]");
+  Bind(Action::DiffPrevFile, Scope::Diff, "[");
+
+  // `p` here shadows the global pull, deliberately: a pull is not what anyone
+  // means by `p` while looking at a list of stashes.
+  Bind(Action::StashApply, Scope::Stash, "a");
+  Bind(Action::StashPop, Scope::Stash, "p");
+  Bind(Action::StashDrop, Scope::Stash, "d");
 
   // The graph pans along a timeline instead of selecting rows, so it takes the
   // horizontal keys and reuses g/G for the ends of time rather than the ends of

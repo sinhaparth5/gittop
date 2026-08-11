@@ -1,5 +1,6 @@
 #include "ui/panels.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -72,6 +73,10 @@ std::string TabLabel(View view) {
       return "Branches";
     case View::Graph:
       return "Graph";
+    case View::Diff:
+      return "Diff";
+    case View::Stashes:
+      return "Stashes";
     case View::Remote:
       return "Remote";
     case View::Pipelines:
@@ -81,6 +86,17 @@ std::string TabLabel(View view) {
   }
   return "?";
 }
+
+// The name a config writes and the view it means. One table for both
+// directions, so a view can never be parseable under a name it does not print.
+const struct {
+  const char* name;
+  View view;
+} kViewNames[] = {
+    {"status", View::Status},   {"history", View::History},     {"branches", View::Branches},
+    {"graph", View::Graph},     {"diff", View::Diff},           {"stashes", View::Stashes},
+    {"remote", View::Remote},   {"ci", View::Pipelines},        {"pulls", View::Pulls},
+};
 
 // A chip whose key comes from the live binding. Empty when the action has been
 // unbound in the config, in which case there is nothing to advertise.
@@ -267,12 +283,47 @@ Element Header(const model::StatusSnapshot& snapshot) {
   return hbox(std::move(parts)) | bgcolor(t.surface);
 }
 
+namespace {
+
+// Mutable for the same reason the active theme is: the config replaces it once,
+// on the UI thread, before the first frame, and every reader afterwards is on
+// that same thread during Render.
+std::vector<View> g_views{
+    View::Status,  View::History,   View::Branches, View::Graph, View::Diff,
+    View::Stashes, View::Remote,    View::Pipelines, View::Pulls,
+};
+
+}  // namespace
+
 const std::vector<View>& AllViews() {
-  static const std::vector<View> kViews{
-      View::Status, View::History, View::Branches, View::Graph,
-      View::Remote, View::Pipelines, View::Pulls,
-  };
-  return kViews;
+  return g_views;
+}
+
+bool SetViews(const std::vector<View>& views) {
+  if (views.empty()) {
+    return false;
+  }
+  g_views = views;
+  return true;
+}
+
+bool ParseViewName(const std::string& name, View* out) {
+  for (const auto& entry : kViewNames) {
+    if (name == entry.name) {
+      *out = entry.view;
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string ViewName(View view) {
+  for (const auto& entry : kViewNames) {
+    if (entry.view == view) {
+      return entry.name;
+    }
+  }
+  return "?";
 }
 
 Element TabBar(View active, std::vector<Box>* tabs) {
@@ -395,7 +446,7 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected,
 }
 
 Element Footer(const std::string& message, bool is_error, float fade, View view,
-               const Keymap& keys) {
+               const Keymap& keys, const std::string& filter) {
   const Theme& t = theme();
 
   // The toast line is always drawn, blank or not, so the list above never
@@ -444,12 +495,32 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(Chip(move, "move"));
     chips.push_back(KeyChip(keys, Action::Open, "details"));
     chips.push_back(KeyChip(keys, Action::Reload, "refresh"));
+  } else if (view == View::Diff) {
+    chips.push_back(Chip(move, "scroll"));
+    chips.push_back(Chip(keys.KeyFor(Action::DiffPrevFile) + "/" +
+                             keys.KeyFor(Action::DiffNextFile),
+                         "file"));
+    chips.push_back(KeyChip(keys, Action::DiffSwitch, "staged"));
+  } else if (view == View::Stashes) {
+    chips.push_back(KeyChip(keys, Action::StashSave, "stash"));
+    chips.push_back(KeyChip(keys, Action::StashApply, "apply"));
+    chips.push_back(KeyChip(keys, Action::StashPop, "pop"));
+    chips.push_back(KeyChip(keys, Action::StashDrop, "drop"));
   } else {
     chips.push_back(Chip(move, "move"));
     chips.push_back(KeyChip(keys, Action::NextView, "switch view"));
     chips.push_back(KeyChip(keys, Action::Reload, "reload"));
   }
   chips.push_back(filler());
+
+  // An active filter goes where the eye already is when a list looks short. A
+  // list hiding nine rows out of ten and a list with one row in it are
+  // indistinguishable otherwise, and only one of them is a problem.
+  if (!filter.empty()) {
+    chips.push_back(text(" / ") | bold | color(t.bg) | bgcolor(t.warning));
+    chips.push_back(text(" " + filter + " ") | color(t.text) | bgcolor(t.surface_raised));
+    chips.push_back(text("  "));
+  }
   chips.push_back(KeyChip(keys, Action::Help, "help"));
   chips.push_back(KeyChip(keys, Action::Quit, "quit"));
 
@@ -458,7 +529,133 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
   return vbox({toast, key_row});
 }
 
-Element HelpPane(const Keymap& keys) {
+Element OperationBanner(const model::OperationState& state, const Keymap& keys) {
+  if (!state.active()) {
+    // Not an empty line: an empty line still costs a row, and the status view
+    // has better uses for it than reserving space against a merge that is not
+    // happening. Nothing here reflows under the cursor, so it can come and go.
+    return text("");
+  }
+  const Theme& t = theme();
+
+  Elements parts{
+      text(" ⚠ ") | bold | color(t.bg) | bgcolor(t.warning),
+      text("  "),
+      text(std::string(model::OperationName(state.operation)) + " in progress") | bold |
+          color(t.text),
+  };
+  if (state.total > 0) {
+    parts.push_back(text("  " + std::to_string(state.step) + " of " +
+                         std::to_string(state.total)) |
+                    color(t.text_dim));
+  }
+  if (!state.detail.empty()) {
+    parts.push_back(text("  " + state.detail) | color(t.text_faint));
+  }
+  parts.push_back(filler());
+  parts.push_back(KeyChip(keys, Action::Operation, "continue or abort"));
+  parts.push_back(text(" "));
+
+  return hbox(std::move(parts)) | bgcolor(t.surface_raised);
+}
+
+Element OperationPane(const model::OperationState& state) {
+  const Theme& t = theme();
+  const std::string name = model::OperationName(state.operation);
+  const bool continuable = state.operation == model::Operation::Rebase;
+
+  Elements rows{
+      hbox({
+          text(" ▲ ") | bold | color(t.warning),
+          text(name.empty() ? "Nothing in progress" : name + " in progress") | bold |
+              color(t.text),
+          filler(),
+      }),
+      separator() | color(t.border),
+      text(""),
+  };
+
+  if (!state.active()) {
+    rows.push_back(hbox({text("   "),
+                         text("This repository is not in the middle of anything.") |
+                             color(t.text_dim)}));
+  } else {
+    if (state.total > 0) {
+      rows.push_back(hbox({text("   "),
+                           text("step " + std::to_string(state.step) + " of " +
+                                std::to_string(state.total)) |
+                               color(t.text)}));
+    }
+    if (!state.detail.empty()) {
+      rows.push_back(hbox({text("   "), text(state.detail) | color(t.text_dim)}));
+    }
+    rows.push_back(text(""));
+    // The two answers do different amounts of damage and the pane says which
+    // is which, because "abort" reads as "stop bothering me" until you know it
+    // also means "throw away what is in the tree".
+    if (continuable) {
+      rows.push_back(hbox({text("   "), text("continue") | bold | color(t.success),
+                           text("  commits what is staged and carries on") | color(t.text_dim)}));
+    } else {
+      // Only a rebase has a "continue": a merge or a cherry-pick is finished by
+      // writing an ordinary commit, and offering a key that would answer "no
+      // rebase in progress" is worse than not offering one.
+      rows.push_back(hbox({text("   "),
+                           text("Stage the resolved files and commit to finish it.") |
+                               color(t.text_dim)}));
+    }
+    rows.push_back(hbox({text("   "), text("abort   ") | bold | color(t.danger),
+                         text("  puts the branch back and discards the attempt") |
+                             color(t.text_dim)}));
+  }
+
+  rows.push_back(text(""));
+  rows.push_back(separator() | color(t.border));
+  rows.push_back(hbox({
+      text(" "),
+      continuable ? Chip("c", "continue") : text(""),
+      text(" "),
+      state.active() ? Chip("a", "abort") : text(""),
+      filler(),
+      Chip("esc", "close"),
+  }));
+
+  return vbox(std::move(rows)) | PaneFrame() | size(WIDTH, GREATER_THAN, 62);
+}
+
+Element FilterPane(Element input, const std::string& scope, int matches, int total) {
+  const Theme& t = theme();
+
+  // The count is the whole point of showing this while typing: it turns a
+  // filter that matches nothing from a blank list into a number that says so
+  // before you have finished the word.
+  const bool nothing = total > 0 && matches == 0;
+
+  return vbox({
+             hbox({
+                 text(" Filter ") | bold | color(t.accent),
+                 text(scope) | color(t.text_faint),
+                 filler(),
+                 text(std::to_string(matches) + " of " + std::to_string(total) + " ") |
+                     color(nothing ? t.danger : t.text_dim),
+             }),
+             separator() | color(t.border),
+             hbox({
+                 text("  / ") | bold | color(t.warning),
+                 std::move(input) | flex,
+             }),
+             separator() | color(t.border),
+             hbox({
+                 text(" "),
+                 Chip("enter", "keep it"),
+                 filler(),
+                 Chip("esc", "clear"),
+             }),
+         }) |
+         PaneFrame() | size(WIDTH, GREATER_THAN, 56);
+}
+
+Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
   const Theme& t = theme();
   // Sixteen, not twelve: "ctrl-u / ctrl-d" is fifteen cells and was being cut
   // in half by the description next to it.
@@ -478,53 +675,125 @@ Element HelpPane(const Keymap& keys) {
   const auto pair = [&row, &keys](Action a, Action b, const std::string& what) {
     return row(keys.KeyFor(a) + " / " + keys.KeyFor(b), what);
   };
+  const auto heading = [&t](const std::string& what) {
+    return hbox({text("  "), text(what) | bold | color(t.text_faint)});
+  };
+
+  Elements left{
+      heading("MOVING"),
+      // Slots rather than names, because [layout] views decides which view each
+      // digit reaches and the tab bar prints the same number.
+      row(keys.KeyFor(Action::View1) + " … " + keys.KeyFor(Action::View9),
+          "jump to a tab by its number"),
+      line(Action::NextView, "cycle through the views"),
+      line(Action::Down, "move down"),
+      line(Action::Up, "move up"),
+      pair(Action::First, Action::Last, "first / last, or the ends of the graph"),
+      pair(Action::PageUp, Action::PageDown, "move a screen at a time"),
+      line(Action::Filter, "filter this list; esc clears it"),
+      line(Action::Open, "diff a file or commit, jobs, pull details"),
+      text(""),
+      heading("THE GRAPH"),
+      pair(Action::PanLeft, Action::PanRight, "pan through time"),
+      row(keys.KeyFor(Action::BucketDay) + " / " + keys.KeyFor(Action::BucketWeek) + " / " +
+              keys.KeyFor(Action::BucketMonth),
+          "bucket: day, week, month"),
+      text(""),
+      heading("CHANGES"),
+      line(Action::ToggleStage, "stage or unstage the selection"),
+      pair(Action::Stage, Action::Unstage, "stage / unstage explicitly"),
+      line(Action::StageAll, "stage everything"),
+      line(Action::Discard, "discard the selection, after a confirm"),
+      line(Action::Commit, "write a commit"),
+  };
+
+  Elements right{
+      heading("THE DIFF"),
+      line(Action::DiffSwitch, "swap between unstaged and staged"),
+      pair(Action::DiffPrevFile, Action::DiffNextFile, "previous / next file"),
+      text(""),
+      heading("STASHES"),
+      line(Action::StashSave, "stash the whole working tree"),
+      line(Action::StashApply, "apply, keeping the entry"),
+      line(Action::StashPop, "apply and drop it, after a confirm"),
+      line(Action::StashDrop, "drop it, after a confirm"),
+      text(""),
+      heading("HISTORY SURGERY"),
+      line(Action::Rebase, "rebase onto the upstream, after a confirm"),
+      line(Action::Operation, "continue or abort what is in progress"),
+      text(""),
+      heading("THE REMOTE"),
+      line(Action::Fetch, "fetch from the active remote"),
+      line(Action::Pull, "pull, fast-forward only"),
+      line(Action::Push, "push this branch, after a confirm"),
+      line(Action::NextRemote, "switch to the next remote"),
+      text(""),
+      heading("EVERYWHERE"),
+      line(Action::Theme, "next theme"),
+      line(Action::Reload, "re-read the repository or the remote"),
+      line(Action::Quit, "quit"),
+      row("mouse", "wheel scrolls, click selects a row or tab"),
+      // What the screen is actually being drawn with. The first question about
+      // a terminal that looks wrong is which of these two it is.
+      row("theme", ThemeLabel() + " · " + ColorDepthName(ColorDepthNow())),
+  };
+
+  Elements legend{
+      text("  "),
+      text("●") | color(t.staged),
+      text(" staged   ") | color(t.text_faint),
+      text("○") | color(t.unstaged),
+      text(" unstaged   ") | color(t.text_faint),
+      text("○") | color(t.untracked),
+      text(" untracked   ") | color(t.text_faint),
+      text("◆") | color(t.conflict),
+      text(" conflict") | color(t.text_faint),
+  };
+
+  // Two columns wherever both fit. One column is forty-odd rows and gets its
+  // bottom half clipped off a standard terminal with nothing saying so, which
+  // is a help screen that hides half the help.
+  constexpr int kColumnWidth = 58;
+  constexpr int kChrome = 6;  // title, two separators, the legend, the chip
+  const bool side_by_side =
+      width >= (2 * kColumnWidth) + 4 &&
+      height < static_cast<int>(left.size() + right.size()) + kChrome;
+
+  Element body;
+  if (side_by_side) {
+    body = hbox({
+        vbox(std::move(left)) | size(WIDTH, EQUAL, kColumnWidth),
+        separator() | color(t.border),
+        vbox(std::move(right)) | size(WIDTH, EQUAL, kColumnWidth),
+    });
+  } else {
+    Elements all = std::move(left);
+    all.push_back(text(""));
+    for (Element& element : right) {
+      all.push_back(std::move(element));
+    }
+    // One column on a terminal too short for it is the case scrolling exists
+    // for: forty rows in twenty is half a help screen, and a reader has no way
+    // to know the other half is there. The caller keeps the offset and routes
+    // the movement keys here instead of closing on them.
+    const auto index = static_cast<std::size_t>(
+        std::clamp(scroll, 0, std::max(0, static_cast<int>(all.size()) - 1)));
+    all[index] = std::move(all[index]) | ftxui::focus;
+    body = vbox(std::move(all)) | vscroll_indicator | yframe;
+  }
 
   return vbox({
              hbox({text(" Keys") | bold | color(t.text), filler()}),
              separator() | color(t.border),
-             row(keys.KeyFor(Action::ViewStatus) + " … " + keys.KeyFor(Action::ViewPulls),
-                 "status / history / branches / graph / remote / CI / pulls"),
-             line(Action::NextView, "cycle through the views"),
-             line(Action::Down, "move down"),
-             line(Action::Up, "move up"),
-             pair(Action::First, Action::Last, "first / last, or oldest / newest on the graph"),
-             pair(Action::PageUp, Action::PageDown, "move a screen at a time"),
-             pair(Action::PanLeft, Action::PanRight, "pan the graph through time"),
-             row(keys.KeyFor(Action::BucketDay) + " / " + keys.KeyFor(Action::BucketWeek) + " / " +
-                     keys.KeyFor(Action::BucketMonth),
-                 "graph bucket: day, week, month"),
-             line(Action::ToggleStage, "stage or unstage the selection"),
-             pair(Action::Stage, Action::Unstage, "stage / unstage explicitly"),
-             line(Action::StageAll, "stage everything"),
-             line(Action::Discard, "discard the selection, after a confirm"),
-             line(Action::Commit, "write a commit"),
-             line(Action::Open, "jobs of a CI run, or details of a pull request"),
-             line(Action::Fetch, "fetch from the active remote"),
-             line(Action::Pull, "pull — fetch, then fast-forward if that is all it takes"),
-             line(Action::Push, "push the current branch, after a confirm"),
-             line(Action::NextRemote, "switch to the next remote"),
-             line(Action::Theme, "next theme"),
-             line(Action::Reload, "re-read the repository, or re-fetch the remote"),
-             line(Action::Quit, "quit"),
+             std::move(body),
              separator() | color(t.border),
-             row("mouse", "wheel scrolls, click selects a row or a tab"),
-             // What the screen is actually being drawn with. The first question
-             // about a terminal that looks wrong is which of these two it is.
-             row("theme", ThemeLabel() + " · " + ColorDepthName(ColorDepthNow())),
+             hbox(std::move(legend)),
              separator() | color(t.border),
-             hbox({
-                 text("  "),
-                 text("●") | color(t.staged),
-                 text(" staged   ") | color(t.text_faint),
-                 text("○") | color(t.unstaged),
-                 text(" unstaged   ") | color(t.text_faint),
-                 text("○") | color(t.untracked),
-                 text(" untracked   ") | color(t.text_faint),
-                 text("◆") | color(t.conflict),
-                 text(" conflict") | color(t.text_faint),
-             }),
-             separator() | color(t.border),
-             hbox({filler(), Chip("any key", "close"), filler()}),
+             hbox({filler(),
+                   side_by_side ? Chip("any key", "close")
+                                : hbox({Chip("j / k", "scroll"), text("  "),
+                                        Chip("any other key", "close")}),
+                   filler()}),
          }) |
          PaneFrame() | size(WIDTH, GREATER_THAN, 74);
 }

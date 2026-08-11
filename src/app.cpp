@@ -53,6 +53,35 @@ constexpr int kBudgetFloorPercent = 20;
 // what a hand expects. One row per notch makes a long log feel stuck.
 constexpr int kWheelRows = 3;
 
+// More diff than any terminal is going to be scrolled through, and enough that
+// a vendored dependency landing in one commit does not make the view unusable.
+constexpr std::size_t kMaxDiffLines = 20000;
+
+// Case-insensitive substring, ASCII only. A filter is a thing typed in a hurry
+// to find a filename, not a search engine: no regex, no fuzzy matching, and no
+// surprise about why `Makefile` did not match `makefile`.
+bool Matches(const std::string& needle, const std::string& haystack) {
+  if (needle.empty()) {
+    return true;
+  }
+  if (needle.size() > haystack.size()) {
+    return false;
+  }
+  const auto fold = [](char ch) {
+    return ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
+  };
+  for (std::size_t start = 0; start + needle.size() <= haystack.size(); ++start) {
+    std::size_t i = 0;
+    while (i < needle.size() && fold(needle[i]) == fold(haystack[start + i])) {
+      ++i;
+    }
+    if (i == needle.size()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Username halves for a token-over-https push. The token is the password in
 // every case; only the name in front of it differs, and both providers ignore
 // anything sensible in that slot.
@@ -125,6 +154,60 @@ void App::ApplyConfig() {
     }
   }
 
+  // Which tabs exist and in what order. Applied before anything reads AllViews,
+  // which is why it is here rather than at the first render: the digit keys are
+  // positional, so a reordered list changes what `3` reaches.
+  const std::string wanted_views = config_.Get("layout.views");
+  if (!wanted_views.empty()) {
+    std::vector<ui::View> views;
+    std::string word;
+    // Split on the same characters the keymap accepts, so a config can write
+    // the list either way round without learning a second rule.
+    const auto flush = [&views, &word, &complain] {
+      if (word.empty()) {
+        return;
+      }
+      ui::View view = ui::View::Status;
+      if (ui::ParseViewName(word, &view)) {
+        views.push_back(view);
+      } else {
+        complain("layout.views: '" + word + "' is not a view gittop has");
+      }
+      word.clear();
+    };
+    for (const char ch : wanted_views) {
+      if (ch == ' ' || ch == '\t' || ch == ',') {
+        flush();
+        continue;
+      }
+      word.push_back(ch);
+    }
+    flush();
+
+    if (!ui::SetViews(views)) {
+      complain("layout.views named no views gittop has — keeping the defaults");
+    }
+  }
+
+  compact_ = config_.GetBool("layout.compact", false);
+
+  const std::string start = config_.Get("layout.start_view");
+  if (!start.empty()) {
+    ui::View view = ui::View::Status;
+    if (!ui::ParseViewName(start, &view)) {
+      complain("unknown layout.start_view '" + start + "'");
+    } else {
+      const std::vector<ui::View>& views = ui::AllViews();
+      // A start view that is not in the tab bar would open on a screen no key
+      // can get back to, which is worse than ignoring the line.
+      if (std::find(views.begin(), views.end(), view) == views.end()) {
+        complain("layout.start_view '" + start + "' is not one of layout.views");
+      } else {
+        view_ = view;
+      }
+    }
+  }
+
   constexpr const char* kKeyPrefix = "keys.";
   for (const auto& [key, value] : config_.values()) {
     if (key.rfind(kKeyPrefix, 0) != 0) {
@@ -151,8 +234,19 @@ void App::ApplyConfig() {
 
 void App::Refresh() {
   snapshot_ = repo_.ReadStatus();
+  // Read alongside the status because they answer one question together: a pile
+  // of conflicted files means something quite different mid-rebase, and the
+  // banner that says so has to appear in the same frame as the files do.
+  operation_ = repo_.ReadOperation();
 
-  const int count = static_cast<int>(snapshot_.entries.size());
+  // The working tree just changed under whatever diff was cached, and a diff of
+  // a commit is the one kind that cannot go stale this way.
+  if (diff_request_.source != model::DiffSource::Commit) {
+    diff_loaded_ = false;
+  }
+
+  RebuildFilter();
+  const int count = static_cast<int>(VisibleStatus().entries.size());
   selected_ = std::clamp(selected_, 0, std::max(0, count - 1));
 }
 
@@ -281,6 +375,10 @@ int& App::ActiveSelection() {
       return pipeline_selected_;
     case ui::View::Pulls:
       return pull_selected_;
+    case ui::View::Diff:
+      return diff_line_;
+    case ui::View::Stashes:
+      return stash_selected_;
     case ui::View::Graph:
     case ui::View::Remote:
     case ui::View::Status:
@@ -290,6 +388,136 @@ int& App::ActiveSelection() {
 }
 
 int App::ActiveCount() const {
+  // Every one of these counts what is on screen rather than what was read, so
+  // the cursor can never point past the end of a filtered list.
+  switch (view_) {
+    case ui::View::History:
+      return static_cast<int>(VisibleHistory().commits.size());
+    case ui::View::Branches:
+      return static_cast<int>(VisibleHistory().branches.size());
+    case ui::View::Pipelines:
+      return static_cast<int>(VisiblePipelines().runs.size());
+    case ui::View::Pulls:
+      return static_cast<int>(VisiblePulls().pulls.size());
+    case ui::View::Diff:
+      return static_cast<int>(diff_.lines.size());
+    case ui::View::Stashes:
+      return static_cast<int>(VisibleStashes().entries.size());
+    case ui::View::Graph:
+      return 0;  // the graph pans instead of selecting
+    case ui::View::Remote:
+      return 0;  // one repository, nothing to move between
+    case ui::View::Status:
+      break;
+  }
+  return static_cast<int>(VisibleStatus().entries.size());
+}
+
+const model::StatusSnapshot& App::VisibleStatus() const {
+  return filter_.empty() ? snapshot_ : filtered_status_;
+}
+const model::HistorySnapshot& App::VisibleHistory() const {
+  return filter_.empty() ? history_ : filtered_history_;
+}
+const model::PipelineSnapshot& App::VisiblePipelines() const {
+  return filter_.empty() ? pipelines_ : filtered_pipelines_;
+}
+const model::PullSnapshot& App::VisiblePulls() const {
+  return filter_.empty() ? pulls_ : filtered_pulls_;
+}
+const model::StashList& App::VisibleStashes() const {
+  return filter_.empty() ? stashes_ : filtered_stashes_;
+}
+
+void App::RebuildFilter() {
+  // Nothing to mirror. Leaving the copies alone rather than clearing them keeps
+  // this the cheap path, which matters because it runs on every keystroke of
+  // the filter box and on every refresh whether or not one is active.
+  if (filter_.empty()) {
+    return;
+  }
+
+  filtered_status_ = snapshot_;
+  filtered_status_.entries.clear();
+  filtered_status_.staged = 0;
+  filtered_status_.unstaged = 0;
+  filtered_status_.untracked = 0;
+  filtered_status_.conflicted = 0;
+  for (const model::StatusEntry& entry : snapshot_.entries) {
+    if (!Matches(filter_, entry.path) && !Matches(filter_, entry.old_path)) {
+      continue;
+    }
+    // The counts drive the summary bars, so they describe what is shown. A bar
+    // reading forty while four rows are listed is the wrong kind of honest.
+    if (entry.stage == model::Stage::Conflict) {
+      ++filtered_status_.conflicted;
+    } else if (entry.stage == model::Stage::Index) {
+      ++filtered_status_.staged;
+    } else if (entry.change == model::Change::Untracked) {
+      ++filtered_status_.untracked;
+    } else {
+      ++filtered_status_.unstaged;
+    }
+    filtered_status_.entries.push_back(entry);
+  }
+
+  filtered_history_ = history_;
+  filtered_history_.commits.clear();
+  filtered_history_.branches.clear();
+  for (const model::Commit& commit : history_.commits) {
+    if (!Matches(filter_, commit.summary) && !Matches(filter_, commit.author) &&
+        !Matches(filter_, commit.short_id)) {
+      continue;
+    }
+    model::Commit copy = commit;
+    // The lane gutter describes the shape of the whole history, and hiding the
+    // rows between two commits makes it draw connections that are no longer on
+    // screen. Dropping it is the honest answer; a filtered log is a list.
+    copy.row.clear();
+    filtered_history_.commits.push_back(std::move(copy));
+  }
+  for (const model::Branch& branch : history_.branches) {
+    if (Matches(filter_, branch.name) || Matches(filter_, branch.upstream)) {
+      filtered_history_.branches.push_back(branch);
+    }
+  }
+
+  filtered_pipelines_ = pipelines_;
+  filtered_pipelines_.runs.clear();
+  for (const model::Pipeline& run : pipelines_.runs) {
+    if (Matches(filter_, run.title) || Matches(filter_, run.branch) ||
+        Matches(filter_, run.commit_title) || Matches(filter_, run.actor)) {
+      filtered_pipelines_.runs.push_back(run);
+    }
+  }
+
+  filtered_pulls_ = pulls_;
+  filtered_pulls_.pulls.clear();
+  for (const model::PullRequest& pull : pulls_.pulls) {
+    if (Matches(filter_, pull.title) || Matches(filter_, pull.author) ||
+        Matches(filter_, pull.source_branch) || Matches(filter_, pull.target_branch)) {
+      filtered_pulls_.pulls.push_back(pull);
+    }
+  }
+
+  filtered_stashes_.entries.clear();
+  for (const model::Stash& stash : stashes_.entries) {
+    if (Matches(filter_, stash.message) || Matches(filter_, stash.branch)) {
+      filtered_stashes_.entries.push_back(stash);
+    }
+  }
+
+  // A filter that narrowed the list out from under the cursor leaves it past
+  // the end, and every subsequent Move would clamp against a stale count.
+  int& selection = ActiveSelection();
+  selection = std::clamp(selection, 0, std::max(0, ActiveCount() - 1));
+}
+
+int App::FilterMatches() const {
+  return ActiveCount();
+}
+
+int App::FilterTotal() const {
   switch (view_) {
     case ui::View::History:
       return static_cast<int>(history_.commits.size());
@@ -299,14 +527,36 @@ int App::ActiveCount() const {
       return static_cast<int>(pipelines_.runs.size());
     case ui::View::Pulls:
       return static_cast<int>(pulls_.pulls.size());
+    case ui::View::Stashes:
+      return static_cast<int>(stashes_.entries.size());
+    case ui::View::Diff:
     case ui::View::Graph:
-      return 0;  // the graph pans instead of selecting
     case ui::View::Remote:
-      return 0;  // one repository, nothing to move between
+      return 0;
     case ui::View::Status:
       break;
   }
   return static_cast<int>(snapshot_.entries.size());
+}
+
+void App::OpenFilter() {
+  if (FilterTotal() == 0) {
+    Note("nothing to filter on this view", false);
+    return;
+  }
+  OpenOverlay(kFilter);
+}
+
+void App::CloseFilter(bool keep) {
+  if (!keep) {
+    filter_.clear();
+  }
+  RebuildFilter();
+  // Whether it was kept or cleared, the list under the cursor just changed
+  // size, and the selection has to land somewhere that exists.
+  int& selection = ActiveSelection();
+  selection = std::clamp(selection, 0, std::max(0, ActiveCount() - 1));
+  CloseOverlay();
 }
 
 int App::MaxGraphOffset() const {
@@ -401,10 +651,14 @@ void App::NextRemote() {
     case ui::View::Pulls:
       EnsurePulls();
       break;
+    // None of these describes the remote, so switching remotes leaves them
+    // exactly as they were.
     case ui::View::Status:
     case ui::View::History:
     case ui::View::Branches:
     case ui::View::Graph:
+    case ui::View::Diff:
+    case ui::View::Stashes:
       break;
   }
 }
@@ -1031,7 +1285,248 @@ void App::EnsureHistory() {
       std::clamp(branch_selected_, 0, std::max(0, static_cast<int>(history_.branches.size()) - 1));
 }
 
+void App::EnsureDiff() {
+  if (diff_loaded_) {
+    return;
+  }
+  diff_ = repo_.ReadDiff(diff_request_, kMaxDiffLines);
+  diff_loaded_ = true;
+  diff_line_ = std::clamp(diff_line_, 0, std::max(0, static_cast<int>(diff_.lines.size()) - 1));
+  if (!diff_.error.empty()) {
+    Note(diff_.error, true);
+  }
+}
+
+void App::ShowDiff(const git::DiffRequest& request) {
+  diff_request_ = request;
+  diff_loaded_ = false;
+  diff_line_ = 0;
+  // A filter narrowing a list of files says nothing useful about a list of diff
+  // lines, and carrying it across would silently hide most of the diff.
+  filter_.clear();
+  SetView(ui::View::Diff);
+}
+
+void App::OpenSelectedDiff() {
+  if (view_ == ui::View::Status) {
+    const model::StatusEntry* entry = Selected();
+    if (entry == nullptr) {
+      Note("nothing to diff", false);
+      return;
+    }
+    git::DiffRequest request;
+    // A staged row and an unstaged row for the same file are two different
+    // changes, and showing the wrong one is worse than showing neither.
+    request.source = entry->stage == model::Stage::Index ? model::DiffSource::Staged
+                                                         : model::DiffSource::Worktree;
+    request.path = entry->path;
+    ShowDiff(request);
+    return;
+  }
+
+  if (view_ == ui::View::History) {
+    const model::HistorySnapshot& history = VisibleHistory();
+    if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(history.commits.size())) {
+      Note("nothing to diff", false);
+      return;
+    }
+    git::DiffRequest request;
+    request.source = model::DiffSource::Commit;
+    request.commit = history.commits[static_cast<std::size_t>(commit_selected_)].id;
+    ShowDiff(request);
+    return;
+  }
+
+  Note("nothing to diff here", false);
+}
+
+void App::SwitchDiffSource() {
+  if (diff_request_.source == model::DiffSource::Commit) {
+    // There is no other side of a commit to show. Falling back to the working
+    // tree would be a different diff entirely under the same keystroke.
+    Note("this is a commit — there is no staged half of it", false);
+    return;
+  }
+  git::DiffRequest request = diff_request_;
+  request.source = request.source == model::DiffSource::Worktree ? model::DiffSource::Staged
+                                                                 : model::DiffSource::Worktree;
+  ShowDiff(request);
+}
+
+void App::JumpFile(int delta) {
+  if (diff_.files.empty()) {
+    return;
+  }
+  // The cursor is a line index and the file boundaries are line indices, so
+  // the next file is the first boundary past where the cursor is standing.
+  const auto here = static_cast<std::size_t>(std::max(0, diff_line_));
+  if (delta > 0) {
+    for (const model::DiffFile& file : diff_.files) {
+      if (file.first_line > here) {
+        diff_line_ = static_cast<int>(file.first_line);
+        return;
+      }
+    }
+    Note("last file", false);
+    return;
+  }
+  for (auto it = diff_.files.rbegin(); it != diff_.files.rend(); ++it) {
+    if (it->first_line < here) {
+      diff_line_ = static_cast<int>(it->first_line);
+      return;
+    }
+  }
+  Note("first file", false);
+}
+
+void App::EnsureStashes() {
+  if (stashes_loaded_) {
+    return;
+  }
+  stashes_ = repo_.ReadStashes();
+  stashes_loaded_ = true;
+  RebuildFilter();
+  stash_selected_ =
+      std::clamp(stash_selected_, 0, std::max(0, static_cast<int>(stashes_.entries.size()) - 1));
+}
+
+const model::Stash* App::SelectedStash() const {
+  const model::StashList& list = VisibleStashes();
+  if (stash_selected_ < 0 || stash_selected_ >= static_cast<int>(list.entries.size())) {
+    return nullptr;
+  }
+  return &list.entries[static_cast<std::size_t>(stash_selected_)];
+}
+
+void App::SaveStash() {
+  if (snapshot_.clean()) {
+    Note("nothing to stash", false);
+    return;
+  }
+  // Untracked files go in too. Leaving them behind is git's default and it is
+  // the one that surprises people: a "clean tree" with new files still in it is
+  // not what anyone means by stashing their work.
+  const git::OpResult result = repo_.StashSave(/*message=*/{}, /*include_untracked=*/true);
+  stashes_loaded_ = false;
+  if (result.ok) {
+    EnsureStashes();
+  }
+  Apply(result);
+}
+
+void App::ApplyStash() {
+  const model::Stash* stash = SelectedStash();
+  if (stash == nullptr) {
+    Note("no stash selected", false);
+    return;
+  }
+  // No confirm: the entry survives an apply, so the worst case is a working
+  // tree you can put back by hand. Pop and drop are the two that cannot.
+  const git::OpResult result = repo_.StashApply(stash->index);
+  stashes_loaded_ = false;
+  EnsureStashes();
+  Apply(result);
+}
+
+void App::RequestStash(ConfirmKind kind) {
+  if (SelectedStash() == nullptr) {
+    Note("no stash selected", false);
+    return;
+  }
+  confirm_kind_ = kind;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformStashPop() {
+  CloseOverlay();
+  const model::Stash* stash = SelectedStash();
+  if (stash == nullptr) {
+    return;
+  }
+  const git::OpResult result = repo_.StashPop(stash->index);
+  stashes_loaded_ = false;
+  EnsureStashes();
+  Apply(result);
+}
+
+void App::PerformStashDrop() {
+  CloseOverlay();
+  const model::Stash* stash = SelectedStash();
+  if (stash == nullptr) {
+    return;
+  }
+  const git::OpResult result = repo_.StashDrop(stash->index);
+  stashes_loaded_ = false;
+  EnsureStashes();
+  // Dropping the last entry leaves the cursor one past the end of the list.
+  stash_selected_ =
+      std::clamp(stash_selected_, 0, std::max(0, static_cast<int>(VisibleStashes().entries.size()) - 1));
+  Apply(result);
+}
+
+void App::RequestRebase() {
+  if (operation_.active()) {
+    Note(std::string(model::OperationName(operation_.operation)) + " is already in progress",
+         true);
+    return;
+  }
+  confirm_kind_ = ConfirmKind::Rebase;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformRebase() {
+  CloseOverlay();
+  const git::OpResult result = repo_.RebaseOntoUpstream();
+  // A rebase rewrites the branch, so every cached read of it is wrong now —
+  // including the diff, which Refresh drops on its own.
+  history_loaded_ = false;
+  Apply(result);
+  if (result.ok && view_ != ui::View::Status) {
+    EnsureHistory();
+  }
+}
+
+void App::OpenOperation() {
+  // Read again rather than trusting the cached one: this is the pane whose
+  // whole job is to be right about what is happening on disk.
+  operation_ = repo_.ReadOperation();
+  if (!operation_.active()) {
+    Note("nothing in progress", false);
+    return;
+  }
+  OpenOverlay(kOperation);
+}
+
+void App::RequestOperation(ConfirmKind kind) {
+  confirm_kind_ = kind;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformOperationContinue() {
+  CloseOverlay();
+  const git::OpResult result = repo_.RebaseContinue();
+  history_loaded_ = false;
+  Apply(result);
+  // Apply only refreshes on success, and a refusal here still leaves the
+  // operation banner as the thing the user needs to see.
+  operation_ = repo_.ReadOperation();
+}
+
+void App::PerformOperationAbort() {
+  CloseOverlay();
+  const git::OpResult result = repo_.RebaseAbort();
+  history_loaded_ = false;
+  Apply(result);
+  operation_ = repo_.ReadOperation();
+}
+
 void App::SetView(ui::View view) {
+  // A filter belongs to the list it was typed against. Carrying "readme" from
+  // the file list onto the branch list hides nine branches for no reason the
+  // user can see, since the box that explains it has already closed.
+  if (view != view_) {
+    filter_.clear();
+  }
   view_ = view;
 
   // The ticker exists for the CI view's refresh interval and its countdown, so
@@ -1052,6 +1547,12 @@ void App::SetView(ui::View view) {
       return;
     case ui::View::Pulls:
       EnsurePulls();
+      return;
+    case ui::View::Diff:
+      EnsureDiff();
+      return;
+    case ui::View::Stashes:
+      EnsureStashes();
       return;
     case ui::View::Status:
       return;
@@ -1110,17 +1611,26 @@ void App::Reload() {
 
   Refresh();
   history_loaded_ = false;
-  if (view_ != ui::View::Status) {
+  diff_loaded_ = false;
+  stashes_loaded_ = false;
+  if (view_ == ui::View::Diff) {
+    EnsureDiff();
+  } else if (view_ == ui::View::Stashes) {
+    EnsureStashes();
+  } else if (view_ != ui::View::Status) {
     EnsureHistory();
   }
   Note("re-read the repository", false);
 }
 
 const model::StatusEntry* App::Selected() const {
-  if (selected_ < 0 || selected_ >= static_cast<int>(snapshot_.entries.size())) {
+  // Through the filtered view, because the cursor counts rows on screen. Every
+  // caller acts on the row the user is looking at.
+  const model::StatusSnapshot& status = VisibleStatus();
+  if (selected_ < 0 || selected_ >= static_cast<int>(status.entries.size())) {
     return nullptr;
   }
-  return &snapshot_.entries[static_cast<std::size_t>(selected_)];
+  return &status.entries[static_cast<std::size_t>(selected_)];
 }
 
 void App::ToggleStage() {
@@ -1230,6 +1740,10 @@ ui::Scope App::CurrentScope() const {
       return ui::Scope::Status;
     case ui::View::Graph:
       return ui::Scope::Graph;
+    case ui::View::Diff:
+      return ui::Scope::Diff;
+    case ui::View::Stashes:
+      return ui::Scope::Stash;
     case ui::View::History:
     case ui::View::Branches:
     case ui::View::Remote:
@@ -1259,6 +1773,7 @@ bool App::Perform(ui::Action action) {
       return false;  // handled by the caller, which owns the screen
 
     case ui::Action::Help:
+      help_scroll_ = 0;
       OpenOverlay(kHelp);
       return true;
 
@@ -1280,27 +1795,25 @@ bool App::Perform(ui::Action action) {
       SetView(views[(index_of(view_) + views.size() - 1) % views.size()]);
       return true;
 
-    case ui::Action::ViewStatus:
-      SetView(ui::View::Status);
+    // Positional, so `[layout] views` reorders what the digits reach and the
+    // number printed on a tab is always the key that gets to it. A slot past
+    // the end of a shortened list is a key with nothing behind it.
+    case ui::Action::View1:
+    case ui::Action::View2:
+    case ui::Action::View3:
+    case ui::Action::View4:
+    case ui::Action::View5:
+    case ui::Action::View6:
+    case ui::Action::View7:
+    case ui::Action::View8:
+    case ui::Action::View9: {
+      const auto slot = static_cast<std::size_t>(action) -
+                        static_cast<std::size_t>(ui::Action::View1);
+      if (slot < views.size()) {
+        SetView(views[slot]);
+      }
       return true;
-    case ui::Action::ViewHistory:
-      SetView(ui::View::History);
-      return true;
-    case ui::Action::ViewBranches:
-      SetView(ui::View::Branches);
-      return true;
-    case ui::Action::ViewGraph:
-      SetView(ui::View::Graph);
-      return true;
-    case ui::Action::ViewRemote:
-      SetView(ui::View::Remote);
-      return true;
-    case ui::Action::ViewPipelines:
-      SetView(ui::View::Pipelines);
-      return true;
-    case ui::Action::ViewPulls:
-      SetView(ui::View::Pulls);
-      return true;
+    }
 
     case ui::Action::Down:
       Move(1);
@@ -1330,7 +1843,13 @@ bool App::Perform(ui::Action action) {
         ToggleDetails();
         return true;
       }
-      return false;
+      // Everywhere else, opening a row means looking at what changed in it.
+      OpenSelectedDiff();
+      return true;
+
+    case ui::Action::Filter:
+      OpenFilter();
+      return true;
 
     case ui::Action::NextRemote:
       NextRemote();
@@ -1362,6 +1881,36 @@ bool App::Perform(ui::Action action) {
       return true;
     case ui::Action::Commit:
       OpenCommit();
+      return true;
+
+    case ui::Action::DiffSwitch:
+      SwitchDiffSource();
+      return true;
+    case ui::Action::DiffNextFile:
+      JumpFile(1);
+      return true;
+    case ui::Action::DiffPrevFile:
+      JumpFile(-1);
+      return true;
+
+    case ui::Action::StashSave:
+      SaveStash();
+      return true;
+    case ui::Action::StashApply:
+      ApplyStash();
+      return true;
+    case ui::Action::StashPop:
+      RequestStash(ConfirmKind::StashPop);
+      return true;
+    case ui::Action::StashDrop:
+      RequestStash(ConfirmKind::StashDrop);
+      return true;
+
+    case ui::Action::Rebase:
+      RequestRebase();
+      return true;
+    case ui::Action::Operation:
+      OpenOperation();
       return true;
 
     case ui::Action::PanLeft:
@@ -1396,9 +1945,14 @@ std::vector<Box>* App::ActiveRowBoxes() {
     case ui::View::Branches:
     case ui::View::Pipelines:
     case ui::View::Pulls:
+    case ui::View::Stashes:
       return &row_boxes_;
     case ui::View::Graph:
     case ui::View::Remote:
+    // The diff scrolls but has no rows worth clicking: a line of context is not
+    // a thing you select, and reflecting twenty thousand boxes to find that out
+    // would cost more than the whole panel.
+    case ui::View::Diff:
       break;
   }
   return nullptr;  // nothing selectable to click on
@@ -1515,14 +2069,52 @@ int App::Run() {
 
   // --------------------------------------------------------- confirm overlay
   auto confirm_pane = Renderer([this] {
-    if (confirm_kind_ == ConfirmKind::Push) {
-      const std::string remote_name =
-          remotes_.empty() ? "the remote" : remotes_[remote_index_].name;
-      // Through SafeUrl, not raw: a remote configured with a token in its URL
-      // must not print it here any more than it does on the remote panel.
-      return ui::ConfirmPane("Push " + snapshot_.branch + " to " + remote_name + "?",
-                             remotes_.empty() ? "" : ui::SafeUrl(remotes_[remote_index_].url),
-                             /*warning=*/"", "push");
+    switch (confirm_kind_) {
+      case ConfirmKind::Push: {
+        const std::string remote_name =
+            remotes_.empty() ? "the remote" : remotes_[remote_index_].name;
+        // Through SafeUrl, not raw: a remote configured with a token in its URL
+        // must not print it here any more than it does on the remote panel.
+        return ui::ConfirmPane("Push " + snapshot_.branch + " to " + remote_name + "?",
+                               remotes_.empty() ? "" : ui::SafeUrl(remotes_[remote_index_].url),
+                               /*warning=*/"", "push");
+      }
+
+      case ConfirmKind::StashPop: {
+        const model::Stash* stash = SelectedStash();
+        return ui::ConfirmPane("Pop this stash?",
+                               stash == nullptr ? "" : stash->summary,
+                               "The entry goes away once it applies cleanly.", "pop");
+      }
+
+      case ConfirmKind::StashDrop: {
+        const model::Stash* stash = SelectedStash();
+        return ui::ConfirmPane("Drop this stash?", stash == nullptr ? "" : stash->summary,
+                               "This cannot be undone.", "drop");
+      }
+
+      case ConfirmKind::Rebase:
+        // Named rather than counted: gittop does not know how many commits are
+        // about to be replayed without a walk it has not done, and a confirm
+        // that guesses is worse than one that is precise about what it knows.
+        return ui::ConfirmPane("Rebase " + snapshot_.branch + " onto its upstream?",
+                               snapshot_.branch,
+                               "This rewrites commits that are already on this branch.",
+                               "rebase");
+
+      case ConfirmKind::OperationContinue:
+        return ui::ConfirmPane(
+            std::string("Continue the ") + model::OperationName(operation_.operation) + "?",
+            operation_.detail, /*warning=*/"", "continue");
+
+      case ConfirmKind::OperationAbort:
+        return ui::ConfirmPane(
+            std::string("Abort the ") + model::OperationName(operation_.operation) + "?",
+            operation_.detail,
+            "Everything the operation has done so far is discarded.", "abort");
+
+      case ConfirmKind::Discard:
+        break;
     }
     return ui::ConfirmPane(discard_target_.change == model::Change::Untracked
                                ? "Delete this file?"
@@ -1531,7 +2123,9 @@ int App::Run() {
   });
 
   // ------------------------------------------------------------ help overlay
-  auto help_pane = Renderer([this] { return ui::HelpPane(keys_); });
+  auto help_pane = Renderer([this, &screen] {
+    return ui::HelpPane(keys_, screen.dimx(), screen.dimy(), help_scroll_);
+  });
 
   // -------------------------------------------------------- transfer overlay
   auto transfer_pane = Renderer([this] { return ui::TransferPane(TransferViewState(), spinner_); });
@@ -1551,8 +2145,27 @@ int App::Run() {
     return ui::PassphrasePane(passphrase_input->Render(), passphrase_rejected_);
   });
 
-  auto overlay = Container::Tab(
-      {commit_pane, confirm_pane, help_pane, transfer_pane, passphrase_pane}, &overlay_index_);
+  // ----------------------------------------------------------- filter overlay
+  InputOption filter_option;
+  filter_option.multiline = false;
+  // Live rather than on submit: the count in the pane's corner is the reason
+  // this is a box you type into instead of a prompt you answer, and it only
+  // means anything if the list behind it is already narrowing.
+  filter_option.on_change = [this] { RebuildFilter(); };
+  filter_option.on_enter = [this] { CloseFilter(/*keep=*/true); };
+  auto filter_input = Input(&filter_, "type to narrow the list", filter_option);
+
+  auto filter_pane = Renderer(filter_input, [this, filter_input] {
+    return ui::FilterPane(filter_input->Render(), ui::ViewName(view_), FilterMatches(),
+                          FilterTotal());
+  });
+
+  // -------------------------------------------------------- operation overlay
+  auto operation_pane = Renderer([this] { return ui::OperationPane(operation_); });
+
+  auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane,
+                                 passphrase_pane, filter_pane, operation_pane},
+                                &overlay_index_);
 
   // --------------------------------------------------------------- main view
   auto main_view = Renderer([this, &screen] {
@@ -1575,28 +2188,47 @@ int App::Run() {
     Element panel;
     switch (view_) {
       case ui::View::Status:
-        body.push_back(ui::SummaryRow(snapshot_, bars_, width < 84));
-        panel = ui::FileList(snapshot_, selected_, &row_boxes_) | flex;
+        // Above the summary rather than below it: what the repository is in the
+        // middle of outranks how many files are staged, and a banner under the
+        // cards is a banner nobody reads before acting.
+        body.push_back(ui::OperationBanner(operation_, keys_));
+        body.push_back(ui::SummaryRow(VisibleStatus(), bars_,
+                                      width < 84 || compact_));
+        panel = ui::FileList(VisibleStatus(), selected_, &row_boxes_) | flex;
         break;
 
       case ui::View::History: {
         // The heatmap costs ten rows. On a short terminal the log is worth
         // more than the graph, so it goes first and the heatmap steps aside.
-        if (height >= 30) {
+        if (height >= 30 && !compact_) {
           body.push_back(window(text(" ACTIVITY ") | bold | color(ui::theme().text_dim),
                                 ui::ActivityPanel(history_)) |
                          color(ui::theme().border) | bgcolor(ui::theme().surface));
         }
         panel = window(text(" COMMITS ") | bold | color(ui::theme().text_dim),
-                       ui::CommitList(history_, commit_selected_, &row_boxes_)) |
+                       ui::CommitList(VisibleHistory(), commit_selected_, &row_boxes_)) |
                 color(ui::theme().border) | bgcolor(ui::theme().surface) | flex;
         break;
       }
 
       case ui::View::Branches:
         panel = window(text(" BRANCHES ") | bold | color(ui::theme().text_dim),
-                       ui::BranchList(history_, branch_selected_, &row_boxes_)) |
+                       ui::BranchList(VisibleHistory(), branch_selected_, &row_boxes_)) |
                 color(ui::theme().border) | bgcolor(ui::theme().surface) | flex;
+        break;
+
+      case ui::View::Diff: {
+        ui::DiffView diff_view;
+        diff_view.selected = diff_line_;
+        diff_view.switchable = diff_request_.source != model::DiffSource::Commit;
+        // Chrome is header 1 + tabs 1 + footer 2 + the panel's own frame and
+        // title rows; what is left is how many diff lines actually fit.
+        panel = ui::DiffPanel(diff_, diff_view, width, std::max(4, height - 8));
+        break;
+      }
+
+      case ui::View::Stashes:
+        panel = ui::StashList(VisibleStashes(), stash_selected_, &row_boxes_);
         break;
 
       case ui::View::Graph: {
@@ -1619,15 +2251,15 @@ int App::Run() {
         break;
 
       case ui::View::Pipelines:
-        panel = ui::PipelinePanel(pipelines_, jobs_, remote_.ref, PipelineViewState(), width,
-                                  height, spinner_, &row_boxes_);
+        panel = ui::PipelinePanel(VisiblePipelines(), jobs_, remote_.ref, PipelineViewState(),
+                                  width, height, spinner_, &row_boxes_);
         break;
 
       case ui::View::Pulls: {
         ui::PullView pull_view;
         pull_view.selected = pull_selected_;
         pull_view.details_open = pull_details_open_;
-        panel = ui::PullPanel(pulls_, remote_.ref, pull_view, width, height, spinner_,
+        panel = ui::PullPanel(VisiblePulls(), remote_.ref, pull_view, width, height, spinner_,
                               &row_boxes_);
         break;
       }
@@ -1639,7 +2271,7 @@ int App::Run() {
       body.push_back(std::move(panel) | reflect(body_box_));
     }
 
-    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_, keys_));
+    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_, keys_, filter_));
 
     Element view = vbox(std::move(body)) | bgcolor(ui::theme().bg);
 
@@ -1701,12 +2333,25 @@ int App::Run() {
     // them, so handlers attached to those panes never ran at all.
     if (overlay_open_) {
       switch (overlay_index_) {
-        case kHelp:
+        case kHelp: {
+          // The movement keys scroll rather than close, because on a terminal
+          // too narrow for two columns the bottom half of the help is only
+          // reachable this way. Everything else still closes on one keystroke.
+          const ui::Action moved = keys_.Lookup(ui::Scope::Global, event);
+          if (moved == ui::Action::Down || moved == ui::Action::PageDown) {
+            help_scroll_ += moved == ui::Action::Down ? 1 : 10;
+            return true;
+          }
+          if (moved == ui::Action::Up || moved == ui::Action::PageUp) {
+            help_scroll_ = std::max(0, help_scroll_ - (moved == ui::Action::Up ? 1 : 10));
+            return true;
+          }
           if (event.is_character() || event == Event::Escape || event == Event::Return) {
             CloseOverlay();
             return true;
           }
           return false;
+        }
 
         case kTransfer:
           // Escape before Quit, because esc is one of quit's default keys and
@@ -1725,12 +2370,62 @@ int App::Run() {
           // through to the dashboard underneath while a push is in flight.
           return !event.is_mouse();
 
+        case kFilter:
+          // esc clears rather than merely closing. A filter you cannot see the
+          // box for is a list quietly hiding rows, and the footer chip is a
+          // reminder rather than a way out.
+          if (event == Event::Escape) {
+            CloseFilter(/*keep=*/false);
+            return true;
+          }
+          return false;  // the Input takes the rest
+
+        case kOperation:
+          if (event == Event::Escape) {
+            CloseOverlay();
+            return true;
+          }
+          // Both answers go on to the confirm pane rather than acting here.
+          // Neither is a keystroke that should be one keystroke.
+          //
+          // `c` only exists for a rebase. A merge or a cherry-pick is finished
+          // by committing, and the pane says so rather than offering a key that
+          // would come back with "no rebase in progress".
+          if ((event == Event::Character('c') || event == Event::Character('C')) &&
+              operation_.operation == model::Operation::Rebase) {
+            RequestOperation(ConfirmKind::OperationContinue);
+            return true;
+          }
+          if (event == Event::Character('a') || event == Event::Character('A')) {
+            RequestOperation(ConfirmKind::OperationAbort);
+            return true;
+          }
+          return event.is_character();
+
         case kConfirm:
           if (event == Event::Character('y') || event == Event::Character('Y')) {
-            if (confirm_kind_ == ConfirmKind::Push) {
-              PerformPush();
-            } else {
-              PerformDiscard();
+            switch (confirm_kind_) {
+              case ConfirmKind::Push:
+                PerformPush();
+                break;
+              case ConfirmKind::StashPop:
+                PerformStashPop();
+                break;
+              case ConfirmKind::StashDrop:
+                PerformStashDrop();
+                break;
+              case ConfirmKind::Rebase:
+                PerformRebase();
+                break;
+              case ConfirmKind::OperationContinue:
+                PerformOperationContinue();
+                break;
+              case ConfirmKind::OperationAbort:
+                PerformOperationAbort();
+                break;
+              case ConfirmKind::Discard:
+                PerformDiscard();
+                break;
             }
             return true;
           }

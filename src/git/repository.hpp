@@ -6,12 +6,24 @@
 #include <utility>
 #include <vector>
 
+#include "model/diff.hpp"
 #include "model/history.hpp"
+#include "model/operation.hpp"
+#include "model/stash.hpp"
 #include "model/status.hpp"
 
 struct git_repository;
 
 namespace gittop::git {
+
+// What ReadDiff should compare. A request rather than three methods, because
+// the caller stores one of these to say which diff the view is showing and
+// three methods would need a tag next to them saying the same thing.
+struct DiffRequest {
+  model::DiffSource source = model::DiffSource::Worktree;
+  std::string path;    // limit to one file; empty diffs everything
+  std::string commit;  // Source::Commit only; anything git rev-parse accepts
+};
 
 // Outcome of a mutating operation. Failures carry a message the UI shows in the
 // status bar rather than throwing, because a rejected stage is an ordinary
@@ -55,6 +67,20 @@ class Repository {
   // whether the cap was reached. Same threading rule as ReadStatus.
   model::HistorySnapshot ReadHistory(std::size_t max_commits, int activity_days) const;
 
+  // Also pure, and defined in git/diff.cpp. Capped at `max_lines` because a
+  // vendored dependency landing in one commit is a diff no terminal is going to
+  // scroll, and building the whole of it costs the same as showing it.
+  model::DiffSnapshot ReadDiff(const DiffRequest& request, std::size_t max_lines) const;
+
+  // Pure, and defined in git/stash.cpp. Cheap enough to read on every switch to
+  // the view: the stash reflog is a handful of entries, not a revwalk.
+  model::StashList ReadStashes() const;
+
+  // Pure, and defined in git/rebase.cpp. Read on every status refresh, because
+  // a dashboard that does not notice an interrupted merge shows the conflicted
+  // files and no reason for them.
+  model::OperationState ReadOperation() const;
+
   OpResult Stage(const model::StatusEntry& entry);
   OpResult Unstage(const model::StatusEntry& entry);
   OpResult StageAll();
@@ -62,6 +88,25 @@ class Repository {
   // unstaged first, which keeps a single keystroke from destroying two things.
   OpResult Discard(const model::StatusEntry& entry);
   OpResult Commit(const std::string& message);
+
+  // Stash mutations, in git/stash.cpp. Every one of them renumbers the entries
+  // below it, so the caller re-reads the list rather than adjusting its own.
+  OpResult StashSave(const std::string& message, bool include_untracked);
+  OpResult StashApply(std::size_t index);
+  OpResult StashPop(std::size_t index);
+  OpResult StashDrop(std::size_t index);
+
+  // Rebase, in git/rebase.cpp.
+  //
+  // `RebaseOntoUpstream` refuses on a dirty tree rather than stashing behind the
+  // user's back: a rebase that quietly moves uncommitted work is how a tool
+  // loses the one copy of something. `Continue` commits what is staged as the
+  // stopped step and carries on, and stops again at the next conflict. `Abort`
+  // puts the branch back where it started, which is the whole reason a rebase
+  // is survivable at all.
+  OpResult RebaseOntoUpstream();
+  OpResult RebaseContinue();
+  OpResult RebaseAbort();
 
   std::string WorkdirPath() const;
 

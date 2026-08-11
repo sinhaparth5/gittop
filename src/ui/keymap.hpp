@@ -20,13 +20,19 @@ enum class Action {
 
   NextView,
   PrevView,
-  ViewStatus,
-  ViewHistory,
-  ViewBranches,
-  ViewGraph,
-  ViewRemote,
-  ViewPipelines,
-  ViewPulls,
+  // Positional rather than named, because `[layout] views` lets the config
+  // reorder the tab bar and a digit that jumps to a fixed view would then
+  // disagree with the digit printed on the tab. A slot past the end of the
+  // configured list does nothing.
+  View1,
+  View2,
+  View3,
+  View4,
+  View5,
+  View6,
+  View7,
+  View8,
+  View9,
 
   Down,
   Up,
@@ -35,6 +41,7 @@ enum class Action {
   PageDown,
   PageUp,
   Open,
+  Filter,
 
   NextRemote,
   Fetch,
@@ -47,6 +54,18 @@ enum class Action {
   StageAll,
   Discard,
   Commit,
+
+  DiffSwitch,
+  DiffNextFile,
+  DiffPrevFile,
+
+  StashSave,
+  StashApply,
+  StashPop,
+  StashDrop,
+
+  Rebase,
+  Operation,
 
   PanLeft,
   PanRight,
@@ -66,6 +85,8 @@ enum class Scope {
   Global,
   Status,
   Graph,
+  Diff,
+  Stash,
 };
 
 struct Binding {

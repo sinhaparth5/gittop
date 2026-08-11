@@ -1,11 +1,17 @@
 #pragma once
 
+#include <cstdint>
 #include <ftxui/dom/elements.hpp>
 #include <string>
 
 #include "ui/theme.hpp"
 
 namespace gittop::ui {
+
+// "3d", "2mo", "now" — an age in at most four cells, so a column of them stays
+// aligned. `now` is the current epoch time, passed in rather than read here so
+// every row of one render agrees about when it is.
+std::string RelativeTime(std::int64_t when, std::int64_t now);
 
 // A bar whose fill is shaded along a ramp and drawn with eighth-blocks, so a
 // 40% value looks 40% full even in a twelve-cell box. FTXUI's stock gauge is a

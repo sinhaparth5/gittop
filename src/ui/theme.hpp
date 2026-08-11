@@ -73,6 +73,16 @@ struct Theme {
   Swatch warning;
   Swatch danger;
 
+  // Diff rows. Separate tokens rather than reusing success and danger: those
+  // two mean "this went well" and "this will hurt", and a removed line means
+  // neither. A palette that wanted a calmer diff would only have to change
+  // these, and the toast that says a push failed would keep its alarm.
+  Swatch diff_add;
+  Swatch diff_del;
+  Swatch diff_hunk;
+  Swatch diff_add_bg;  // the tint behind a changed row, not the text
+  Swatch diff_del_bg;
+
   Ramp staged_ramp;
   Ramp unstaged_ramp;
   Ramp untracked_ramp;

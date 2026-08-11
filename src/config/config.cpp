@@ -238,6 +238,23 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # auto_refresh = true
 # refresh_seconds = 20         # clamped to 10 … 3600
 
+[layout]
+# Which tabs exist and in what order. The digit keys are positional, so this
+# also decides what 1 through 9 reach and what each tab prints as its number.
+# Any view left out is simply not there — a good way to lose the three network
+# tabs on a repository that has no remote worth watching.
+# One or more of: status history branches graph diff stashes remote ci pulls
+# views = "status history branches graph diff stashes remote ci pulls"
+
+# The view to open on. Has to be one of the views above, or it is ignored:
+# starting on a tab no key can reach is worse than starting on the first one.
+# start_view = "status"
+
+# Forces the narrow layout at any width — stat cards two by two, no activity
+# heatmap. gittop switches to it under 84 columns on its own; this is for
+# when you would rather have the rows back.
+# compact = false
+
 [theme]
 # One of: default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight.
 # `t` cycles them at run time, which is the quickest way to see them all.
@@ -282,13 +299,18 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # theme = "t"
 # next_view = "tab"
 # prev_view = "backtab"
-# view_status = "1"
-# view_history = "2"
-# view_branches = "3"
-# view_graph = "4"
-# view_remote = "5"
-# view_ci = "6"
-# view_pulls = "7"
+#
+# The view keys are slots, not names: view_3 is "the third tab", whichever view
+# [layout] views puts there.
+# view_1 = "1"
+# view_2 = "2"
+# view_3 = "3"
+# view_4 = "4"
+# view_5 = "5"
+# view_6 = "6"
+# view_7 = "7"
+# view_8 = "8"
+# view_9 = "9"
 # down = "j down"
 # up = "k up"
 # first = "g home"
@@ -296,16 +318,30 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # page_down = "ctrl-d pagedown"
 # page_up = "ctrl-u pageup"
 # open = "enter"
+# filter = "/"
 # next_remote = "R"
 # fetch = "f"
 # pull = "p"
 # push = "P"
+# stash_save = "S"
+# rebase = "B"
+# operation = "o"
 # toggle_stage = "space"
 # stage = "s"
 # unstage = "u"
 # stage_all = "a"
 # discard = "d"
 # commit = "c"
+#
+# Diff view only.
+# diff_switch = "s"
+# diff_next_file = "]"
+# diff_prev_file = "["
+#
+# Stash view only. `p` here shadows pull, on purpose.
+# stash_apply = "a"
+# stash_pop = "p"
+# stash_drop = "d"
 # pan_left = "h left"
 # pan_right = "l right"
 # bucket_day = "d"

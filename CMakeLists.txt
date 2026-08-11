@@ -81,8 +81,11 @@ add_executable(gittop
   src/app.cpp
   src/config/config.cpp
   src/git/askpass.cpp
+  src/git/diff.cpp
   src/git/graph.cpp
+  src/git/rebase.cpp
   src/git/repository.cpp
+  src/git/stash.cpp
   src/git/transfer.cpp
   src/remote/api.cpp
   src/remote/client.cpp
@@ -91,6 +94,7 @@ add_executable(gittop
   src/remote/provider.cpp
   src/remote/pulls.cpp
   src/remote/token.cpp
+  src/ui/diff_panel.cpp
   src/ui/graph_panel.cpp
   src/ui/history_panel.cpp
   src/ui/keymap.cpp
@@ -98,6 +102,7 @@ add_executable(gittop
   src/ui/pipeline_panel.cpp
   src/ui/pull_panel.cpp
   src/ui/remote_panel.cpp
+  src/ui/stash_panel.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp
 )

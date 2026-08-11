@@ -12,14 +12,13 @@
 #include <vector>
 
 #include "git/graph.hpp"
+#include "git/internal.hpp"
 
 namespace gittop::git {
-namespace {
 
-using model::Change;
-using model::Stage;
-using model::StatusEntry;
-
+// Outside the anonymous namespace because git/diff.cpp, git/stash.cpp and
+// git/rebase.cpp define Repository methods of their own and every one of them
+// ends a failure path here. See git/internal.hpp.
 std::string LastError() {
   const git_error* e = git_error_last();
   if (e != nullptr && e->message != nullptr) {
@@ -27,6 +26,12 @@ std::string LastError() {
   }
   return "unknown libgit2 error";
 }
+
+namespace {
+
+using model::Change;
+using model::Stage;
+using model::StatusEntry;
 
 // libgit2 returns the workdir with a trailing separator, which makes
 // std::filesystem::path::filename() come back empty.
@@ -68,6 +73,31 @@ struct IndexHandle {
     }
   }
 };
+
+// The parents of a commit being written, owned so that a failure anywhere
+// between looking them up and creating the commit still frees them.
+struct ParentList {
+  std::vector<git_commit*> commits;
+  ~ParentList() {
+    for (git_commit* commit : commits) {
+      git_commit_free(commit);
+    }
+  }
+};
+
+struct MergeHeadPayload {
+  git_repository* repo = nullptr;
+  ParentList* parents = nullptr;
+};
+
+int MergeHeadCb(const git_oid* oid, void* payload) {
+  auto* p = static_cast<MergeHeadPayload*>(payload);
+  git_commit* commit = nullptr;
+  if (git_commit_lookup(&commit, p->repo, oid) == 0) {
+    p->parents->commits.push_back(commit);
+  }
+  return 0;
+}
 
 }  // namespace
 
@@ -626,6 +656,16 @@ OpResult Repository::Commit(const std::string& message) {
   }
 
   git_repository* repo = repo_.get();
+
+  // A rebase writes its commits through git_rebase_commit, which advances the
+  // plan as well as the branch. An ordinary commit here would look like it
+  // worked and leave the rebase standing on a step it had already applied.
+  if (git_repository_state(repo) == GIT_REPOSITORY_STATE_REBASE ||
+      git_repository_state(repo) == GIT_REPOSITORY_STATE_REBASE_INTERACTIVE ||
+      git_repository_state(repo) == GIT_REPOSITORY_STATE_REBASE_MERGE) {
+    return OpResult::Fail("a rebase is in progress — continue it instead of committing");
+  }
+
   IndexHandle h;
   if (git_repository_index(&h.index, repo) != 0) {
     return OpResult::Fail(LastError());
@@ -650,19 +690,29 @@ OpResult Repository::Commit(const std::string& message) {
     return OpResult::Fail("set user.name and user.email before committing");
   }
 
-  git_commit* parent = nullptr;
-  git_oid parent_oid;
-  const bool has_parent = git_reference_name_to_id(&parent_oid, repo, "HEAD") == 0 &&
-                          git_commit_lookup(&parent, repo, &parent_oid) == 0;
-  const git_commit* parents[1] = {parent};
+  // HEAD first, then whatever MERGE_HEAD names. Committing a merge with one
+  // parent produces a commit that claims the other side never happened and
+  // leaves MERGE_HEAD on disk for the next command to trip over — and it looks
+  // like it worked, which is what makes it worth the extra dozen lines.
+  ParentList parents;
+  git_oid head_oid;
+  git_commit* head = nullptr;
+  const bool has_head = git_reference_name_to_id(&head_oid, repo, "HEAD") == 0 &&
+                        git_commit_lookup(&head, repo, &head_oid) == 0;
+  if (has_head) {
+    parents.commits.push_back(head);
+  }
+  MergeHeadPayload payload{repo, &parents};
+  git_repository_mergehead_foreach(repo, MergeHeadCb, &payload);
+  const bool merging = parents.commits.size() > 1;
 
   git_oid commit_oid;
   const int rc = git_commit_create(&commit_oid, repo, "HEAD", sig, sig, nullptr, message.c_str(),
-                                   tree, has_parent ? 1 : 0, has_parent ? parents : nullptr);
+                                   tree, parents.commits.size(),
+                                   parents.commits.empty()
+                                       ? nullptr
+                                       : const_cast<const git_commit**>(parents.commits.data()));
 
-  if (parent != nullptr) {
-    git_commit_free(parent);
-  }
   git_signature_free(sig);
   git_tree_free(tree);
 
@@ -670,9 +720,15 @@ OpResult Repository::Commit(const std::string& message) {
     return OpResult::Fail(LastError());
   }
 
+  // MERGE_HEAD and MERGE_MSG only go away when something clears them, and until
+  // they do the repository still reports itself as mid-merge.
+  if (merging) {
+    git_repository_state_cleanup(repo);
+  }
+
   char short_id[8] = {};
   git_oid_tostr(short_id, sizeof(short_id), &commit_oid);
-  return OpResult::Ok(std::string("committed ") + short_id);
+  return OpResult::Ok(std::string(merging ? "merge committed " : "committed ") + short_id);
 }
 
 }  // namespace gittop::git

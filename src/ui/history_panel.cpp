@@ -37,26 +37,6 @@ std::string CellGlyph(GraphCell cell, bool head) {
   return " ";
 }
 
-std::string Relative(std::int64_t when, std::int64_t now) {
-  const std::int64_t delta = now - when;
-  if (delta < 60) {
-    return "now";
-  }
-  if (delta < 3600) {
-    return std::to_string(delta / 60) + "m";
-  }
-  if (delta < 86400) {
-    return std::to_string(delta / 3600) + "h";
-  }
-  if (delta < 86400LL * 30) {
-    return std::to_string(delta / 86400) + "d";
-  }
-  if (delta < 86400LL * 365) {
-    return std::to_string(delta / (86400LL * 30)) + "mo";
-  }
-  return std::to_string(delta / (86400LL * 365)) + "y";
-}
-
 Element Gutter(const model::Commit& commit, int width) {
   const Theme& t = theme();
   Elements cells;
@@ -141,7 +121,7 @@ Element CommitList(const model::HistorySnapshot& history, int selected,
         text("  "),
         text(commit.author) | color(t.text_faint),
         text("  "),
-        text(Relative(commit.time, now)) | color(t.text_faint) | size(WIDTH, EQUAL, 4),
+        text(RelativeTime(commit.time, now)) | color(t.text_faint) | size(WIDTH, EQUAL, 4),
         text(" "),
     });
 
@@ -292,7 +272,7 @@ Element BranchList(const model::HistorySnapshot& history, int selected,
         hbox(std::move(tracking)) | size(WIDTH, GREATER_THAN, 14),
         text(branch.upstream) | color(t.text_faint),
         filler(),
-        text(branch.time > 0 ? Relative(branch.time, now) : "") | color(t.text_faint),
+        text(branch.time > 0 ? RelativeTime(branch.time, now) : "") | color(t.text_faint),
         text("  "),
     });
 
