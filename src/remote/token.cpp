@@ -37,7 +37,7 @@ std::vector<const char*> EnvNamesFor(Provider provider) {
 }  // namespace
 
 Token ResolveToken(const model::RemoteRef& ref, const config::Config& config,
-                   const std::string& config_path) {
+                   const std::string& config_path, const SessionToken* session) {
   Token token;
 
   for (const char* name : EnvNamesFor(ref.provider)) {
@@ -46,6 +46,13 @@ Token ResolveToken(const model::RemoteRef& ref, const config::Config& config,
       token.origin = name;
       return token;
     }
+  }
+
+  if (session != nullptr && session->MatchesHost(ref.host)) {
+    token.value = session->value;
+    token.source = TokenSource::SignedIn;
+    token.origin = "this session";
+    return token;
   }
 
   if (!ref.host.empty()) {

@@ -15,8 +15,10 @@
 #include <thread>
 #include <utility>
 
+#include "remote/api.hpp"
 #include "remote/client.hpp"
 #include "remote/http.hpp"
+#include "remote/oauth.hpp"
 #include "remote/pipelines.hpp"
 #include "remote/provider.hpp"
 #include "remote/pulls.hpp"
@@ -473,6 +475,16 @@ bool App::Animating() const {
   if (overlay_open_ && ui::OverlayReveal() < 1.0F) {
     return true;
   }
+  // A sign-in waiting for approval. Neither of the two things moving on that
+  // pane is driven by an event: the spinner needs frames, and the expiry
+  // countdown would otherwise sit at whatever it read when the code arrived —
+  // a clock that has stopped is worse than no clock. Bounded by the code
+  // expiring and by the overlay being open at all.
+  if (overlay_open_ && overlay_index_ == kSignIn &&
+      (signin_stage_ == ui::SignInStage::Waiting ||
+       signin_stage_ == ui::SignInStage::Starting)) {
+    return true;
+  }
   // A live pipeline has a spinner per row. Bounded by the run finishing and by
   // the view being open — leaving the CI view stops it, and the ticker's one
   // frame a second is not enough to animate anything.
@@ -731,7 +743,7 @@ void App::DiscoverRemotes() {
   // decides to poll, and that can happen before any request has been made. The
   // value itself is not kept — it is resolved again, per fetch, by the task
   // that needs it, so nothing long-lived in App holds a secret.
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   remote_.token_source = token.source;
   remote_.token_origin = token.origin;
 }
@@ -759,7 +771,7 @@ void App::NextRemote() {
   pull_selected_ = 0;
   last_pipeline_fetch_ = {};
 
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   remote_.token_source = token.source;
   remote_.token_origin = token.origin;
 
@@ -795,7 +807,7 @@ void App::StartFetch() {
     return;
   }
 
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   // Recorded now so the identity block can say "authenticated" while the
   // request is still in flight, rather than only once it comes back.
   remote_.token_source = token.source;
@@ -860,7 +872,7 @@ void App::StartPipelineFetch() {
   pipelines_.hint.clear();
   last_pipeline_fetch_ = std::chrono::steady_clock::now();
 
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   const model::RemoteRef ref = remote_.ref;
   pipeline_fetcher_.Start([ref, token, branch](const std::atomic<bool>& cancel) {
     remote::HttpClient client;
@@ -926,7 +938,7 @@ void App::StartJobFetch() {
   }
   jobs_.state = model::FetchState::Loading;
 
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   const model::RemoteRef ref = remote_.ref;
   const std::string id = run.id;
   job_fetcher_.Start([ref, token, id](const std::atomic<bool>& cancel) {
@@ -975,7 +987,7 @@ void App::StartPullFetch() {
   pulls_.error.clear();
   pulls_.hint.clear();
 
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   const model::RemoteRef ref = remote_.ref;
   pull_fetcher_.Start([ref, token, branch](const std::atomic<bool>& cancel) {
     remote::HttpClient client;
@@ -1121,7 +1133,7 @@ void App::StartTransfer(TransferKind kind) {
 
   // The token is resolved here and lives only inside the task, exactly as the
   // HTTP fetches do. It is never stored on App and never reaches ui/.
-  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_);
+  const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   git::Credentials credentials;
   if (token.present()) {
     credentials.username = UsernameFor(remote_.ref.provider);
@@ -1225,6 +1237,277 @@ void App::CancelPassphrase() {
   passphrase_rejected_ = false;
   CloseOverlay();
   Note("transfer cancelled", false);
+}
+
+// --------------------------------------------------------------------- sign in
+
+void App::RequestSignIn() {
+  DiscoverRemotes();
+  if (remotes_.empty() || !remote_.ref.valid()) {
+    Note("no GitHub or GitLab remote to sign in to", false);
+    return;
+  }
+
+  // The environment is checked first by ResolveToken and cannot be overridden
+  // from in here, so signing in while GITHUB_TOKEN is set would collect a token
+  // that never gets used. Saying so beats a sign-in that appears to work.
+  const remote::Token existing =
+      remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
+  if (existing.source == model::TokenSource::Environment) {
+    Note("already authenticated from " + existing.origin + "; unset it to sign in", false);
+    return;
+  }
+
+  signin_ref_ = remote_.ref;
+  signin_origin_ = remote::OAuthOrigin(signin_ref_, config_);
+  signin_client_id_ = remote::ClientIdFor(signin_ref_, config_);
+  signin_code_ = remote::DeviceCode{};
+  signin_error_.clear();
+  signin_hint_.clear();
+  signin_saved_to_.clear();
+  signin_save_error_.clear();
+  signin_browser_failed_ = false;
+  token_input_.clear();
+
+  if (signin_client_id_.empty()) {
+    // No application registered for this host, which is the normal case for a
+    // self-hosted instance and for a build with no id compiled in. The guided
+    // token is not a degraded mode, it is the other supported route.
+    signin_stage_ = ui::SignInStage::Paste;
+    OpenOverlay(kSignIn);
+    return;
+  }
+
+  signin_stage_ = ui::SignInStage::Starting;
+  OpenOverlay(kSignIn);
+  StartDeviceFlow();
+}
+
+void App::StartDeviceFlow() {
+  const model::RemoteRef ref = signin_ref_;
+  const std::string origin = signin_origin_;
+  const std::string client_id = signin_client_id_;
+  device_fetcher_.Start([ref, origin, client_id](const std::atomic<bool>& cancel) {
+    remote::HttpClient http;
+    return remote::BeginDeviceFlow(ref, origin, client_id, http, &cancel);
+  });
+}
+
+void App::CollectDeviceCode() {
+  remote::DeviceCode result;
+  if (!device_fetcher_.Consume(&result)) {
+    return;
+  }
+  if (!overlay_open_ || overlay_index_ != kSignIn) {
+    return;  // the overlay was closed while the request was in flight
+  }
+
+  if (!result.ok()) {
+    // A host that cannot start a device flow can nearly always still issue a
+    // personal access token, so this falls through to that rather than ending
+    // the sign-in. The reason is kept and shown above the fallback.
+    signin_error_ = result.error;
+    signin_hint_ = result.hint;
+    signin_stage_ = ui::SignInStage::Paste;
+    return;
+  }
+
+  signin_code_ = std::move(result);
+  signin_interval_ = signin_code_.interval_seconds;
+  signin_stage_ = ui::SignInStage::Waiting;
+
+  // Opened without being asked, because the whole point of the flow is that the
+  // approval happens in a browser and every second spent copying a URL by hand
+  // is a second off the code's expiry. It is not fatal when there is no opener:
+  // the URL is on screen either way, and the pane says so.
+  signin_browser_failed_ = !remote::OpenInBrowser(signin_code_.verification_uri_complete.empty()
+                                                      ? signin_code_.verification_uri
+                                                      : signin_code_.verification_uri_complete);
+  SchedulePoll();
+}
+
+void App::SchedulePoll() {
+  const model::RemoteRef ref = signin_ref_;
+  const std::string origin = signin_origin_;
+  const std::string client_id = signin_client_id_;
+  const std::string device_code = signin_code_.device_code;
+  const int interval = std::max(1, signin_interval_);
+
+  poll_fetcher_.Start([ref, origin, client_id, device_code,
+                       interval](const std::atomic<bool>& cancel) {
+    // The wait happens here rather than on a timer so that esc reaches it: the
+    // cancel flag is already threaded into this task, and a std::thread asleep
+    // for five seconds is the cheapest possible scheduler for a flow that polls
+    // twelve times.
+    for (int slept = 0; slept < interval * 20; ++slept) {
+      if (cancel.load()) {
+        remote::PollResult cancelled;
+        cancelled.state = remote::PollState::Failed;
+        cancelled.error = "cancelled";
+        return cancelled;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    remote::HttpClient http;
+    return remote::PollDeviceFlow(ref, origin, client_id, device_code, http, &cancel);
+  });
+}
+
+void App::CollectPoll() {
+  remote::PollResult result;
+  if (!poll_fetcher_.Consume(&result)) {
+    return;
+  }
+  if (!overlay_open_ || overlay_index_ != kSignIn ||
+      signin_stage_ != ui::SignInStage::Waiting) {
+    return;
+  }
+  if (result.error == "cancelled") {
+    return;
+  }
+
+  switch (result.state) {
+    case remote::PollState::Granted:
+      AdoptToken(std::move(result.token));
+      return;
+
+    case remote::PollState::SlowDown:
+      // RFC 8628 says the interval increases and the client must respect it;
+      // ignoring it is how a provider starts refusing the flow outright.
+      signin_interval_ = result.interval_seconds > 0 ? result.interval_seconds
+                                                     : signin_interval_ + 5;
+      SchedulePoll();
+      return;
+
+    case remote::PollState::Pending:
+      // Also where a single failed round trip lands. The code has not expired,
+      // so there is nothing to report and nothing to do but ask again.
+      SchedulePoll();
+      return;
+
+    case remote::PollState::Expired:
+    case remote::PollState::Denied:
+    case remote::PollState::Failed:
+      break;
+  }
+
+  signin_stage_ = ui::SignInStage::Failed;
+  signin_error_ = result.error;
+  signin_hint_ = result.hint;
+}
+
+void App::SubmitPastedToken() {
+  if (token_input_.empty()) {
+    return;
+  }
+  // The overlay's buffer is the only copy ui/ ever holds and it does not
+  // outlive the paste, exactly as the passphrase input does not.
+  std::string token = token_input_;
+  token_input_.clear();
+  AdoptToken(std::move(token));
+}
+
+void App::AdoptToken(std::string token) {
+  session_token_.host = signin_ref_.host;
+  session_token_.value = std::move(token);
+
+  // In memory first and on disk second, so a config that cannot be written
+  // still leaves a working session rather than a sign-in that did nothing.
+  config_.Set("hosts." + signin_ref_.host + ".token", session_token_.value);
+  std::string error;
+  if (config_.Save(config_path_, &error)) {
+    signin_saved_to_ = config_path_;
+  } else {
+    signin_save_error_ = error;
+  }
+
+  signin_stage_ = ui::SignInStage::Granted;
+  signin_code_ = remote::DeviceCode{};  // the device code has served its purpose
+
+  // Every cached answer was fetched as somebody else — usually as nobody — so
+  // none of them describes what this token can now see. A private repository
+  // that 404'd anonymously is the whole reason for signing in, and leaving the
+  // 404 on screen would make the sign-in look like it failed.
+  remote_ = model::RemoteSnapshot{};
+  remote_.ref = signin_ref_;
+  remote_.token_source = signin_saved_to_.empty() ? model::TokenSource::SignedIn
+                                                  : model::TokenSource::ConfigFile;
+  remote_.token_origin = signin_saved_to_.empty() ? "this session" : config_path_;
+  pipelines_ = model::PipelineSnapshot{};
+  pulls_ = model::PullSnapshot{};
+  jobs_ = model::JobList{};
+  jobs_open_ = false;
+  pull_details_open_ = false;
+  pipeline_selected_ = 0;
+  pull_selected_ = 0;
+  last_pipeline_fetch_ = {};
+}
+
+void App::OpenSignInPage() {
+  const std::string url = signin_stage_ == ui::SignInStage::Paste
+                              ? remote::TokenPageUrl(signin_ref_, signin_origin_)
+                              : (signin_code_.verification_uri_complete.empty()
+                                     ? signin_code_.verification_uri
+                                     : signin_code_.verification_uri_complete);
+  signin_browser_failed_ = !remote::OpenInBrowser(url);
+  if (signin_browser_failed_) {
+    Note("no browser opener found on this machine", false);
+  }
+}
+
+void App::CancelSignIn() {
+  // Both are cancelled rather than only the one thought to be running: a device
+  // request that lands after the overlay closes has nowhere to go, and the poll
+  // chain has to be broken here or it re-arms itself forever.
+  device_fetcher_.Cancel();
+  poll_fetcher_.Cancel();
+
+  const bool granted = signin_stage_ == ui::SignInStage::Granted;
+  signin_code_ = remote::DeviceCode{};
+  token_input_.clear();
+  CloseOverlay();
+
+  if (granted) {
+    // Only now, so the fetch goes out authenticated and lands on a view the
+    // user is actually looking at.
+    switch (view_) {
+      case ui::View::Remote:
+        EnsureRemote();
+        break;
+      case ui::View::Pipelines:
+        EnsurePipelines();
+        break;
+      case ui::View::Pulls:
+        EnsurePulls();
+        break;
+      case ui::View::Status:
+      case ui::View::History:
+      case ui::View::Branches:
+      case ui::View::Graph:
+      case ui::View::Diff:
+      case ui::View::Stashes:
+        break;
+    }
+    Note("signed in to " + session_token_.host, false);
+  }
+}
+
+ui::SignInView App::SignInViewState() const {
+  ui::SignInView view;
+  view.stage = signin_stage_;
+  view.provider = signin_ref_.provider;
+  view.host = signin_ref_.host;
+  view.user_code = signin_code_.user_code;
+  view.verification_uri = signin_code_.verification_uri;
+  view.token_page_url = remote::TokenPageUrl(signin_ref_, signin_origin_);
+  view.expires_at = signin_code_.expires_at;
+  view.now = remote::NowSeconds();
+  view.saved_to = signin_saved_to_;
+  view.save_error = signin_save_error_;
+  view.browser_failed = signin_browser_failed_;
+  view.error = signin_error_;
+  view.hint = signin_hint_;
+  return view;
 }
 
 void App::CancelTransfer() {
@@ -1988,6 +2271,9 @@ bool App::Perform(ui::Action action) {
     case ui::Action::NextRemote:
       NextRemote();
       return true;
+    case ui::Action::SignIn:
+      RequestSignIn();
+      return true;
     case ui::Action::Fetch:
       StartTransfer(TransferKind::Fetch);
       return true;
@@ -2160,6 +2446,8 @@ const Event kPipelinesReady = Event::Special("gittop:pipelines-ready");
 const Event kJobsReady = Event::Special("gittop:jobs-ready");
 const Event kPullsReady = Event::Special("gittop:pulls-ready");
 const Event kTransferDone = Event::Special("gittop:transfer-done");
+const Event kDeviceCodeReady = Event::Special("gittop:device-code-ready");
+const Event kPollReady = Event::Special("gittop:poll-ready");
 const Event kTick = Event::Special("gittop:tick");
 
 int App::Run() {
@@ -2183,6 +2471,8 @@ int App::Run() {
   job_fetcher_.SetNotifier([&screen] { screen.PostEvent(kJobsReady); });
   pull_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPullsReady); });
   transfer_fetcher_.SetNotifier([&screen] { screen.PostEvent(kTransferDone); });
+  device_fetcher_.SetNotifier([&screen] { screen.PostEvent(kDeviceCodeReady); });
+  poll_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPollReady); });
   ticker_.SetNotifier([&screen] { screen.PostEvent(kTick); });
 
   // ---------------------------------------------------------- commit overlay
@@ -2306,8 +2596,22 @@ int App::Run() {
   // -------------------------------------------------------- operation overlay
   auto operation_pane = Renderer([this] { return ui::OperationPane(operation_); });
 
+  // ---------------------------------------------------------- sign-in overlay
+  InputOption token_option;
+  token_option.multiline = false;
+  // A pasted token is a secret in exactly the way a passphrase is, so it is
+  // collected the same way: FTXUI renders asterisks, and SignInPane is handed
+  // the rendered element rather than the string behind it.
+  token_option.password = true;
+  token_option.on_enter = [this] { SubmitPastedToken(); };
+  auto token_input = Input(&token_input_, "paste the token", token_option);
+
+  auto signin_pane = Renderer(token_input, [this, token_input] {
+    return ui::SignInPane(SignInViewState(), token_input->Render(), spinner_);
+  });
+
   auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane,
-                                 passphrase_pane, filter_pane, operation_pane},
+                                 passphrase_pane, filter_pane, operation_pane, signin_pane},
                                 &overlay_index_);
 
   // --------------------------------------------------------------- main view
@@ -2488,6 +2792,14 @@ int App::Run() {
       }
       return true;
     }
+    if (event == kDeviceCodeReady) {
+      CollectDeviceCode();
+      return true;
+    }
+    if (event == kPollReady) {
+      CollectPoll();
+      return true;
+    }
     // One a second while the CI view is open. It repaints the countdown and
     // asks whether the interval is up; the answer is usually no.
     if (event == kTick) {
@@ -2624,6 +2936,38 @@ int App::Run() {
           }
           return false;  // the Input takes the rest
 
+        case kSignIn:
+          if (event == Event::Escape) {
+            CancelSignIn();
+            return true;
+          }
+          // enter closes the pane once the token has landed, which is the only
+          // thing left to do with it.
+          if (event == Event::Return && signin_stage_ == ui::SignInStage::Granted) {
+            CancelSignIn();
+            return true;
+          }
+          if ((event == Event::Character('r') || event == Event::Character('R')) &&
+              signin_stage_ == ui::SignInStage::Failed) {
+            RequestSignIn();
+            return true;
+          }
+          // Two keys for one command, because the Paste stage has a focused
+          // Input and a pane that steals letters out of it is a pane that
+          // silently corrupts a pasted token. `o` is safe while there is
+          // nothing to type into; ctrl-o is safe in both, and is the one the
+          // Paste stage advertises.
+          if (event == Event::CtrlO ||
+              ((event == Event::Character('o') || event == Event::Character('O')) &&
+               signin_stage_ == ui::SignInStage::Waiting)) {
+            OpenSignInPage();
+            return true;
+          }
+          // Only the Paste stage has anything to type into. Everywhere else a
+          // stray keystroke is swallowed rather than falling through to the
+          // dashboard behind the overlay.
+          return signin_stage_ != ui::SignInStage::Paste && event.is_character();
+
         case kCommit:
         default:
           if (event == Event::Escape) {
@@ -2663,6 +3007,8 @@ int App::Run() {
   job_fetcher_.Shutdown();
   pull_fetcher_.Shutdown();
   transfer_fetcher_.Shutdown();
+  device_fetcher_.Shutdown();
+  poll_fetcher_.Shutdown();
   return 0;
 }
 

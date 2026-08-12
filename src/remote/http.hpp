@@ -38,9 +38,18 @@ struct HttpResponse {
   bool success() const { return transport_ok && status >= 200 && status < 300; }
 };
 
+enum class HttpMethod { Get, Post };
+
 struct HttpRequest {
   std::string url;
   std::vector<std::string> headers;  // "Name: value", already assembled
+  HttpMethod method = HttpMethod::Get;
+
+  // Only read for a Post, and form-encoded by the caller. It can carry a
+  // client_id and a device code, so it is never logged and never displayed —
+  // the same rule the Authorization header already lives under.
+  std::string body;
+
   int timeout_seconds = 10;
   int connect_timeout_seconds = 5;
   int max_attempts = 3;
@@ -57,7 +66,15 @@ class HttpClient {
   // `cancel` is polled during transfer and between retries so quitting the app
   // does not wait out a ten-second timeout. Pass nullptr when there is nothing
   // to cancel for.
+  HttpResponse Send(const HttpRequest& request, const std::atomic<bool>* cancel = nullptr);
+
   HttpResponse Get(const HttpRequest& request, const std::atomic<bool>* cancel = nullptr);
+
+  // Retries the same body, which is safe only because both endpoints that use
+  // this are idempotent by design: RFC 8628 exists to be polled, and asking for
+  // a device code twice yields two codes of which one is simply never used.
+  // Anything less forgiving does not belong on this retry loop.
+  HttpResponse Post(const HttpRequest& request, const std::atomic<bool>* cancel = nullptr);
 };
 
 }  // namespace gittop::remote

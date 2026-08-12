@@ -83,6 +83,7 @@ constexpr GlyphSet kAscii{
     .diff_minus = "-",
     .pause_bars = "||",
     .mask = "***",
+    .key = "&",
 
     .heat_ramp = {" ", ".", ":", "+", "#"},
 
@@ -163,6 +164,11 @@ constexpr GlyphSet kUnicode{
     .diff_minus = "−",
     .pause_bars = "‖",
     .mask = "•••",
+    // Not a key or a padlock: U+26BF and the emoji padlocks are missing from
+    // enough terminal fonts to draw as tofu, and the emoji ones are double-width
+    // and coloured besides. This stays in the geometric family the rest of the
+    // set uses, which is the family that actually renders everywhere.
+    .key = "◈",
 
     // Shade blocks rather than five tints of one hue: the ramp is then legible
     // as a ramp before any colour is applied to it.
@@ -254,6 +260,7 @@ constexpr GlyphSet kNerd{
     .diff_minus = "−",
     .pause_bars = "‖",
     .mask = "•••",
+    .key = "",   // nf-fa-key
 
     .heat_ramp = {"·", "░", "▒", "▓", "█"},
 

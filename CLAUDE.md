@@ -418,6 +418,57 @@ rather than the string, so the rule that nothing under `ui/` handles a secret su
 whose entire job is collecting one — and the `Input` is in password mode, so the element carries
 asterisks and not the passphrase. It is never written to the config, the log, or the screen.
 
+`App::session_token_` is the third, added with sign-in, and it is the only secret gittop
+deliberately *writes*. It is scoped to the host that issued it — a `SessionToken` carries its host
+and `MatchesHost` is checked before it is offered, because a token handed to the wrong instance is
+a leaked token rather than a failed request. `ui::SignInPane` takes an already-rendered password
+`Input` for the same reason `PassphrasePane` does. The `device_code` is treated as a secret too:
+it is the bearer of the pending token for the length of the flow, so it lives on App and never
+crosses into `ui/`.
+
+## Signing in
+
+`L` opens one overlay with two routes into it, and which one is not a preference: the OAuth device
+flow when the host has a `client_id`, the guided personal access token when it does not.
+
+**The device grant is the only OAuth flow that fits.** An authorization-code flow needs a loopback
+server listening for a redirect — a port, a firewall prompt, and a race with whatever else is on
+that port — to do what two POSTs already do. It is also the only one that works over ssh, which is
+a normal way to reach a machine you want a dashboard on.
+
+**`remote/oauth.cpp` ships no client_id, and that is deliberate.** A device-flow id is public by
+design — there is no client secret, which is what makes it safe in a distributed binary — but it
+binds the build to one registered application, so filling `kGitHubClientId` in is a packaging
+decision. Until somebody does, every host takes the token route, which is why that route is a
+first-class path and not an error state. `hosts."<host>".client_id` is the only way a self-hosted
+instance can ever have one.
+
+**A pending authorization is HTTP 200 on GitHub and HTTP 400 on GitLab.** Both send
+`{"error": "authorization_pending"}`; only GitLab is following RFC 8628. `PollDeviceFlow` therefore
+decides on the *body* and never on the status code — deciding on the code instead makes every
+GitLab sign-in fail on its first poll, and it will look like a rejected sign-in.
+
+**The OAuth origin is not the API base and not `https://<host>`.** github.com issues device codes
+while api.github.com answers everything else here, so it cannot come from `ref.api_base`; and
+`RemoteRef::host` has its port stripped (no API base wants one), so a self-hosted instance on a
+non-standard port would have its device request sent to port 443 of the same name.
+`hosts."<host>".oauth` overrides it, and is what makes the flow testable against a local stub.
+
+**Polling is a chain, not a timer.** `CollectPoll` starts the next poll, and the interval is waited
+out *inside* the task in 50ms slices, where the cancel flag already reaches. There is no second
+thing to remember to stop, and esc breaks the chain by cancelling the fetcher — a re-arming poll
+that outlives its overlay would poll until the process died.
+
+Two things it must keep doing: `ScopesFor` includes write to the repository (`repo`,
+`write_repository`) because this token is also what authenticates an https push, and a read-only
+one would leave `P` failing with a 403 that looks like a gittop bug. And `OpenInBrowser` forks and
+execs with an argv — the URL came off the network, and a server response reaching `system(3)` is a
+command injection with extra steps — with the child's stdio on `/dev/null`, since the opener's
+chatter would otherwise land on the alternate screen.
+
+One accepted cost: `Config::Save` regenerates the file from the keys gittop is holding, so a
+sign-in **drops the comments** out of a hand-written config. The template says so.
+
 ## FTXUI gotchas already paid for
 
 - `canvas(fn)` looks like it auto-fits its box; it hardcodes 12×12. Size canvases from

@@ -20,13 +20,16 @@
 #include "model/stash.hpp"
 #include "model/status.hpp"
 #include "remote/fetcher.hpp"
+#include "remote/oauth.hpp"
 #include "remote/ticker.hpp"
+#include "remote/token.hpp"
 #include "ui/diff_panel.hpp"
 #include "ui/graph_panel.hpp"
 #include "ui/keymap.hpp"
 #include "ui/panels.hpp"
 #include "ui/pipeline_panel.hpp"
 #include "ui/pull_panel.hpp"
+#include "ui/signin_panel.hpp"
 #include "ui/stash_panel.hpp"
 
 namespace gittop {
@@ -48,6 +51,7 @@ class App {
     kPassphrase = 4,
     kFilter = 5,
     kOperation = 6,
+    kSignIn = 7,
   };
 
   // What a `y` in the confirm overlay is agreeing to. One overlay rather than
@@ -200,6 +204,25 @@ class App {
   void SubmitPassphrase();
   void CancelPassphrase();
 
+  // Signing in. Two routes into one overlay: the device flow when the host has
+  // an OAuth application, and a guided personal access token when it does not.
+  //
+  // The polling is a chain rather than a timer — CollectPoll starts the next
+  // poll — so there is no second thing to remember to stop, and the interval is
+  // waited out *inside* the task where the cancel flag already reaches.
+  void RequestSignIn();
+  void StartDeviceFlow();
+  void CollectDeviceCode();
+  void SchedulePoll();
+  void CollectPoll();
+  void SubmitPastedToken();
+  void OpenSignInPage();
+  void CancelSignIn();
+  // Takes the granted token, tries to persist it, and drops every cached answer
+  // that was fetched anonymously.
+  void AdoptToken(std::string token);
+  ui::SignInView SignInViewState() const;
+
   const model::StatusEntry* Selected() const;
 
   void ToggleStage();
@@ -331,6 +354,36 @@ class App {
   // Cleared the moment it is shown to be wrong, and also when a transfer
   // succeeds without the askpass helper ever being consulted, which means no
   // passphrase was needed and holding one would be keeping a secret for nothing.
+  // The second secret App is allowed to hold, and for the same reason as the
+  // first: a session has to be able to sign in once. It is scoped to the host
+  // it was issued by, it is resolved into a short-lived remote::Token per fetch
+  // exactly as a config token is, and nothing under ui/ ever sees it — the
+  // sign-in pane is handed an already-rendered password Input, like the
+  // passphrase pane above it.
+  //
+  // It stays populated even after a successful save so that the rest of the
+  // session does not depend on the config file having been re-read.
+  remote::SessionToken session_token_;
+
+  remote::Fetcher<remote::DeviceCode> device_fetcher_;
+  remote::Fetcher<remote::PollResult> poll_fetcher_;
+
+  ui::SignInStage signin_stage_ = ui::SignInStage::Starting;
+  model::RemoteRef signin_ref_;
+  std::string signin_origin_;
+  std::string signin_client_id_;
+  // Holds the device_code, which is the bearer of the pending token for the
+  // length of the flow and is therefore treated as one: never rendered, and
+  // cleared with the overlay.
+  remote::DeviceCode signin_code_;
+  int signin_interval_ = 5;
+  std::string signin_error_;
+  std::string signin_hint_;
+  std::string signin_saved_to_;
+  std::string signin_save_error_;
+  bool signin_browser_failed_ = false;
+  std::string token_input_;
+
   std::string ssh_passphrase_;
   std::string passphrase_input_;
   // Which transfer the prompt is standing in front of, resumed on submit.

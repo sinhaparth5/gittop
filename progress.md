@@ -548,6 +548,28 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-12** — Sign-in. `L` opens one overlay with two routes: the OAuth 2.0 device grant
+  (RFC 8628) where a host has a `client_id`, and a deep link to the provider's token page with the
+  name and scopes pre-filled where it does not. The granted token is written to the config at
+  `0600`; an environment variable still wins over it, and a sign-in that could not be saved keeps
+  working for the session and says on the panel that it will not survive a restart. New:
+  `remote/oauth.cpp`, `ui/signin_panel.cpp`, POST on `HttpClient`, `TokenSource::SignedIn`, a
+  session tier in `ResolveToken` between the environment and the config file, and
+  `hosts."<host>".oauth` because `RemoteRef::host` has its port stripped. Verified against a stub
+  answering both providers' shapes — including the one that would have broken GitLab entirely, a
+  pending authorization arriving as HTTP 400 where GitHub sends 200. Two things left undone
+  deliberately: no `client_id` is compiled in (a packaging decision, and the reason the token route
+  is a first-class path), and `Config::Save` drops comments out of a hand-written config.
+
+- **2026-08-12** — UI pass. Status view went two-column — CHANGES flexing beside a fixed 34-cell
+  sidecar carrying BRANCH and RECENT, collapsing below ~96 columns — fed by two *bounded* reads
+  (`git_graph_ahead_behind` stops at the merge base, `ReadRecent` abandons at twelve) so the
+  lazy-read rule survives a commit list on the startup path. Also: the theme really was not
+  changing — gittop never called `ftxui::Terminal::SetColorSupport`, so FTXUI re-quantized from its
+  own reading of `TERM` and `theme.depth` was a no-op, and `WT_SESSION` was unrecognised so WSL was
+  detected as eight-bit, where `default` and `catppuccin` render byte-identical frames. Splash now
+  sheds content by height tier instead of being clipped.
+
 - **2026-08-11** — Phase 7 done, and the roadmap with it. Glyphs got the token layer colour has had
   since Phase 1, which is the change everything else in the phase depended on: sixty literals across
   nine panels became sixty named roles and three sets, and `[theme] icons` now switches the lot.

@@ -117,6 +117,7 @@ struct GlyphSet {
   const char* diff_minus;  // the − in "−12". A hyphen there reads as a flag.
   const char* pause_bars;
   const char* mask;  // what replaces the userinfo in a URL that carried a token
+  const char* key;   // the sign-in pane, and an authenticated remote
 
   // Ascending visual weight. The heatmap ramps through this as well as through
   // colour, which is what makes it readable under NO_COLOR — five greens are

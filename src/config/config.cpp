@@ -212,15 +212,29 @@ constexpr const char* kTemplate = R"(# gittop configuration
 #   1. GITTOP_TOKEN
 #   2. GITHUB_TOKEN or GH_TOKEN   (GitHub hosts)
 #      GITLAB_TOKEN or CI_JOB_TOKEN (GitLab hosts)
-#   3. the matching [hosts."..."] entry below
+#   3. a sign-in done in this session, which is not written here until it works
+#   4. the matching [hosts."..."] entry below
+#
+# Signing in from inside gittop writes the token it receives back into this
+# file. That rewrite is generated from the settings gittop is holding, so
+# comments you add here do not survive it.
+#
+# client_id turns the sign-in into a browser approval instead of a copy-paste.
+# It is the id of an OAuth application registered on that host with the device
+# flow enabled; there is no client secret, which is what makes it safe to write
+# down. Without one, signing in still works — gittop opens the host's token page
+# with the scopes already filled in and takes the paste.
 
 [hosts."github.com"]
 # Needs no scopes at all for public repositories; `repo` to see private ones.
 # token = "ghp_xxxxxxxxxxxxxxxxxxxx"
+# client_id = "Iv1.xxxxxxxxxxxxxxxx"
 
 [hosts."gitlab.com"]
-# A personal access token with the `read_api` scope.
+# A personal access token with the `read_api` scope, plus `write_repository` if
+# you want it to authenticate an https push as well.
 # token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+# client_id = "xxxxxxxxxxxxxxxxxxxx"
 
 # Self-hosted instances: name the host and say which API it speaks. gittop
 # guesses from the hostname when it contains "github" or "gitlab", so this is
@@ -229,6 +243,7 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # provider = "gitlab"          # "github" or "gitlab"
 # api = "https://git.example.com/api/v4"
 # token = "glpat-xxxxxxxxxxxxxxxxxxxx"
+# client_id = "xxxxxxxxxxxxxxxxxxxx"
 
 [pipelines]
 # The CI view re-reads runs on a timer while it is the view on screen, and only

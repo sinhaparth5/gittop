@@ -771,6 +771,7 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
   } else if (view == View::Remote) {
     chips.push_back(KeyChip(keys, Action::Reload, "fetch"));
     chips.push_back(KeyChip(keys, Action::NextRemote, "remote"));
+    chips.push_back(KeyChip(keys, Action::SignIn, "sign in"));
     chips.push_back(KeyChip(keys, Action::Pull, "pull"));
     chips.push_back(KeyChip(keys, Action::Push, "push"));
   } else if (view == View::Pipelines) {
@@ -1020,6 +1021,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Pull, "pull, fast-forward only"),
       line(Action::Push, "push this branch, after a confirm"),
       line(Action::NextRemote, "switch to the next remote"),
+      line(Action::SignIn, "sign in to GitHub or GitLab"),
       text(""),
       heading("EVERYWHERE"),
       line(Action::Theme, "next theme"),

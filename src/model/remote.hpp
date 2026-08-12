@@ -80,7 +80,14 @@ enum class FetchState {
 
 // How the token was found, for display. Never holds the token itself: the value
 // lives in remote::Token and is not part of anything the UI can render.
-enum class TokenSource { None, Environment, ConfigFile };
+//
+// SignedIn is the one that only exists in memory: a token obtained by signing
+// in this session and not written to disk, either because saving failed or
+// because there was nowhere to save it to. It is a separate source rather than
+// a flavour of ConfigFile so the panel can say the sign-in will not survive a
+// restart, which is the one thing the user would otherwise find out the hard
+// way — the next launch.
+enum class TokenSource { None, Environment, ConfigFile, SignedIn };
 
 struct RemoteSnapshot {
   FetchState state = FetchState::Idle;
