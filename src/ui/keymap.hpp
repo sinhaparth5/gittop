@@ -44,6 +44,7 @@ enum class Action {
   Filter,
 
   NextRemote,
+  SignIn,
   Fetch,
   Pull,
   Push,

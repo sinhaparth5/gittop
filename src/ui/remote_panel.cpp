@@ -316,6 +316,12 @@ Element Details(const RemoteSnapshot& snapshot, bool include_counts,
     case TokenSource::ConfigFile:
       auth = snapshot.token_origin + "  (config file)";
       break;
+    case TokenSource::SignedIn:
+      // Says outright that it is not on disk. Everything else here names a
+      // place the token can be found again; this one names the fact that it
+      // cannot, which is the only thing about it worth knowing.
+      auth = "signed in  (this session only)";
+      break;
     case TokenSource::None:
       auth = std::string("none ") + glyphs().absent + " reading anonymously";
       break;

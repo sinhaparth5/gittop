@@ -70,6 +70,7 @@ const NamedAction kActionNames[] = {
     {"filter", Action::Filter},
 
     {"next_remote", Action::NextRemote},
+    {"sign_in", Action::SignIn},
     {"fetch", Action::Fetch},
     {"pull", Action::Pull},
     {"push", Action::Push},
@@ -233,6 +234,11 @@ Keymap::Keymap() {
   Bind(Action::Filter, Scope::Global, "/");
 
   Bind(Action::NextRemote, Scope::Global, "R");
+  // Global rather than scoped to the Remote view, even though that is where the
+  // "anonymous" line that prompts it appears: the thing a sign-in fixes is a
+  // 404 on a private repository, and those turn up on the CI and pull request
+  // views just as often.
+  Bind(Action::SignIn, Scope::Global, "L");
   Bind(Action::Fetch, Scope::Global, "f");
   Bind(Action::Pull, Scope::Global, "p");
   Bind(Action::Push, Scope::Global, "P");

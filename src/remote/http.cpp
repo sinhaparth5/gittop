@@ -131,6 +131,18 @@ HttpLibrary::~HttpLibrary() {
 }
 
 HttpResponse HttpClient::Get(const HttpRequest& request, const std::atomic<bool>* cancel) {
+  HttpRequest copy = request;
+  copy.method = HttpMethod::Get;
+  return Send(copy, cancel);
+}
+
+HttpResponse HttpClient::Post(const HttpRequest& request, const std::atomic<bool>* cancel) {
+  HttpRequest copy = request;
+  copy.method = HttpMethod::Post;
+  return Send(copy, cancel);
+}
+
+HttpResponse HttpClient::Send(const HttpRequest& request, const std::atomic<bool>* cancel) {
   HttpResponse response;
   const int attempts = std::max(1, request.max_attempts);
 
@@ -160,6 +172,14 @@ HttpResponse HttpClient::Get(const HttpRequest& request, const std::atomic<bool>
 
     curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (request.method == HttpMethod::Post) {
+      curl_easy_setopt(curl, CURLOPT_POST, 1L);
+      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body.c_str());
+      // Explicit, because curl infers the length from strlen otherwise and a
+      // body is not guaranteed to be free of embedded nulls.
+      curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
+                       static_cast<long>(request.body.size()));
+    }
     curl_easy_setopt(curl, CURLOPT_USERAGENT, kUserAgent);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);

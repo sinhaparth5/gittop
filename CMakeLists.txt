@@ -90,6 +90,7 @@ add_executable(gittop
   src/remote/api.cpp
   src/remote/client.cpp
   src/remote/http.cpp
+  src/remote/oauth.cpp
   src/remote/pipelines.cpp
   src/remote/provider.cpp
   src/remote/pulls.cpp
@@ -103,6 +104,7 @@ add_executable(gittop
   src/ui/pipeline_panel.cpp
   src/ui/pull_panel.cpp
   src/ui/remote_panel.cpp
+  src/ui/signin_panel.cpp
   src/ui/stash_panel.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp
