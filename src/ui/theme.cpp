@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <ftxui/screen/terminal.hpp>
+
 namespace gittop::ui {
 namespace {
 
@@ -512,7 +514,32 @@ ColorDepth DetectColorDepth() {
   if (Contains(colorterm, "truecolor") || Contains(colorterm, "24bit")) {
     return ColorDepth::TrueColor;
   }
-  if (Contains(term, "256color") || Contains(term, "direct")) {
+  // Windows Terminal, which is how a WSL shell usually reaches a screen. It
+  // sets no COLORTERM and reports TERM=xterm-256color, so every check below
+  // reads it as an eight-bit terminal — and it has been 24-bit since it
+  // shipped. Without this gittop's own detection is worse than the one FTXUI
+  // does downstream, which is a strange thing for the layer that owns the
+  // palettes to be.
+  const char* wt = std::getenv("WT_SESSION");
+  if (wt != nullptr && wt[0] != '\0') {
+    return ColorDepth::TrueColor;
+  }
+  // A `-direct` terminfo entry *is* the 24-bit one — xterm-direct, tmux-direct.
+  // This used to be tested alongside "256color" and answered Ansi256, which
+  // downgraded the one class of terminal that had said outright it could do
+  // better. It has to be tried before the 256 test, since several of these
+  // names contain both words.
+  if (Contains(term, "direct")) {
+    return ColorDepth::TrueColor;
+  }
+  // These three set no COLORTERM under some launchers but have never shipped a
+  // version without 24-bit colour, and guessing low is not free: two palettes
+  // that differ in 24-bit can quantize onto the same 256 index, which makes
+  // switching theme look broken rather than subtle.
+  if (Contains(term, "kitty") || Contains(term, "alacritty") || Contains(term, "wezterm")) {
+    return ColorDepth::TrueColor;
+  }
+  if (Contains(term, "256color")) {
     return ColorDepth::Ansi256;
   }
   return ColorDepth::Ansi16;
@@ -524,6 +551,30 @@ ColorDepth ColorDepthNow() {
 
 void SetColorDepth(ColorDepth depth) {
   g_depth = depth;
+
+  // FTXUI quantizes a second time on its way to the screen, from its own
+  // reading of TERM and COLORTERM, and it does not consult ToColor's. Leaving
+  // the two to disagree is what made `theme.depth = "truecolor"` a setting that
+  // appeared to do nothing: gittop stopped quantizing and FTXUI carried on. The
+  // depth resolved here is the one decision, so it has to reach both.
+  using Support = ftxui::Terminal::Color;
+  switch (depth) {
+    case ColorDepth::None:
+      // FTXUI has no monochrome level. Palette16 is the floor; ToColor has
+      // already mapped every role to Color::Default, so nothing colored is
+      // emitted regardless of what FTXUI would allow.
+      ftxui::Terminal::SetColorSupport(Support::Palette16);
+      break;
+    case ColorDepth::Ansi16:
+      ftxui::Terminal::SetColorSupport(Support::Palette16);
+      break;
+    case ColorDepth::Ansi256:
+      ftxui::Terminal::SetColorSupport(Support::Palette256);
+      break;
+    case ColorDepth::TrueColor:
+      ftxui::Terminal::SetColorSupport(Support::TrueColor);
+      break;
+  }
 }
 
 std::string ColorDepthName(ColorDepth depth) {

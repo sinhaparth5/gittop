@@ -1909,7 +1909,15 @@ bool App::Perform(ui::Action action) {
 
     case ui::Action::Theme: {
       const std::string label = ui::NextTheme();
-      Note("theme: " + label, false);
+      // Below truecolor two palettes can quantize onto the same indices, and a
+      // theme switch that changes nothing on screen reads as a broken key
+      // rather than as a terminal limit. Naming the depth is the difference
+      // between "this is broken" and "this terminal cannot show it".
+      const ui::ColorDepth depth = ui::ColorDepthNow();
+      const std::string note = depth == ui::ColorDepth::TrueColor
+                                   ? "theme: " + label
+                                   : "theme: " + label + "  (" + ui::ColorDepthName(depth) + ")";
+      Note(note, false);
       return true;
     }
 
@@ -2335,7 +2343,25 @@ int App::Run() {
         body.push_back(ui::OperationBanner(operation_, keys_));
         body.push_back(ui::SummaryRow(VisibleStatus(), bars_,
                                       width < 84 || compact_));
-        panel = ui::FileList(VisibleStatus(), selected_, width, &row_boxes_) | flex;
+        {
+          // Below this the change list would be narrower than the paths it
+          // holds, and a truncated path is worth less than the sidecar it
+          // bought. The threshold is the sidecar's width plus the width a file
+          // row needs before it starts eliding, not a round number.
+          const int sidebar = ui::StatusSidebarWidth();
+          const bool wide = width >= sidebar + 62 && !compact_;
+          const int list_width = wide ? width - sidebar : width;
+          Element list = ui::FileList(VisibleStatus(), selected_, list_width, &row_boxes_);
+          if (wide) {
+            panel = hbox({
+                        std::move(list) | flex,
+                        ui::StatusSidebar(snapshot_),
+                    }) |
+                    flex;
+          } else {
+            panel = std::move(list) | flex;
+          }
+        }
         break;
 
       case ui::View::History: {

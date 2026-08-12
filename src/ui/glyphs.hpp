@@ -72,6 +72,7 @@ struct GlyphSet {
 
   // ----------------------------------------------------------------- branches
   const char* branch;
+  const char* detached;  // HEAD on a commit rather than on a branch
   const char* ahead;
   const char* behind;
 

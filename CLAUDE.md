@@ -315,7 +315,12 @@ follows the same shape rather than computing rows from a y offset.
 ## Lazy reads and cache invalidation
 
 Only the status snapshot is read at startup — plus `ReadOperation`, which is a handful of stat
-calls and has to be in the same frame as the files it explains. History is read on the first switch
+calls and has to be in the same frame as the files it explains. The status read also carries
+`ReadTracking` and `ReadRecent`, which feed the Status view's sidecar; both are *bounded*
+(`git_graph_ahead_behind` stops at the merge base, `ReadRecent` abandons the walk after
+`kRecentCommits`) and that bound is the only reason they are allowed there. Calling `ReadHistory`
+to fill the same panel would put a full revwalk on every startup, which is the thing this section
+exists to prevent. History is read on the first switch
 to a view that needs it (`EnsureHistory`) and cached; the diff and the stash list likewise
 (`EnsureDiff`, `EnsureStashes`); the remote, the CI runs and the pull requests are fetched on the
 first switch to their tabs (`EnsureRemote`, `EnsurePipelines`, `EnsurePulls`), on worker threads.
@@ -423,6 +428,19 @@ asterisks and not the passphrase. It is never written to the config, the log, or
   lambda and passed down, which is how every responsive breakpoint works.
 - `flex` belongs on the panel itself, not on a `vbox` wrapped around it. Wrapping stretches the
   container and leaves the box at its content size.
+- **FTXUI quantizes colour a second time, and it does not ask `ToColor`.** It computes its own
+  support from `TERM`/`COLORTERM` and downgrades whatever it is handed. While the two disagreed,
+  `theme.depth = "truecolor"` was a setting that visibly did nothing — gittop stopped quantizing
+  and FTXUI carried on. `ui::SetColorDepth` now pushes the resolved depth into
+  `ftxui::Terminal::SetColorSupport` so one decision reaches both. Anything else that reasons about
+  colour depth has to go through that function, not around it.
+
+Two palettes that differ in 24-bit can land on the *same* 256 index — `default` and `catppuccin`
+used to render byte-identical frames — so a theme switch on an eight-bit terminal looks like a
+broken key rather than a subtle change. That is why `DetectColorDepth` now recognises `WT_SESSION`
+(Windows Terminal, and therefore most WSL shells, which set no `COLORTERM`) and treats a `-direct`
+terminfo entry as 24-bit rather than as 256, and why the `t` toast names the depth whenever it is
+below truecolor. Guessing low is not free.
 
 ## Conventions
 

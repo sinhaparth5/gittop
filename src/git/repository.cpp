@@ -156,6 +156,80 @@ void ReadVelocity(git_repository* repo, const git_oid* tip, std::int64_t today,
       *std::max_element(branch->velocity.begin(), branch->velocity.end());
 }
 
+// Ahead/behind against the branch's own upstream. `git_graph_ahead_behind`
+// walks only as far as the merge base, so on a branch that tracks closely this
+// is a handful of objects; it is not the revwalk the lazy-read rule is about.
+// A detached or unborn head has no upstream and leaves the fields at zero,
+// which the panel draws as absent rather than as "in sync".
+void ReadTracking(git_repository* repo, git_reference* head, model::StatusSnapshot* snap) {
+  if (git_reference_is_branch(head) != 1) {
+    return;
+  }
+  git_reference* upstream = nullptr;
+  if (git_branch_upstream(&upstream, head) != 0) {
+    return;
+  }
+  const char* name = nullptr;
+  if (git_branch_name(&name, upstream) == 0 && name != nullptr) {
+    snap->upstream = name;
+    snap->has_upstream = true;
+  }
+
+  const git_oid* local = git_reference_target(head);
+  const git_oid* remote = git_reference_target(upstream);
+  std::size_t ahead = 0;
+  std::size_t behind = 0;
+  if (local != nullptr && remote != nullptr &&
+      git_graph_ahead_behind(&ahead, &behind, repo, local, remote) == 0) {
+    snap->ahead = ahead;
+    snap->behind = behind;
+  }
+  git_reference_free(upstream);
+}
+
+// The newest few commits, and only those: the walk is abandoned the moment the
+// vector is full, so this costs five commit lookups rather than one per commit
+// in the repository. Reusing ReadHistory here would have been the obvious move
+// and is exactly the thing that would put a full revwalk on startup.
+void ReadRecent(git_repository* repo, git_reference* head, model::StatusSnapshot* snap) {
+  const git_oid* tip = git_reference_target(head);
+  if (tip == nullptr) {
+    return;
+  }
+  git_revwalk* walk = nullptr;
+  if (git_revwalk_new(&walk, repo) != 0) {
+    return;
+  }
+  git_revwalk_sorting(walk, GIT_SORT_TIME);
+  if (git_revwalk_push(walk, tip) != 0) {
+    git_revwalk_free(walk);
+    return;
+  }
+
+  snap->recent.reserve(model::kRecentCommits);
+  git_oid oid;
+  while (snap->recent.size() < model::kRecentCommits && git_revwalk_next(&oid, walk) == 0) {
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &oid) != 0) {
+      continue;
+    }
+    model::RecentCommit entry;
+    char short_id[8] = {};
+    git_oid_tostr(short_id, sizeof(short_id), &oid);
+    entry.short_id = short_id;
+
+    const char* summary = git_commit_summary(commit);
+    entry.summary = summary != nullptr ? summary : "";
+    const git_signature* author = git_commit_author(commit);
+    entry.author = author != nullptr && author->name != nullptr ? author->name : "";
+    entry.time = static_cast<std::int64_t>(git_commit_time(commit));
+
+    snap->recent.push_back(std::move(entry));
+    git_commit_free(commit);
+  }
+  git_revwalk_free(walk);
+}
+
 }  // namespace
 
 Library::Library() {
@@ -254,6 +328,8 @@ model::StatusSnapshot Repository::ReadStatus() const {
     const char* name = git_reference_shorthand(head);
     snap.branch = name != nullptr ? name : "HEAD";
     snap.head_detached = git_repository_head_detached(repo) == 1;
+    ReadTracking(repo, head, &snap);
+    ReadRecent(repo, head, &snap);
     git_reference_free(head);
   } else if (head_rc == GIT_EUNBORNBRANCH) {
     snap.head_unborn = true;

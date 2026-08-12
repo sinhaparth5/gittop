@@ -79,6 +79,14 @@ ftxui::Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars&
 ftxui::Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
                         std::vector<ftxui::Box>* rows = nullptr);
 
+// The Status view's right-hand column: what branch this is and what landed on
+// it recently. Both come out of the status read, so this costs no request and
+// no revwalk beyond the bounded one already paid for. Fixed width — the change
+// list takes the remainder — and the caller decides whether the terminal is
+// wide enough to show it at all.
+int StatusSidebarWidth();
+ftxui::Element StatusSidebar(const model::StatusSnapshot& snapshot);
+
 // `fade` runs 1 down to 0 as a message ages out. The keymap is read rather than
 // captured in string literals, so a rebound key shows up in the hints. `filter`
 // is the live search, echoed on the key row so a list that is hiding rows never

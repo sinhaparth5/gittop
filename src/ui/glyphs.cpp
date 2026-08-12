@@ -48,6 +48,7 @@ constexpr GlyphSet kAscii{
     .lane_open = "\\",
 
     .branch = "*",
+    .detached = "@",
     .ahead = "^",
     .behind = "v",
 
@@ -127,6 +128,7 @@ constexpr GlyphSet kUnicode{
     .lane_open = "╮",
 
     .branch = "◆",
+    .detached = "◇",
     .ahead = "↑",
     .behind = "↓",
 
@@ -217,6 +219,7 @@ constexpr GlyphSet kNerd{
     .lane_open = "╮",
 
     .branch = "",      // nf-dev-git_branch
+    .detached = "",  // nf-oct-git_commit
     .ahead = "↑",
     .behind = "↓",
 

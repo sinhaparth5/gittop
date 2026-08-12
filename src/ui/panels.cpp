@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <ctime>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -198,7 +200,7 @@ Element Row(const StatusEntry& entry, bool selected, int width) {
 
   // Two border columns, the cursor field, then glyph and letter with the spacing
   // scale between them. What is left is the path's.
-  const int chrome = 2 + 2 + kSpace + 1 + kSpace + 1 + kSpaceWide;
+  const int chrome = 2 + 3 + kSpace + 1 + kSpace + 1 + kSpaceWide;
   int room = std::max(12, width - chrome);
 
   Element path = PathText(entry.path, selected, room);
@@ -217,7 +219,11 @@ Element Row(const StatusEntry& entry, bool selected, int width) {
   }
 
   Element row = hbox({
-      text(selected ? std::string(" ") + g.cursor : "  ") | color(t.accent),
+      // Three cells, and the marker sits in the third — the same column the
+      // group header puts its rule in. It used to sit in the second, which left
+      // the cursor hanging a column clear of both the heading above it and the
+      // glyph it was pointing at.
+      text(selected ? std::string("  ") + g.cursor : "   ") | color(t.accent),
       Gap(),
       text(d.glyph) | color(d.color),
       Gap(),
@@ -314,26 +320,46 @@ Element Splash(const std::string& repo, const std::string& version, float reveal
   const Rgb ink = Mix(t.bg.rgb, t.text.rgb, shown);
   const Rgb faint = Mix(t.bg.rgb, t.text_faint.rgb, shown);
 
-  Elements card{
-      text(""),
-  };
-  for (Element& row : art) {
-    card.push_back(hbox({filler(), std::move(row), filler()}));
+  // The splash sheds parts rather than being clipped, because a clipped splash
+  // loses its *bottom* — the line telling the user it goes away on a keypress —
+  // and a screen that says nothing about how to leave it is worse than a plain
+  // one. Each tier is the row count it actually needs, counted here rather than
+  // guessed: art is 5, every other element is 1, the border is 2.
+  const bool room_for_art =
+      width >= static_cast<int>(std::string_view(kWordmark[0]).size()) + 4 && height >= 9;
+  const bool room_for_padding = height >= (room_for_art ? 14 : 8);
+  const bool room_for_tagline = height >= (room_for_art ? 12 : 6);
+  const bool bordered = width >= 44 && height >= (room_for_art ? 13 : 7);
+
+  Elements card;
+  if (room_for_padding) {
+    card.push_back(text(""));
   }
-  card.push_back(text(""));
+  if (room_for_art) {
+    for (Element& row : art) {
+      card.push_back(hbox({filler(), std::move(row), filler()}));
+    }
+    card.push_back(text(""));
+  }
   card.push_back(hbox({filler(), text(repo) | bold | color(ToColor(ink)), filler()}));
-  card.push_back(hbox({filler(),
-                       text(std::string("a dashboard for git ") + g.bullet + " " + version) |
-                           color(ToColor(faint)),
-                       filler()}));
-  card.push_back(text(""));
+  if (room_for_tagline) {
+    card.push_back(hbox({filler(),
+                         text(std::string("a dashboard for git ") + g.bullet + " " + version) |
+                             color(ToColor(faint)),
+                         filler()}));
+  }
+  if (room_for_padding) {
+    card.push_back(text(""));
+  }
   card.push_back(hbox({filler(), text("any key to begin") | color(ToColor(faint)), filler()}));
-  card.push_back(text(""));
+  if (room_for_padding) {
+    card.push_back(text(""));
+  }
 
   // Centred by fillers rather than by arithmetic, so it stays centred through a
   // resize without anything having to be told the resize happened.
   Element body = vbox(std::move(card));
-  if (width >= 44 && height >= 18) {
+  if (bordered) {
     body = std::move(body) | FramedBorder() |
            color(ToColor(Mix(t.bg.rgb, t.border_focus.rgb, shown))) | bgcolor(t.surface);
   }
@@ -353,12 +379,31 @@ Element Header(const model::StatusSnapshot& snapshot) {
   Elements parts{
       text(" gittop ") | bold | color(t.bg) | bgcolor(t.accent),
       text("  "),
-      text(snapshot.repo_name) | bold | color(t.text),
-      text("   "),
-      text(glyphs().branch) | color(t.staged),
-      text(" " + Truncate(snapshot.branch, 40)) | color(t.text_dim),
-      filler(),
   };
+  // The badge already says gittop. Printing the repository name beside it reads
+  // as a duplicate rather than as two facts whenever you are running gittop on
+  // gittop — which is most of its development — so the name is dropped when it
+  // would only repeat the badge.
+  if (snapshot.repo_name != "gittop") {
+    parts.push_back(text(snapshot.repo_name) | bold | color(t.text));
+    parts.push_back(text("   "));
+  }
+  parts.push_back(text(glyphs().branch) | color(t.staged));
+  parts.push_back(text(" " + Truncate(snapshot.branch, 40)) | color(t.text_dim));
+
+  // The tracking counts belong next to the branch they describe, and the header
+  // is the one place on screen visible from every view.
+  if (snapshot.has_upstream && (snapshot.ahead > 0 || snapshot.behind > 0)) {
+    parts.push_back(text("   "));
+    if (snapshot.ahead > 0) {
+      parts.push_back(text(glyphs().ahead + std::to_string(snapshot.ahead)) | color(t.staged));
+      parts.push_back(text(" "));
+    }
+    if (snapshot.behind > 0) {
+      parts.push_back(text(glyphs().behind + std::to_string(snapshot.behind)) | color(t.warning));
+    }
+  }
+  parts.push_back(filler());
 
   if (snapshot.head_unborn) {
     parts.push_back(text(" unborn ") | bold | color(t.bg) | bgcolor(t.warning));
@@ -569,6 +614,120 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
   }
 
   return Panel("CHANGES", Scrollable(vbox(std::move(rows))));
+}
+
+namespace {
+
+// The sidecar's own width. Wide enough for a short id, a summary worth reading
+// and a relative time, narrow enough that the change list keeps the majority of
+// a 100-column terminal — which is the one it is there to serve.
+constexpr int kSidebarCells = 34;
+
+Element TrackingLine(const model::StatusSnapshot& snapshot) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+
+  if (!snapshot.has_upstream) {
+    // Not the same as "in sync", and drawn differently on purpose: a branch
+    // with no upstream has nothing to be ahead or behind of, and printing
+    // 0/0 there would be a claim about the remote rather than about the branch.
+    return hbox({Gap(), text("no upstream") | color(t.text_faint), filler()});
+  }
+
+  Elements parts{Gap()};
+  if (snapshot.ahead == 0 && snapshot.behind == 0) {
+    parts.push_back(text(g.check) | color(t.success));
+    parts.push_back(text(" in sync") | color(t.text_dim));
+  } else {
+    if (snapshot.ahead > 0) {
+      parts.push_back(text(g.ahead) | color(t.staged));
+      parts.push_back(text(std::to_string(snapshot.ahead)) | bold | color(t.staged));
+      parts.push_back(Gap());
+    }
+    if (snapshot.behind > 0) {
+      parts.push_back(text(g.behind) | color(t.warning));
+      parts.push_back(text(std::to_string(snapshot.behind)) | bold | color(t.warning));
+    }
+  }
+  parts.push_back(filler());
+  return hbox(std::move(parts));
+}
+
+Element BranchCard(const model::StatusSnapshot& snapshot) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+
+  // Two border columns and the leading gap; the rest is the name's, truncated
+  // rather than clipped so a long branch cannot push the border off.
+  const int room = kSidebarCells - 2 - kSpace - TextWidth(g.branch) - 1;
+
+  Elements rows{
+      hbox({
+          Gap(),
+          text(snapshot.head_detached ? g.detached : g.branch) | color(t.accent),
+          text(" " + Truncate(snapshot.branch, room)) | bold | color(t.text),
+          filler(),
+      }),
+      TrackingLine(snapshot),
+  };
+  if (snapshot.has_upstream) {
+    rows.push_back(hbox({
+        Gap(),
+        text(Truncate(snapshot.upstream, kSidebarCells - 2 - kSpace)) | color(t.text_faint),
+        filler(),
+    }));
+  }
+  return Panel("BRANCH", vbox(std::move(rows)), {.focused = false});
+}
+
+Element RecentList(const model::StatusSnapshot& snapshot) {
+  const Theme& t = theme();
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+
+  if (snapshot.recent.empty()) {
+    return Panel("RECENT",
+                 hbox({Gap(), text("no commits yet") | color(t.text_faint), filler()}),
+                 {.focused = false});
+  }
+
+  // Fixed columns first so the summary's budget is arithmetic rather than an
+  // estimate: border, gap, seven id cells, gap, then the age right-justified.
+  constexpr int kIdCells = 7;
+  constexpr int kAgeCells = 4;
+  const int room = kSidebarCells - 2 - kSpace - kIdCells - kSpace - kAgeCells - kSpaceTight;
+
+  Elements rows;
+  rows.reserve(snapshot.recent.size());
+  for (const model::RecentCommit& commit : snapshot.recent) {
+    rows.push_back(hbox({
+        Gap(),
+        text(Fit(commit.short_id, kIdCells)) | color(t.text_faint),
+        Gap(),
+        text(Truncate(commit.summary, room)) | color(t.text_dim),
+        filler(),
+        text(Rjust(RelativeTime(commit.time, now), kAgeCells)) | color(t.text_faint),
+        Gap(kSpaceTight),
+    }));
+  }
+  return Panel("RECENT", vbox(std::move(rows)), {.focused = false});
+}
+
+}  // namespace
+
+int StatusSidebarWidth() {
+  return kSidebarCells;
+}
+
+Element StatusSidebar(const model::StatusSnapshot& snapshot) {
+  // RECENT takes the remaining height rather than sitting at its content size
+  // over a bare gap. An unframed hole under the second panel is the thing that
+  // makes a two-column terminal layout look unfinished — the left column is
+  // framed to the bottom, so the right one has to be too.
+  return vbox({
+             BranchCard(snapshot),
+             RecentList(snapshot) | flex,
+         }) |
+         size(WIDTH, EQUAL, kSidebarCells);
 }
 
 Element Footer(const std::string& message, bool is_error, float fade, View view,
