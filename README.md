@@ -333,48 +333,48 @@ the file it came from and nothing else.
 All eight phases are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
 the source layout, per-task checkboxes, known risks, and a work log.
 
-| Phase | Scope | State |
-|---|---|---|
-| 0 | CMake, FTXUI window, libgit2 linked, repo detection | Done |
-| 1 | Local status dashboard, staging, discard, commit | Done |
-| 2 | History, commit graph, activity heatmap, branches | Done |
-| 3 | Config, tokens, provider detection, async HTTP | Done |
-| 4 | Pipelines and CI panels | Done |
-| 5 | Pull requests, push/pull, themes, mouse | Done |
-| 6 | Diff viewer, stash, rebase helpers, search, layouts | Done |
-| 7 | Visual design pass | Done |
+| Phase | Scope                                               | State |
+| ----- | --------------------------------------------------- | ----- |
+| 0     | CMake, FTXUI window, libgit2 linked, repo detection | Done  |
+| 1     | Local status dashboard, staging, discard, commit    | Done  |
+| 2     | History, commit graph, activity heatmap, branches   | Done  |
+| 3     | Config, tokens, provider detection, async HTTP      | Done  |
+| 4     | Pipelines and CI panels                             | Done  |
+| 5     | Pull requests, push/pull, themes, mouse             | Done  |
+| 6     | Diff viewer, stash, rebase helpers, search, layouts | Done  |
+| 7     | Visual design pass                                  | Done  |
 
 ## Keys
 
-| Key | Action |
-|---|---|
-| `1` … `9` `0` | Jump to a tab by its number |
-| `tab` | Cycle through the views |
-| `j` `k` or arrows | Move the selection |
-| `g` `G` | First / last, or oldest / newest on the graph |
-| `ctrl-u` `ctrl-d` | Move a screen at a time |
-| `/` | Filter the list on screen; `esc` clears it |
-| `enter` | Diff a file or a commit, jobs of a CI run, details of a pull request |
-| `h` `l` | Pan the graph through time |
-| `d` `w` `m` | Graph bucket: day, week, month |
-| `space` | Stage or unstage the selection |
-| `s` `u` | Stage / unstage explicitly |
-| `a` | Stage everything |
-| `d` | Discard the selection, after a confirm |
-| `c` | Write a commit |
-| `s` | Diff view: swap between unstaged and staged |
-| `[` `]` | Diff view: previous / next file |
-| `S` | Stash the whole working tree |
-| `a` `p` `d` | Stash view: apply / pop / drop, the last two after a confirm |
-| `B` | Rebase this branch onto its upstream, after a confirm |
-| `o` | Continue or abort a rebase, merge or cherry-pick |
-| `f` `p` `P` | Fetch / pull / push |
-| `R` | Switch to the next remote |
-| `L` | Sign in to GitHub or GitLab |
-| `t` | Next theme |
-| `r` | Re-read the repository, or re-fetch on the remote views |
-| `?` | Help |
-| `q` | Quit |
+| Key               | Action                                                               |
+| ----------------- | -------------------------------------------------------------------- |
+| `1` … `9` `0`     | Jump to a tab by its number                                          |
+| `tab`             | Cycle through the views                                              |
+| `j` `k` or arrows | Move the selection                                                   |
+| `g` `G`           | First / last, or oldest / newest on the graph                        |
+| `ctrl-u` `ctrl-d` | Move a screen at a time                                              |
+| `/`               | Filter the list on screen; `esc` clears it                           |
+| `enter`           | Diff a file or a commit, jobs of a CI run, details of a pull request |
+| `h` `l`           | Pan the graph through time                                           |
+| `d` `w` `m`       | Graph bucket: day, week, month                                       |
+| `space`           | Stage or unstage the selection                                       |
+| `s` `u`           | Stage / unstage explicitly                                           |
+| `a`               | Stage everything                                                     |
+| `d`               | Discard the selection, after a confirm                               |
+| `c`               | Write a commit                                                       |
+| `s`               | Diff view: swap between unstaged and staged                          |
+| `[` `]`           | Diff view: previous / next file                                      |
+| `S`               | Stash the whole working tree                                         |
+| `a` `p` `d`       | Stash view: apply / pop / drop, the last two after a confirm         |
+| `B`               | Rebase this branch onto its upstream, after a confirm                |
+| `o`               | Continue or abort a rebase, merge or cherry-pick                     |
+| `f` `p` `P`       | Fetch / pull / push                                                  |
+| `R`               | Switch to the next remote                                            |
+| `L`               | Sign in to GitHub or GitLab                                          |
+| `t`               | Next theme                                                           |
+| `r`               | Re-read the repository, or re-fetch on the remote views              |
+| `?`               | Help                                                                 |
+| `q`               | Quit                                                                 |
 
 Keys that appear twice are scoped to a view: `s` stages on the status view and swaps sides on the
 diff view, `d` discards, changes the graph bucket, and drops a stash. Which one a key means is a
@@ -382,14 +382,14 @@ fact about where you are, not something the config decides.
 
 ## Built with
 
-| | |
-|---|---|
-| Language | C++20 |
-| TUI | [FTXUI](https://github.com/ArthurSonzogni/FTXUI) |
-| Git access | [libgit2](https://libgit2.org/) |
-| HTTP | [libcurl](https://curl.se/libcurl/) |
-| JSON | [nlohmann/json](https://github.com/nlohmann/json) |
-| Build | CMake with FetchContent |
+|            |                                                   |
+| ---------- | ------------------------------------------------- |
+| Language   | C++20                                             |
+| TUI        | [FTXUI](https://github.com/ArthurSonzogni/FTXUI)  |
+| Git access | [libgit2](https://libgit2.org/)                   |
+| HTTP       | [libcurl](https://curl.se/libcurl/)               |
+| JSON       | [nlohmann/json](https://github.com/nlohmann/json) |
+| Build      | CMake with FetchContent                           |
 
 ## Building it
 
