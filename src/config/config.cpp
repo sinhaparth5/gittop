@@ -255,11 +255,12 @@ constexpr const char* kTemplate = R"(# gittop configuration
 
 [layout]
 # Which tabs exist and in what order. The digit keys are positional, so this
-# also decides what 1 through 9 reach and what each tab prints as its number.
-# Any view left out is simply not there — a good way to lose the three network
-# tabs on a repository that has no remote worth watching.
+# also decides what 1 through 9 and 0 reach and what each tab prints as its
+# number. Any view left out is simply not there — a good way to lose the three
+# network tabs on a repository that has no remote worth watching.
 # One or more of: status history branches graph diff stashes remote ci pulls
-# views = "status history branches graph diff stashes remote ci pulls"
+#                 settings
+# views = "status history branches graph diff stashes remote ci pulls settings"
 
 # The view to open on. Has to be one of the views above, or it is ignored:
 # starting on a tab no key can reach is worse than starting on the first one.
@@ -271,6 +272,10 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # compact = false
 
 [theme]
+# Everything under here can also be changed from the Settings tab (`0`), and
+# saved back from the row that says so. Saving regenerates this file from the
+# settings gittop is holding, which means these comments do not survive it.
+#
 # One of: default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight.
 # `t` cycles them at run time, which is the quickest way to see them all.
 # name = "default"
@@ -623,6 +628,10 @@ bool Config::GetBool(const std::string& key, bool fallback) const {
 
 void Config::Set(const std::string& key, std::string value) {
   values_[key] = std::move(value);
+}
+
+bool Config::Unset(const std::string& key) {
+  return values_.erase(key) > 0;
 }
 
 std::string Config::HostValue(const std::string& host, const std::string& field) const {

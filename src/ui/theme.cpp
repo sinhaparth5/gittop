@@ -591,6 +591,20 @@ std::string ColorDepthName(ColorDepth depth) {
   return "truecolor";
 }
 
+std::string ColorDepthKey(ColorDepth depth) {
+  switch (depth) {
+    case ColorDepth::None:
+      return "none";
+    case ColorDepth::Ansi16:
+      return "16";
+    case ColorDepth::Ansi256:
+      return "256";
+    case ColorDepth::TrueColor:
+      break;
+  }
+  return "truecolor";
+}
+
 bool ParseColorDepth(const std::string& text, ColorDepth* out) {
   const std::string key = Normalize(text);
   if (key == "auto") {

@@ -9,10 +9,10 @@ this file describes the architecture only.
 ## What this is
 
 `gittop` is a btop-inspired terminal dashboard for Git: local repository state that works with no
-network, plus GitHub and GitLab panels. Phases 0 through 7 are done, so there are nine views —
-status, history, branches, graph, diff, stashes, remote, CI, and pull requests — plus push/pull,
-stashing, rebase helpers, a `/` filter, eight themes, rebindable keys, a configurable tab set and
-the mouse. Phase 7 added the second token layer (glyphs), one `Panel()` every frame goes through,
+network, plus GitHub and GitLab panels. Phases 0 through 7 are done, so there are ten views —
+status, history, branches, graph, diff, stashes, remote, CI, pull requests and settings — plus
+push/pull, stashing, rebase helpers, sign-in, a `/` filter, eight themes, rebindable keys, a
+configurable tab set and the mouse. Phase 7 added the second token layer (glyphs), one `Panel()` every frame goes through,
 cell-accurate text measurement, and a motion budget.
 
 Trust `progress.md` for phase state, not the git log: the commit messages are off by one and
@@ -167,9 +167,12 @@ is why `git/transfer.cpp` opens its own `git_repository` from a path rather than
 A view is not one file, but Phases 5 and 6 removed four of the places it used to be.
 `ui::AllViews()` in `panels.cpp` is the single ordered list, and the tab bar, the `tab`/`backtab`
 cycle, the tab hit-boxes and now the digit keys all read it — adding an entry there gets all four.
-The digit keys are `view_1` … `view_9`, positional actions that index `AllViews()`, so a new view
+The digit keys are `view_1` … `view_10`, positional actions that index `AllViews()`, so a new view
 needs no key of its own and `[layout] views` can reorder the lot without the tab bar lying about
-which number reaches what.
+which number reaches what. `view_10` is bound to `0`, which is where the tenth key on a number row
+actually is; `SlotKey` in `panels.cpp` is the one place that mapping lives, because the digit the
+tab bar *prints* has to be the key that reaches it. An eleventh view would print no digit rather
+than printing `11` and naming a key nobody has.
 
 What is still manual: the `ui::View` enum, `TabLabel`, the `kViewNames` table (both directions at
 once, so a view can never be parseable under a name it does not print), `ActiveSelection` and
@@ -177,6 +180,52 @@ once, so a view can never be parseable under a name it does not print), `ActiveS
 if it loads anything, `FilterTotal` and `RebuildFilter` if it has a list worth filtering, the render
 tree, `Footer`'s per-view hints, and the help overlay. Miss one and the view exists but cannot be
 reached, or scrolls the wrong list.
+
+`TabBar` sheds width in tiers, and the tiers are three numbers — the spaces after the digit, after
+the label, and between one tab and the next — fed to both the measurement and the drawing. That
+sharing is the whole design. It used to be two independent formulas with a roomy tier and a
+four-letter tier and nothing in between, so a bar one column too narrow for the first gave up forty
+columns of padding *and* the second half of every word in the same step: "Remo" with an empty
+right-hand third beside it. With the ten built-in tabs the ladder now lands on 129, 119, 109, 99,
+89, 79 and 69 columns, and whole labels survive four steps of tightening before any of them is cut.
+
+Two things to keep if you touch it. **Every term in `tier_width` has to be a term the loop below
+actually emits** — dropping the label chip's leading space made it pick a tier ten columns too wide
+and hand the difference to FTXUI, which clips mid-word and says nothing, which is the one outcome
+the tiers exist to prevent. And **no tier may drop a tab**: a clipped bar hides that those views
+exist at all, and the digit on a tab is the key that reaches it.
+
+## The settings view
+
+`ui/settings_panel.cpp` holds the page, and the one rule it exists to keep is that **the row list is
+built in exactly one place**. `BuildSettings()` returns the groups; `SettingsRowCount` and
+`SettingsRowAt` walk them, and App calls all three — to count rows for `ActiveCount`, to resolve
+what `enter` does, and to draw. The list changes shape with the state it describes (a signed-in host
+offers *sign out* where an anonymous one offers *connect*), so any second table of "row three is the
+theme" would be wrong the first time somebody signed in. This is `AllViews()`'s lesson applied
+again.
+
+`SettingsView` carries what only App knows — the token source, the remotes, the config path, the
+repository. It deliberately does **not** carry the theme, the glyph set, the border or the colour
+depth: those are `ui/` state with their own accessors, and copying them through App would make the
+struct a second place they could disagree with the thing actually on screen.
+
+Three things about how it behaves:
+
+- **Changes apply now and persist only when asked.** Every toggle takes effect immediately;
+  `SaveSettings` is a row you press. That is not timidity — `Config::Save` regenerates the file from
+  the keys gittop holds, so writing on every keystroke would eat a hand-written config's comments
+  the first time somebody pressed `t` to look at a theme.
+- **It writes `auto` back whenever the resolved value is what detection would have picked.**
+  Pinning the resolved one would freeze *this* terminal's answer into a file that may be read on
+  another: a dotfile carried to a 16-colour ssh session would arrive there demanding truecolor, and
+  `theme.icons` would arrive demanding nerd glyphs a plain xterm has no font for.
+- **A row that cannot be changed says why, in the column where its verb would have gone**, and
+  keeps its note. The environment beating a sign-in is the case that matters: the note names the
+  variable, the aside says the environment wins, and neither ever names the value.
+
+`ColorDepthKey` exists because `ColorDepthName` is prose for a status line — "256 colors" does not
+survive `ParseColorDepth`. Anything writing a depth into a config has to go through the key.
 
 ## Motion
 

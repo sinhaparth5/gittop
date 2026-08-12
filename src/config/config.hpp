@@ -39,6 +39,12 @@ class Config {
   bool GetBool(const std::string& key, bool fallback) const;
   void Set(const std::string& key, std::string value);
 
+  // Removes a key entirely. Distinct from setting it empty, which would write
+  // `token = ""` back out and leave a line that reads like a configured secret
+  // with the secret missing. Returns whether there was one to remove, so a
+  // sign-out can tell "cleared it" from "there was nothing on disk".
+  bool Unset(const std::string& key);
+
   // Per-host settings live under hosts."<host>". The host is a table key rather
   // than part of the key path so a self-hosted instance needs no code change.
   std::string HostValue(const std::string& host, const std::string& field) const;

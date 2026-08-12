@@ -151,4 +151,10 @@ std::string ColorDepthName(ColorDepth depth);
 // else.
 bool ParseColorDepth(const std::string& text, ColorDepth* out);
 
+// The spelling ParseColorDepth accepts, which is deliberately *not* what
+// ColorDepthName prints: that one is prose for a status line ("256 colors") and
+// does not parse back. Anything writing a depth into a config file has to use
+// this, or it writes a value its own reader will reject on the next launch.
+std::string ColorDepthKey(ColorDepth depth);
+
 }  // namespace gittop::ui

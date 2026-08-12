@@ -33,6 +33,10 @@ enum class Action {
   View7,
   View8,
   View9,
+  // Bound to `0`, because that is where the tenth key on a number row is. These
+  // must stay contiguous and in order: the routing turns one into a slot index
+  // by subtracting View1.
+  View10,
 
   Down,
   Up,
@@ -137,6 +141,12 @@ class Keymap {
   std::vector<std::string> Conflicts() const;
 
   static std::string ActionName(Action action);
+
+  // How many keys are bound, and how many of those the config moved. The second
+  // is the one worth showing: a `[keys]` section that was quietly rejected and
+  // one that took effect look identical from the outside otherwise.
+  int Count() const { return static_cast<int>(bindings_.size()); }
+  int UserCount() const;
 
  private:
   void Bind(Action action, Scope scope, const char* spec);

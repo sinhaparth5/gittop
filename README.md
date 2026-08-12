@@ -35,12 +35,13 @@ connection.
 > [!NOTE]
 > Everything on this page runs today except the things listed under [Planned](#planned):
 > repository state, diffs, stashes, rebase helpers, filtering, CI, pull requests, push and pull,
-> themes, custom layouts and the mouse all work. All eight phases of the roadmap are done. See
+> sign-in, settings, themes, custom layouts and the mouse all work. All eight phases of the roadmap
+> are done. See
 > [Current status](#current-status) for the full picture.
 
 ## What works today
 
-Nine views, switched with `1` through `9` or cycled with `tab`.
+Ten views, switched with `1` through `9` and `0`, or cycled with `tab`.
 
 **Status.**
 
@@ -144,6 +145,41 @@ able to separate green from amber.
 - Mergeable, conflicting and blocked where GitLab says so; GitHub's list endpoint does not report
   mergeability, so that column simply is not drawn rather than guessed at
 - The one for the branch you are standing on is marked and sorted to the top
+
+**Settings.**
+
+- One page, on `0`, for the things that used to be a key you had to know about or a file you had to
+  edit: theme, glyph set, panel border, colour depth, animations, compact layout, the startup card
+- `enter` changes the row under the cursor — the mouse does the same with a second click on a row
+- Connect a GitHub or GitLab account, or sign out of one, without leaving the dashboard
+- Switch which remote the network views read, when a repository has more than one
+- A read-only sidecar naming the repository, its remotes with any credentials stripped out of the
+  URLs, and where the config file is
+- Changes take effect the moment you make them and are written only when you ask, from the row that
+  says so. Saving regenerates the file, so a hand-written config would otherwise lose its comments
+  to a keystroke you pressed to look at a theme
+- A row that cannot be changed from here says why where its verb would have gone. A token in the
+  environment beats everything, so that row names the variable — never the value — and says the
+  environment wins
+
+## Signing in
+
+`L` anywhere, or the connection row on the settings page. Two routes into one overlay, and which
+one you get is not a preference:
+
+- Where the host has an OAuth application configured, the **device flow**: gittop shows a URL and a
+  short code, opens your browser, and waits. It is the only OAuth flow that needs no loopback
+  server and no open port, which is also what makes it work over ssh.
+- Everywhere else, a **guided personal access token**: a deep link to the provider's token page
+  with the name and the scopes already filled in, and a password field to paste the result into.
+  This is not a degraded mode — no `client_id` ships with gittop, because a device-flow id binds a
+  build to one registered application and that is a packaging decision, so today this is the route
+  every host takes. Set `hosts."<host>".client_id` to get the other one.
+
+The token is written to the config file at `0600` in a `0700` directory. An environment variable
+still beats it, so CI never needs anything on disk; a sign-in that could not be saved keeps working
+for the session and says on screen that it will not survive a restart. There is no code path that
+prints a token, masked or otherwise.
 
 The refresh loop is built around the rate limit rather than a stopwatch. It only runs while the CI
 view is on screen, only when there is a token — sixty anonymous requests an hour does not survive a
@@ -312,7 +348,7 @@ the source layout, per-task checkboxes, known risks, and a work log.
 
 | Key | Action |
 |---|---|
-| `1` … `9` | Jump to a tab by its number |
+| `1` … `9` `0` | Jump to a tab by its number |
 | `tab` | Cycle through the views |
 | `j` `k` or arrows | Move the selection |
 | `g` `G` | First / last, or oldest / newest on the graph |
@@ -334,6 +370,7 @@ the source layout, per-task checkboxes, known risks, and a work log.
 | `o` | Continue or abort a rebase, merge or cherry-pick |
 | `f` `p` `P` | Fetch / pull / push |
 | `R` | Switch to the next remote |
+| `L` | Sign in to GitHub or GitLab |
 | `t` | Next theme |
 | `r` | Re-read the repository, or re-fetch on the remote views |
 | `?` | Help |

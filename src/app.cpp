@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -115,6 +117,11 @@ App::App(git::Repository repo, config::Config config, std::string config_path)
       config_(std::move(config)),
       config_path_(std::move(config_path)),
       transfer_sink_(std::make_shared<git::ProgressSink>()) {
+  // Asked once here rather than per frame. The settings page reports whether
+  // there is a file behind the path it prints, and that only changes when
+  // gittop itself writes one.
+  std::error_code ec;
+  config_on_disk_ = std::filesystem::exists(config_path_, ec);
   ApplyConfig();
 }
 
@@ -517,6 +524,8 @@ int& App::ActiveSelection() {
       return diff_line_;
     case ui::View::Stashes:
       return stash_selected_;
+    case ui::View::Settings:
+      return settings_selected_;
     case ui::View::Graph:
     case ui::View::Remote:
     case ui::View::Status:
@@ -541,6 +550,10 @@ int App::ActiveCount() const {
       return static_cast<int>(diff_.lines.size());
     case ui::View::Stashes:
       return static_cast<int>(VisibleStashes().entries.size());
+    // Built rather than stored, so the count and what the panel draws come out
+    // of the same function and cannot disagree about how many rows there are.
+    case ui::View::Settings:
+      return ui::SettingsRowCount(SettingsViewState());
     case ui::View::Graph:
       return 0;  // the graph pans instead of selecting
     case ui::View::Remote:
@@ -670,6 +683,10 @@ int App::FilterTotal() const {
     case ui::View::Diff:
     case ui::View::Graph:
     case ui::View::Remote:
+    // Filterable in principle and pointless in practice: eleven rows with the
+    // headings that group them, and hiding the headings is what a filter would
+    // do. `/` says there is nothing to filter here rather than emptying it.
+    case ui::View::Settings:
       return 0;
     case ui::View::Status:
       break;
@@ -797,6 +814,9 @@ void App::NextRemote() {
     case ui::View::Graph:
     case ui::View::Diff:
     case ui::View::Stashes:
+    // Reads the new remote out of App on the next frame, so there is nothing
+    // to kick off here.
+    case ui::View::Settings:
       break;
   }
 }
@@ -1486,6 +1506,9 @@ void App::CancelSignIn() {
       case ui::View::Graph:
       case ui::View::Diff:
       case ui::View::Stashes:
+      // Where the sign-in was very likely started from. It reads the new token
+      // source out of App on the next frame and costs no request to do it.
+      case ui::View::Settings:
         break;
     }
     Note("signed in to " + session_token_.host, false);
@@ -1508,6 +1531,244 @@ ui::SignInView App::SignInViewState() const {
   view.error = signin_error_;
   view.hint = signin_hint_;
   return view;
+}
+
+void App::SignOut() {
+  DiscoverRemotes();
+  const std::string host = remote_.ref.host;
+  if (host.empty()) {
+    Note("no remote to sign out of", false);
+    return;
+  }
+
+  const bool had_session = session_token_.MatchesHost(host);
+  if (had_session) {
+    session_token_ = remote::SessionToken{};
+  }
+
+  // Removed rather than blanked: `token = ""` on disk is a line that reads like
+  // a configured secret with the secret missing, and ResolveToken would have to
+  // learn to tell those apart.
+  const bool had_config = config_.Unset("hosts." + host + ".token");
+  if (!had_session && !had_config) {
+    Note("not signed in to " + host, false);
+    return;
+  }
+
+  std::string error;
+  if (had_config && !config_.Save(config_path_, &error)) {
+    // The session copy is gone either way, so this run is anonymous from here.
+    // What could not be done is the part on disk, and the next launch is when
+    // that matters, so it is said now rather than discovered then.
+    Note("signed out here, but the config file still has the token: " + error, true);
+  } else {
+    Note("signed out of " + host, false);
+  }
+
+  // Everything cached came back to a request that carried that token, so none
+  // of it describes what an anonymous client can see.
+  const model::RemoteRef ref = remote_.ref;
+  remote_ = model::RemoteSnapshot{};
+  remote_.ref = ref;
+  const remote::Token token =
+      remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
+  remote_.token_source = token.source;
+  remote_.token_origin = token.origin;
+  pipelines_ = model::PipelineSnapshot{};
+  pulls_ = model::PullSnapshot{};
+  jobs_ = model::JobList{};
+  jobs_open_ = false;
+  pull_details_open_ = false;
+  pipeline_selected_ = 0;
+  pull_selected_ = 0;
+  last_pipeline_fetch_ = {};
+}
+
+ui::SettingsView App::SettingsViewState() const {
+  ui::SettingsView view;
+  view.selected = settings_selected_;
+
+  view.provider = remote_.ref.provider;
+  view.host = remote_.ref.host;
+  view.token_source = remote_.token_source;
+  view.token_origin = remote_.token_origin;
+
+  view.repo_name = snapshot_.repo_name;
+  // libgit2 hands back a workdir with a trailing slash, which makes the last
+  // path segment empty — and PathText, which keeps the filename and gives up
+  // the directory, then has nothing to keep and truncates the interesting end
+  // away instead.
+  view.repo_path = repo_.WorkdirPath();
+  while (view.repo_path.size() > 1 && view.repo_path.back() == '/') {
+    view.repo_path.pop_back();
+  }
+  view.branch = snapshot_.branch;
+  view.upstream = snapshot_.has_upstream ? snapshot_.upstream : std::string{};
+  view.head_detached = snapshot_.head_detached;
+
+  view.remotes.reserve(remotes_.size());
+  for (std::size_t i = 0; i < remotes_.size(); ++i) {
+    // Through SafeUrl here rather than in the panel, because this is the last
+    // point that has the raw one: a remote configured as https://user:token@…
+    // must not reach anything under ui/ with the token still in it.
+    view.remotes.push_back({remotes_[i].name, ui::SafeUrl(remotes_[i].url), i == remote_index_});
+  }
+
+  view.config_path = config_path_;
+  view.config_exists = config_on_disk_;
+  view.dirty = settings_dirty_;
+  view.key_bindings = keys_.Count();
+  view.key_overrides = keys_.UserCount();
+
+  view.compact = compact_;
+  view.splash = splash_;
+  view.version = kVersion;
+  return view;
+}
+
+void App::ActivateSetting() {
+  // Resolved through the same builder the panel renders from, so this can never
+  // act on a row other than the one under the cursor — the list changes shape
+  // with the state it describes, and a second table of indices here would be
+  // wrong the first time somebody signed in.
+  const ui::SettingsRow row = ui::SettingsRowAt(SettingsViewState(), settings_selected_);
+
+  switch (row.action) {
+    case ui::SettingsAction::None:
+      // A row that is inert for a reason answers with the reason. One that is
+      // merely inert says nothing, because there is nothing to say.
+      if (!row.blocked.empty()) {
+        Note(row.blocked, false);
+      }
+      return;
+
+    case ui::SettingsAction::SignIn:
+      RequestSignIn();
+      return;
+    case ui::SettingsAction::SignOut:
+      SignOut();
+      return;
+    case ui::SettingsAction::NextRemote:
+      NextRemote();
+      return;
+
+    case ui::SettingsAction::NextTheme:
+      // Through Perform so the `t` key and this row cannot drift apart — that
+      // case is also where the depth caveat gets attached to the toast.
+      Perform(ui::Action::Theme);
+      return;
+
+    case ui::SettingsAction::NextIcons: {
+      // Cycling onto the nerd set is the opt-in the auto-detection is not
+      // allowed to make on the user's behalf: a keypress is consent, and two
+      // more presses undo it if the font turns out not to have the icons.
+      const ui::GlyphMode order[] = {ui::GlyphMode::Ascii, ui::GlyphMode::Unicode,
+                                     ui::GlyphMode::Nerd};
+      int at = 0;
+      for (int i = 0; i < 3; ++i) {
+        if (order[i] == ui::GlyphModeNow()) {
+          at = i;
+        }
+      }
+      const ui::GlyphMode next = order[(at + 1) % 3];
+      ui::SetGlyphMode(next);
+      settings_dirty_ = true;
+      Note("icons: " + ui::GlyphModeName(next), false);
+      return;
+    }
+
+    case ui::SettingsAction::NextBorder: {
+      const ui::PanelBorder order[] = {ui::PanelBorder::Rounded, ui::PanelBorder::Light,
+                                       ui::PanelBorder::Heavy, ui::PanelBorder::Double};
+      int at = 0;
+      for (int i = 0; i < 4; ++i) {
+        if (order[i] == ui::PanelBorderNow()) {
+          at = i;
+        }
+      }
+      const ui::PanelBorder next = order[(at + 1) % 4];
+      ui::SetPanelBorder(next);
+      settings_dirty_ = true;
+      Note("border: " + ui::PanelBorderName(next), false);
+      return;
+    }
+
+    case ui::SettingsAction::NextDepth: {
+      const ui::ColorDepth order[] = {ui::ColorDepth::TrueColor, ui::ColorDepth::Ansi256,
+                                      ui::ColorDepth::Ansi16, ui::ColorDepth::None};
+      int at = 0;
+      for (int i = 0; i < 4; ++i) {
+        if (order[i] == ui::ColorDepthNow()) {
+          at = i;
+        }
+      }
+      const ui::ColorDepth next = order[(at + 1) % 4];
+      // One call, not two: SetColorDepth is what pushes the decision into FTXUI
+      // as well, and the two quantizers disagreeing is a bug already paid for.
+      ui::SetColorDepth(next);
+      settings_dirty_ = true;
+      Note("colours: " + ui::ColorDepthName(next), false);
+      return;
+    }
+
+    case ui::SettingsAction::ToggleAnimations: {
+      const bool on = ui::ReducedMotion();  // currently reduced, so turning them on
+      ui::SetReducedMotion(!on);
+      settings_dirty_ = true;
+      Note(std::string("animations: ") + (on ? "on" : "off"), false);
+      return;
+    }
+
+    case ui::SettingsAction::ToggleCompact:
+      compact_ = !compact_;
+      settings_dirty_ = true;
+      Note(std::string("compact layout: ") + (compact_ ? "on" : "off"), false);
+      return;
+
+    case ui::SettingsAction::ToggleSplash:
+      splash_ = !splash_;
+      settings_dirty_ = true;
+      Note(std::string("startup card: ") + (splash_ ? "on" : "off") + "  (next launch)", false);
+      return;
+
+    case ui::SettingsAction::SaveConfig:
+      SaveSettings();
+      return;
+
+    case ui::SettingsAction::OpenKeys:
+      help_scroll_ = 0;
+      OpenOverlay(kHelp);
+      return;
+  }
+}
+
+void App::SaveSettings() {
+  config_.Set("theme.name", ui::ThemeName());
+  config_.Set("theme.border", ui::PanelBorderName(ui::PanelBorderNow()));
+  config_.Set("theme.animations", ui::ReducedMotion() ? "false" : "true");
+  config_.Set("theme.splash", splash_ ? "true" : "false");
+  config_.Set("layout.compact", compact_ ? "true" : "false");
+
+  // "auto" whenever the resolved value is the one detection would have picked
+  // anyway. Pinning it instead would freeze *this* terminal's answer into a file
+  // that may well be read on another one — a dotfile carried to a 16-colour ssh
+  // session would arrive there demanding truecolor, and to a plain xterm
+  // demanding the nerd glyphs its font does not have.
+  const bool depth_detected = ui::DetectColorDepth() == ui::ColorDepthNow();
+  config_.Set("theme.depth",
+              depth_detected ? "auto" : ui::ColorDepthKey(ui::ColorDepthNow()));
+  const bool icons_detected = ui::DetectGlyphMode() == ui::GlyphModeNow();
+  config_.Set("theme.icons",
+              icons_detected ? "auto" : ui::GlyphModeName(ui::GlyphModeNow()));
+
+  std::string error;
+  if (!config_.Save(config_path_, &error)) {
+    Note(error, true);
+    return;
+  }
+  config_on_disk_ = true;
+  settings_dirty_ = false;
+  Note("saved to " + config_path_, false);
 }
 
 void App::CancelTransfer() {
@@ -1963,6 +2224,12 @@ void App::SetView(ui::View view) {
     case ui::View::Stashes:
       EnsureStashes();
       return;
+    // Nothing to fetch, but the account row is a fact about the remote and the
+    // sidecar lists them, so the discovery that every network view pays for on
+    // its way in has to happen here too.
+    case ui::View::Settings:
+      DiscoverRemotes();
+      return;
     case ui::View::Status:
       return;
     case ui::View::History:
@@ -2158,6 +2425,10 @@ ui::Scope App::CurrentScope() const {
     case ui::View::Remote:
     case ui::View::Pipelines:
     case ui::View::Pulls:
+    // Claims no keys of its own. Everything it does is on `enter`, which is
+    // already the global "act on this row", so a scope here would only be a
+    // second place for a binding to hide.
+    case ui::View::Settings:
       break;
   }
   return ui::Scope::Global;
@@ -2192,6 +2463,9 @@ bool App::Perform(ui::Action action) {
 
     case ui::Action::Theme: {
       const std::string label = ui::NextTheme();
+      // The settings page's save row reports this, and `t` is the same change
+      // whether it was pressed there or anywhere else.
+      settings_dirty_ = true;
       // Below truecolor two palettes can quantize onto the same indices, and a
       // theme switch that changes nothing on screen reads as a broken key
       // rather than as a terminal limit. Naming the depth is the difference
@@ -2223,7 +2497,8 @@ bool App::Perform(ui::Action action) {
     case ui::Action::View6:
     case ui::Action::View7:
     case ui::Action::View8:
-    case ui::Action::View9: {
+    case ui::Action::View9:
+    case ui::Action::View10: {
       const auto slot = static_cast<std::size_t>(action) -
                         static_cast<std::size_t>(ui::Action::View1);
       if (slot < views.size()) {
@@ -2258,6 +2533,10 @@ bool App::Perform(ui::Action action) {
       }
       if (view_ == ui::View::Pulls) {
         ToggleDetails();
+        return true;
+      }
+      if (view_ == ui::View::Settings) {
+        ActivateSetting();
         return true;
       }
       // Everywhere else, opening a row means looking at what changed in it.
@@ -2366,6 +2645,7 @@ std::vector<Box>* App::ActiveRowBoxes() {
     case ui::View::Pipelines:
     case ui::View::Pulls:
     case ui::View::Stashes:
+    case ui::View::Settings:
       return &row_boxes_;
     case ui::View::Graph:
     case ui::View::Remote:
@@ -2735,6 +3015,10 @@ int App::Run() {
                               &row_boxes_);
         break;
       }
+
+      case ui::View::Settings:
+        panel = ui::SettingsPanel(SettingsViewState(), width, &row_boxes_);
+        break;
     }
 
     if (panel) {

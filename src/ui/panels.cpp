@@ -87,6 +87,8 @@ std::string TabLabel(View view) {
       return "CI";
     case View::Pulls:
       return "Pulls";
+    case View::Settings:
+      return "Settings";
   }
   return "?";
 }
@@ -100,6 +102,7 @@ const struct {
     {"status", View::Status},   {"history", View::History},     {"branches", View::Branches},
     {"graph", View::Graph},     {"diff", View::Diff},           {"stashes", View::Stashes},
     {"remote", View::Remote},   {"ci", View::Pipelines},        {"pulls", View::Pulls},
+    {"settings", View::Settings},
 };
 
 // A chip whose key comes from the live binding. Empty when the action has been
@@ -426,9 +429,24 @@ namespace {
 // on the UI thread, before the first frame, and every reader afterwards is on
 // that same thread during Render.
 std::vector<View> g_views{
-    View::Status,  View::History,   View::Branches, View::Graph, View::Diff,
-    View::Stashes, View::Remote,    View::Pipelines, View::Pulls,
+    View::Status,  View::History, View::Branches,  View::Graph, View::Diff,
+    View::Stashes, View::Remote,  View::Pipelines, View::Pulls, View::Settings,
 };
+
+// The digit that reaches slot `i`, which is where the tab bar gets the number it
+// prints. Ten slots and ten keys: 1 through 9, then 0 for the tenth, the way a
+// row of numbers on a keyboard actually runs. Empty past that — `[layout] views`
+// can list a view twice, and a tab labelled "11" would name a key that does not
+// exist.
+std::string SlotKey(std::size_t index) {
+  if (index < 9) {
+    return std::to_string(index + 1);
+  }
+  if (index == 9) {
+    return "0";
+  }
+  return {};
+}
 
 }  // namespace
 
@@ -471,27 +489,71 @@ Element TabBar(View active, int width, std::vector<Box>* tabs) {
     tabs->assign(views.size(), Box());
   }
 
-  // Three tiers rather than letting FTXUI clip. A clipped tab bar loses its last
-  // tabs entirely and leaves the one before them cut mid-word — which reads as a
+  // Tiers rather than letting FTXUI clip. A clipped tab bar loses its last tabs
+  // entirely and leaves the one before them cut mid-word — which reads as a
   // rendering bug, and worse, hides that those views exist at all. Every tier
-  // keeps all nine, because the digit is the key that reaches them and a tab you
+  // keeps every tab, because the digit is the key that reaches it and a tab you
   // cannot see is a key you will not press.
+  //
+  // A tab is a key chip holding " N" plus `key_trail` spaces, and a label chip
+  // holding " Label" plus `trail` spaces, with `sep` cells before the next tab.
+  // Those three numbers are the whole difference between one tier and the next,
+  // and measuring through the same three the drawing uses is the point: this was
+  // two independent formulas with only a roomy tier and a four-letter one
+  // between them, so a bar one column too narrow for the first gave up forty
+  // columns of padding *and* the second half of every word in the same step.
+  // "Remo" beside an empty right-hand third was that gap, not a shortage of room.
   constexpr int kShortLabel = 4;
-  int full = 1;
-  int abbreviated = 1;
-  for (const View view : views) {
-    full += 3 + TextWidth(TabLabel(view)) + 3 + 1;
-    abbreviated += 3 + 1 + std::min(kShortLabel, TextWidth(TabLabel(view))) + 1;
+  struct Tier {
+    int key_trail;
+    int trail;
+    int sep;
+    bool abbreviate;
+  };
+
+  const auto tier_width = [&views, kShortLabel](const Tier& tier) {
+    int total = 1;  // the leading space
+    for (const View view : views) {
+      const int label = tier.abbreviate ? std::min(kShortLabel, TextWidth(TabLabel(view)))
+                                        : TextWidth(TabLabel(view));
+      // Key chip: a space, the digit, `key_trail`. Label chip: a space, the
+      // label, `trail`. Then the separator. Every term here is a term the loop
+      // below actually emits — dropping the label chip's leading space is what
+      // made this pick a tier ten columns too wide and hand the difference to
+      // FTXUI to clip, which is the one outcome the tiers exist to avoid.
+      total += 1 + 1 + tier.key_trail + 1 + label + tier.trail + tier.sep;
+    }
+    return total;
+  };
+
+  // Widest first, and whole labels survive four steps of tightening before any
+  // of them is cut: every cell of padding is worth less than the second half of
+  // a word. With the ten built-in tabs these come out at 129, 119, 109, 99, 89,
+  // 79 and 69 columns, so full names now hold on forty columns further down than
+  // they did. The 89-column tier gives up the space after the digit, which
+  // leaves the active tab's accent chip looking slightly lopsided — a cheap
+  // trade against losing half of every label.
+  const Tier kTiers[] = {
+      {1, 2, 1, false}, {1, 1, 1, false}, {1, 1, 0, false}, {1, 0, 0, false},
+      {0, 0, 0, false}, {1, 0, 0, true},  {0, 0, 0, true},
+  };
+
+  Tier tier = {0, 0, 0, true};
+  bool fits = false;
+  for (const Tier& candidate : kTiers) {
+    if (tier_width(candidate) <= width) {
+      tier = candidate;
+      fits = true;
+      break;
+    }
   }
+
+  // Last resort: digits alone, with the name of the one you are on. Ten of those
+  // fit inside fifty-odd columns, which is narrower than anything else here
+  // stays usable at, so there is nothing below it.
   const int digits_only =
       1 + (static_cast<int>(views.size()) * 4) + TextWidth(TabLabel(active)) + 2;
-
-  const bool labelled = full <= width;
-  const bool shortened = !labelled && abbreviated <= width;
-  // Last tier: digits alone, with the name of the one you are on. Nine of those
-  // fit inside forty columns, which is narrower than anything else here stays
-  // usable at, so there is no fifth tier below it.
-  const bool active_only = !labelled && !shortened && digits_only <= width;
+  const bool active_only = !fits && digits_only <= width;
 
   Elements row{text(" ")};
   for (std::size_t i = 0; i < views.size(); ++i) {
@@ -499,25 +561,36 @@ Element TabBar(View active, int width, std::vector<Box>* tabs) {
     const bool on = view == active;
     // The digit shown is the key that reaches the tab, so it comes from the
     // view's own position rather than from a literal that could drift.
-    const std::string key = std::to_string(i + 1);
+    const std::string key = SlotKey(i);
 
     std::string label;
-    if (labelled) {
-      label = " " + TabLabel(view) + "  ";
-    } else if (shortened) {
-      // A hard prefix, not Truncate: an abbreviation is not a value that ran out
-      // of room, so it should not carry an ellipsis saying it did — and the
-      // ellipsis would cost one of the four cells it has. substr is safe because
-      // every label in this file is an ASCII literal a few lines up.
-      label = " " + TabLabel(view).substr(0, static_cast<std::size_t>(kShortLabel));
+    if (fits) {
+      std::string shown = TabLabel(view);
+      if (tier.abbreviate) {
+        // A hard prefix, not Truncate: an abbreviation is not a value that ran
+        // out of room, so it should not carry an ellipsis saying it did — and
+        // the ellipsis would cost one of the four cells it has. substr is safe
+        // because every label in this file is an ASCII literal a few lines up.
+        shown = shown.substr(0, std::min<std::size_t>(kShortLabel, shown.size()));
+      }
+      label = " " + shown + std::string(static_cast<std::size_t>(tier.trail), ' ');
     } else if (active_only && on) {
       label = " " + TabLabel(view) + " ";
     }
     // Otherwise nothing: the digits alone still say how many views there are
     // and which one is lit, and each is still the key that reaches it.
 
-    Elements chip_parts{text(" " + key + " ") | bold | color(on ? t.bg : t.text_faint) |
-                        bgcolor(on ? t.accent : t.surface)};
+    Elements chip_parts;
+    if (!key.empty()) {
+      const std::string chip_key =
+          " " + key + std::string(static_cast<std::size_t>(fits ? tier.key_trail : 1), ' ');
+      chip_parts.push_back(text(chip_key) | bold | color(on ? t.bg : t.text_faint) |
+                           bgcolor(on ? t.accent : t.surface));
+    } else if (label.empty()) {
+      // A tab with neither a key nor a label would be an invisible click target.
+      // Only reachable through a `[layout] views` listing more than ten entries.
+      label = " " + TabLabel(view) + " ";
+    }
     if (!label.empty()) {
       chip_parts.push_back(text(label) | bold | color(on ? t.text : t.text_faint) |
                            bgcolor(on ? t.surface_alt : t.surface));
@@ -527,7 +600,13 @@ Element TabBar(View active, int width, std::vector<Box>* tabs) {
       chip = std::move(chip) | reflect((*tabs)[i]);
     }
     row.push_back(std::move(chip));
-    row.push_back(text(" "));
+    // The separator the tier paid for. At the two tightest tiers there is none,
+    // and the space that opens each label chip is what keeps a name off the
+    // digit behind it; the digit sits on its own background either way.
+    const int sep = fits ? tier.sep : 1;
+    if (sep > 0) {
+      row.push_back(text(std::string(static_cast<std::size_t>(sep), ' ')));
+    }
   }
   row.push_back(filler());
 
@@ -788,6 +867,13 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
                              keys.KeyFor(Action::DiffNextFile),
                          "file"));
     chips.push_back(KeyChip(keys, Action::DiffSwitch, "staged"));
+  } else if (view == View::Settings) {
+    chips.push_back(Chip(move, "move"));
+    // "change" rather than "open": every row on this page does something to the
+    // program, and a chip that says "open" reads as though it shows you more.
+    chips.push_back(KeyChip(keys, Action::Open, "change"));
+    chips.push_back(KeyChip(keys, Action::SignIn, "sign in"));
+    chips.push_back(KeyChip(keys, Action::Theme, "theme"));
   } else if (view == View::Stashes) {
     chips.push_back(KeyChip(keys, Action::StashSave, "stash"));
     chips.push_back(KeyChip(keys, Action::StashApply, "apply"));
@@ -977,7 +1063,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       // Slots rather than names, because [layout] views decides which view each
       // digit reaches and the tab bar prints the same number.
       row(keys.KeyFor(Action::View1) + " " + glyphs().ellipsis + " " +
-              keys.KeyFor(Action::View9),
+              keys.KeyFor(Action::View9) + " " + keys.KeyFor(Action::View10),
           "jump to a tab by its number"),
       line(Action::NextView, "cycle through the views"),
       line(Action::Down, "move down"),
@@ -1024,6 +1110,9 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::SignIn, "sign in to GitHub or GitLab"),
       text(""),
       heading("EVERYWHERE"),
+      // The settings tab is where all of these live with a name attached, so it
+      // is named here rather than left to be found by pressing 0.
+      row(keys.KeyFor(Action::View10), "settings: connect, theme, config"),
       line(Action::Theme, "next theme"),
       line(Action::Reload, "re-read the repository or the remote"),
       line(Action::Quit, "quit"),

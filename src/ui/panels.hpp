@@ -31,6 +31,7 @@ enum class View {
   Remote,
   Pipelines,
   Pulls,
+  Settings,
 };
 
 // Tab-bar order, which is also the order `tab` cycles, the order the tab

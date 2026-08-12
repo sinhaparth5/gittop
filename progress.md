@@ -548,6 +548,37 @@ not designed for GitHub and then patched for GitLab.
 
 Newest first. One line per session: what changed, what's next.
 
+- **2026-08-12** — Tab bar rewritten to shed width in seven graduated tiers instead of two. It had
+  a roomy tier and a four-letter tier and nothing between them, so any terminal narrower than 129
+  columns dropped straight to "Remo" and "Stas" with up to forty columns sitting empty to the right
+  — visible as soon as the tenth tab pushed the roomy tier past most terminals. Padding is now given
+  up four times before any label is cut, and the measurement and the drawing read the same three
+  numbers rather than being two formulas that had to agree. Whole names hold to 89 columns, down
+  from 129. Found while checking the boundaries: the measurement had been missing the label chip's
+  leading space, which picked a tier ten columns too wide and let FTXUI clip mid-word — the exact
+  failure the tiers exist to prevent, and invisible except at a width that happens to straddle a
+  boundary. Every tier verified against a rendered frame at both sides of its edge.
+
+- **2026-08-12** — Settings view, tab ten, reached with `0`. One page for connecting an account,
+  switching remote, and everything under `[theme]` and `[layout]` that used to be a key you had to
+  know about or a file you had to edit — theme, glyph set, panel border, colour depth, animations,
+  compact layout, the startup card — beside a read-only sidecar naming the repository, its remotes
+  and the config path. `enter` changes the row under the cursor; the mouse does the same with a
+  second click. The row list is built once in `BuildSettings()` and read from there by both App and
+  the renderer, because the list changes shape with the state it describes and a second table of row
+  indices would be wrong the first time somebody signed in. New: `ui/settings_panel.cpp`,
+  `Action::View10` on `0`, `Config::Unset`, `App::SignOut`, `ColorDepthKey`, `Keymap::UserCount`.
+  Three decisions worth keeping: changes apply immediately but persist only from the save row, since
+  `Config::Save` regenerates the file and would eat a hand-written config's comments the first time
+  anyone pressed `t`; the save writes `auto` back wherever the resolved value is what detection would
+  have picked, so a dotfile carried to a 16-colour ssh session does not arrive demanding truecolor;
+  and a row that cannot be changed says why in the column its verb would have used while keeping its
+  note, which is how the environment-beats-sign-in case names the variable without ever naming the
+  value. Verified by driving the TUI: all ten views
+  walk, save round-trips through a scratch config at `0600` with the token preserved, sign-out
+  removes the token line, an env token blocks the row with its reason, and both the tab and the rows
+  answer the mouse.
+
 - **2026-08-12** — Sign-in. `L` opens one overlay with two routes: the OAuth 2.0 device grant
   (RFC 8628) where a host has a `client_id`, and a deep link to the provider's token page with the
   name and scopes pre-filled where it does not. The granted token is written to the config at

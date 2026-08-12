@@ -59,6 +59,7 @@ const NamedAction kActionNames[] = {
     {"view_7", Action::View7},
     {"view_8", Action::View8},
     {"view_9", Action::View9},
+    {"view_10", Action::View10},
 
     {"down", Action::Down},
     {"up", Action::Up},
@@ -223,6 +224,7 @@ Keymap::Keymap() {
   Bind(Action::View7, Scope::Global, "7");
   Bind(Action::View8, Scope::Global, "8");
   Bind(Action::View9, Scope::Global, "9");
+  Bind(Action::View10, Scope::Global, "0");
 
   Bind(Action::Down, Scope::Global, "j down");
   Bind(Action::Up, Scope::Global, "k up");
@@ -415,6 +417,16 @@ std::vector<std::string> Keymap::Conflicts() const {
     }
   }
   return out;
+}
+
+int Keymap::UserCount() const {
+  int count = 0;
+  for (const Binding& binding : bindings_) {
+    if (binding.user_set) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 std::string Keymap::ActionName(Action action) {

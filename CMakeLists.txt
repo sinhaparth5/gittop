@@ -104,6 +104,7 @@ add_executable(gittop
   src/ui/pipeline_panel.cpp
   src/ui/pull_panel.cpp
   src/ui/remote_panel.cpp
+  src/ui/settings_panel.cpp
   src/ui/signin_panel.cpp
   src/ui/stash_panel.cpp
   src/ui/theme.cpp

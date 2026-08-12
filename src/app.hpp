@@ -29,6 +29,7 @@
 #include "ui/panels.hpp"
 #include "ui/pipeline_panel.hpp"
 #include "ui/pull_panel.hpp"
+#include "ui/settings_panel.hpp"
 #include "ui/signin_panel.hpp"
 #include "ui/stash_panel.hpp"
 
@@ -221,7 +222,18 @@ class App {
   // Takes the granted token, tries to persist it, and drops every cached answer
   // that was fetched anonymously.
   void AdoptToken(std::string token);
+  // Forgets the token this host was reached with and drops the answers it
+  // fetched. Only ever reaches the session copy and the config file: a token in
+  // the environment is not gittop's to remove.
+  void SignOut();
   ui::SignInView SignInViewState() const;
+
+  // The settings page. The row list is built in ui/settings_panel.cpp and read
+  // from there by both this file and the renderer, so `enter` on row four
+  // always acts on whatever row four is showing.
+  ui::SettingsView SettingsViewState() const;
+  void ActivateSetting();
+  void SaveSettings();
 
   const model::StatusEntry* Selected() const;
 
@@ -277,6 +289,9 @@ class App {
   // program, so a map lookup in the hot path buys nothing.
   bool compact_ = false;
   bool splash_ = true;
+  // Whether there is a file behind config_path_. Read once in the constructor
+  // and updated when gittop writes one, rather than stat()ed per frame.
+  bool config_on_disk_ = false;
 
   model::StatusSnapshot snapshot_;
   model::HistorySnapshot history_;
@@ -398,6 +413,11 @@ class App {
   int selected_ = 0;
   int commit_selected_ = 0;
   int branch_selected_ = 0;
+  int settings_selected_ = 0;
+  // A setting has been changed since the last save. Not "differs from the file":
+  // resolving what the file would produce means re-running every `auto` in
+  // ApplyConfig, and a claim gittop cannot check is worse than one it can.
+  bool settings_dirty_ = false;
   ui::GraphView graph_;
   std::string message_;
   bool message_is_error_ = false;
