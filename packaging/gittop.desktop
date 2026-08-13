@@ -1,8 +1,13 @@
 [Desktop Entry]
 # Version is the version of the *desktop entry spec* this file follows, not
-# gittop's. Putting the application version here is the classic mistake and
-# makes desktop-file-validate fail.
-Version=1.5
+# gittop's. Putting the application version here is the classic mistake.
+#
+# 1.1 rather than the newest spec, because desktop-file-validate rejects any
+# version its own build does not know about, and the validator is whatever the
+# build image ships — 0.26 on Ubuntu 22.04, which refuses 1.5 outright. 1.1 is
+# old enough that every validator recognises it and new enough for Keywords
+# below, which is the only key here that postdates 1.0.
+Version=1.1
 Type=Application
 Name=gittop
 GenericName=Git Dashboard
