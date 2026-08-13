@@ -917,8 +917,13 @@ void App::CollectPipelines() {
   }
 
   pipelines_ = std::move(result);
-  pipeline_selected_ = std::clamp(pipeline_selected_, 0,
-                                  std::max(0, static_cast<int>(pipelines_.runs.size()) - 1));
+  // The mirror has to describe the fetch that just landed rather than the one
+  // before it. Without this a filtered CI view keeps drawing the previous
+  // response for the rest of the session, which is the one thing this view
+  // exists not to do: every twenty seconds it silently redraws stale runs.
+  RebuildFilter();
+  pipeline_selected_ = std::clamp(
+      pipeline_selected_, 0, std::max(0, static_cast<int>(VisiblePipelines().runs.size()) - 1));
 
   if (pipelines_.state == model::FetchState::Failed) {
     Note(pipelines_.error, true);
@@ -929,8 +934,11 @@ void App::CollectPipelines() {
   // while the run is still going. A finished run's jobs will not change again,
   // and re-asking every twenty seconds would spend the budget the poll interval
   // was chosen to protect.
-  if (jobs_open_ && pipeline_selected_ < static_cast<int>(pipelines_.runs.size())) {
-    const model::Pipeline& run = pipelines_.runs[static_cast<std::size_t>(pipeline_selected_)];
+  //
+  // Through the visible list, because pipeline_selected_ counts rows on screen.
+  const model::PipelineSnapshot& visible = VisiblePipelines();
+  if (jobs_open_ && pipeline_selected_ < static_cast<int>(visible.runs.size())) {
+    const model::Pipeline& run = visible.runs[static_cast<std::size_t>(pipeline_selected_)];
     if (jobs_.pipeline_id != run.id || !model::RunFinished(run.status)) {
       StartJobFetch();
     }
@@ -941,10 +949,14 @@ void App::StartJobFetch() {
   if (!remote_.ref.valid() || job_fetcher_.Running()) {
     return;
   }
-  if (pipeline_selected_ < 0 || pipeline_selected_ >= static_cast<int>(pipelines_.runs.size())) {
+  // The visible list, not the read one: pipeline_selected_ is an index into
+  // what is on screen, so resolving it against the unfiltered runs opens a
+  // different run's jobs under the selected row's number whenever `/` is on.
+  const model::PipelineSnapshot& visible = VisiblePipelines();
+  if (pipeline_selected_ < 0 || pipeline_selected_ >= static_cast<int>(visible.runs.size())) {
     return;
   }
-  const model::Pipeline& run = pipelines_.runs[static_cast<std::size_t>(pipeline_selected_)];
+  const model::Pipeline& run = visible.runs[static_cast<std::size_t>(pipeline_selected_)];
   if (run.id.empty()) {
     return;
   }
@@ -982,7 +994,9 @@ void App::CollectJobs() {
 }
 
 void App::ToggleJobs() {
-  if (pipelines_.runs.empty()) {
+  // What is on screen, so a filter that matches nothing answers "no runs to
+  // open" rather than quietly drilling into a run the user cannot see.
+  if (VisiblePipelines().runs.empty()) {
     Note("no runs to open", false);
     return;
   }
@@ -1032,8 +1046,9 @@ void App::CollectPulls() {
   }
 
   pulls_ = std::move(result);
+  RebuildFilter();
   pull_selected_ =
-      std::clamp(pull_selected_, 0, std::max(0, static_cast<int>(pulls_.pulls.size()) - 1));
+      std::clamp(pull_selected_, 0, std::max(0, static_cast<int>(VisiblePulls().pulls.size()) - 1));
   if (pulls_.state == model::FetchState::Failed) {
     Note(pulls_.error, true);
   }
@@ -1949,10 +1964,15 @@ void App::EnsureHistory() {
   history_ = repo_.ReadHistory(kMaxLogCommits, kActivityDays);
   history_loaded_ = true;
 
-  commit_selected_ =
-      std::clamp(commit_selected_, 0, std::max(0, static_cast<int>(history_.commits.size()) - 1));
-  branch_selected_ =
-      std::clamp(branch_selected_, 0, std::max(0, static_cast<int>(history_.branches.size()) - 1));
+  // The mirror is built from what was just read. `r` and the reload after a pull
+  // both invalidate the history under an active filter, and a mirror left
+  // describing the previous walk hands OpenSelectedDiff a commit id that may no
+  // longer exist.
+  RebuildFilter();
+  commit_selected_ = std::clamp(commit_selected_, 0,
+                                std::max(0, static_cast<int>(VisibleHistory().commits.size()) - 1));
+  branch_selected_ = std::clamp(
+      branch_selected_, 0, std::max(0, static_cast<int>(VisibleHistory().branches.size()) - 1));
 }
 
 void App::EnsureDiff() {
@@ -2766,7 +2786,8 @@ int App::Run() {
                text(" Commit") | bold | color(ui::theme().accent),
                separator() | color(ui::theme().border),
                hbox({
-                   text("  ❯ ") | color(ui::theme().staged),
+                   text(std::string("  ") + ui::glyphs().prompt + " ") |
+                       color(ui::theme().staged),
                    commit_input->Render() | flex,
                }),
                separator() | color(ui::theme().border),

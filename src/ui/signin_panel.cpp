@@ -112,7 +112,7 @@ Elements StartingRows(const SignInView& view, int frame) {
   return {hbox({
       text("  "),
       text(SpinnerFrame(frame) + " ") | color(t.accent),
-      text("Asking " + view.host + " for a code…") | color(t.text_dim),
+      text("Asking " + view.host + " for a code" + glyphs().ellipsis) | color(t.text_dim),
   })};
 }
 
