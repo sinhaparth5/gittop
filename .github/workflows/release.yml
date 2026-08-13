@@ -1,0 +1,80 @@
+name: Release
+
+# Cutting a release is a tag and nothing else:
+#
+#   git tag v2026.08.0 && git push origin v2026.08.0
+#
+# Nothing here builds gittop. This workflow publishes the release notes, and the
+# notes are the part that has to be right — the binary is a separate question
+# (see the note at the bottom of this file).
+on:
+  push:
+    tags:
+      - "v*"
+
+# Publishing a release writes to the repository, and the default token is
+# read-only for this event.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish the release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the version from the tag
+        id: version
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The tag is what users install and the CMake version is what the binary
+      # reports. If they disagree, `gittop --version` contradicts the release it
+      # came from, and the only moment that is cheap to notice is now — before
+      # anything is published.
+      - name: Check the tag against CMakeLists.txt
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          declared=$(sed -n 's/^project(gittop VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ -z "$declared" ]; then
+            echo "could not read the version out of CMakeLists.txt" >&2
+            exit 1
+          fi
+          if [ "$declared" != "$VERSION" ]; then
+            echo "tag says $VERSION, CMakeLists.txt says $declared" >&2
+            echo "bump project(gittop VERSION ...) and re-tag, or tag v$declared" >&2
+            exit 1
+          fi
+          echo "version $declared matches the tag"
+
+      # Fails when the section is missing or empty, which is the difference
+      # between no release and a published one with nothing in it.
+      - name: Extract the release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./scripts/changelog-section.sh "$VERSION" > release-notes.md
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$TAG" \
+            --title "gittop $VERSION" \
+            --notes-file release-notes.md \
+            --verify-tag
+
+# Deliberately not here: a build. gittop links FTXUI, libgit2 and nlohmann/json
+# through FetchContent, so a release build starts by compiling all three, and a
+# useful Linux binary would also need a decision about how libcurl and OpenSSL
+# are linked — a dynamically linked one built on ubuntu-latest carries that
+# runner's glibc and would not run on an older distribution. Attaching binaries
+# is worth doing, but it is its own job with its own answer to that question,
+# not a step to bolt onto the notes.

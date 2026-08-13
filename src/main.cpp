@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (arg == "--version") {
-      std::cout << "gittop 0.1.0\n";
+      std::cout << "gittop " GITTOP_VERSION "\n";
       return 0;
     }
     if (arg == "--init-config") {

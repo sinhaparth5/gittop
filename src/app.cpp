@@ -44,9 +44,13 @@ namespace {
 // than the pagination that a second page would need.
 constexpr int kPipelineLimit = 30;
 
-// The one place a version string lives on screen. main.cpp prints its own for
-// --version, which is a different question asked by a different reader.
-constexpr const char* kVersion = "0.1.0";
+// Comes from CMake, which is where the version is actually decided. A literal
+// here would be a third copy to forget: the splash, the settings page and
+// `--version` would each be able to claim a different release.
+#ifndef GITTOP_VERSION
+#error "GITTOP_VERSION is not defined — build through CMake, which sets it from project(VERSION)"
+#endif
+constexpr const char* kVersion = GITTOP_VERSION;
 
 constexpr int kPullLimit = 30;
 

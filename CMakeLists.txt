@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.24)
-project(gittop VERSION 0.1.0 LANGUAGES C CXX)
+
+# CalVer, YYYY.MM.PATCH. The month keeps its leading zero — CMake preserves it
+# through PROJECT_VERSION, so "2026.08.0" survives to the binary rather than
+# arriving as "2026.8.0" and disagreeing with the tag it was built from.
+#
+# This is the only place the version is written. It reaches the program as
+# GITTOP_VERSION below, so `--version`, the settings page and the splash cannot
+# drift from each other or from the release; the workflow in
+# .github/workflows/release.yml refuses a tag that does not match it.
+project(gittop VERSION 2026.08.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -131,3 +140,5 @@ target_link_libraries(gittop PRIVATE
 )
 
 target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)
+
+target_compile_definitions(gittop PRIVATE GITTOP_VERSION="${PROJECT_VERSION}")
