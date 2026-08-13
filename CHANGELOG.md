@@ -17,10 +17,48 @@ published.
 
 ---
 
+## 2026.08.1 — 2026-08-13
+
+Packaging. 2026.08.0 was published with release notes and nothing to download — this release is
+that gap closed, and it contains no changes to gittop itself.
+
+### Installing
+
+```sh
+sudo dpkg -i gittop_2026.08.1_amd64.deb
+```
+
+The `.deb` installs on Ubuntu 22.04 and later and Debian 12 and later.
+`gittop-2026.08.1-linux-x86_64.tar.gz` is the same build for distributions that do not take debs —
+unpack it and put `bin/gittop` on your `PATH`.
+
+On **Windows, run it under WSL** and install the `.deb` there. There is no native Windows build:
+the ssh passphrase channel, the browser opener and the `0600` config file permissions are all
+POSIX, so a native port is real work rather than a second build target. gittop already recognises
+WSL — it uses `wslview` to open a browser and detects Windows Terminal's colour support.
+
+### Added
+
+- A `.deb` and a portable `.tar.gz`, both attached to the release automatically.
+- An application icon and a desktop entry, so gittop appears in application menus as well as on
+  the command line. The scalable icon is installed for desktops that render SVG and rasters from
+  16 to 256 pixels for those that do not.
+
+### Notes
+
+The release binary is built against glibc 2.35 rather than whatever the CI runner happens to
+carry. A dynamically linked binary treats its build-time glibc as a floor, so one built on a
+current runner demands `GLIBC_2.43` and refuses to start anywhere else — which reads as a corrupt
+download rather than an unsupported system. The release now checks this and fails rather than
+publishing a binary that would not start.
+
+---
+
 ## 2026.08.0 — 2026-08-13
 
-First release. gittop is a btop-inspired terminal dashboard for Git: the local repository first, so
-it is useful with no network and no account, plus GitHub and GitLab panels when there is one.
+First release, source only — there are no downloads attached to it; build it with CMake or take
+2026.08.1 above. gittop is a btop-inspired terminal dashboard for Git: the local repository first,
+so it is useful with no network and no account, plus GitHub and GitLab panels when there is one.
 
 ### Ten views
 

@@ -4,9 +4,10 @@ name: Release
 #
 #   git tag v2026.08.0 && git push origin v2026.08.0
 #
-# Nothing here builds gittop. This workflow publishes the release notes, and the
-# notes are the part that has to be right — the binary is a separate question
-# (see the note at the bottom of this file).
+# Everything below runs from that tag: the notes come out of CHANGELOG.md, the
+# .deb and the tarball are built here, and all three are attached to one
+# release. Nothing is published until every check has passed, so a bad tag fails
+# loudly instead of leaving a half-finished release page behind.
 on:
   push:
     tags:
@@ -18,22 +19,49 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Publish the release
+  build:
+    name: Build and package
     runs-on: ubuntu-latest
 
+    # The runner is deliberately `ubuntu-latest` — a pinned runner image is one
+    # GitHub eventually retires, and the release then fails for a reason that
+    # has nothing to do with gittop. What actually has to be old is the glibc
+    # the binary is compiled against, and that comes from this container rather
+    # than from the runner:
+    #
+    # gittop links dynamically, so the glibc it was built against becomes a
+    # floor. Built on a current runner it demands GLIBC_2.43 and refuses to
+    # start anywhere else with "version `GLIBC_2.43' not found" — which reads as
+    # a corrupt download rather than an unsupported system. Built here it needs
+    # only 2.35 and runs on everything from Ubuntu 22.04 and Debian 12 onward.
+    #
+    # 22.04 rather than something older still, because the .deb's dependencies
+    # are resolved against this image too: 20.04 would produce a package
+    # depending on libssl1.1, which no current distribution ships. This is the
+    # oldest base whose library names are still the ones in use.
+    container:
+      image: ubuntu:22.04
+
     steps:
+      # Before apt or the compiler, so a bad tag or a missing changelog section
+      # fails in seconds rather than after ten minutes of building libgit2.
+      - name: Install what checkout needs
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git
+
       - uses: actions/checkout@v4
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Resolve the version from the tag
         id: version
-        run: |
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # The tag is what users install and the CMake version is what the binary
+      # The tag is what people install and the CMake version is what the binary
       # reports. If they disagree, `gittop --version` contradicts the release it
-      # came from, and the only moment that is cheap to notice is now — before
-      # anything is published.
+      # came from, and now is the only cheap moment to notice.
       - name: Check the tag against CMakeLists.txt
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -50,8 +78,6 @@ jobs:
           fi
           echo "version $declared matches the tag"
 
-      # Fails when the section is missing or empty, which is the difference
-      # between no release and a published one with nothing in it.
       - name: Extract the release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -60,21 +86,88 @@ jobs:
           echo "--- release notes ---"
           cat release-notes.md
 
+      - name: Install the toolchain
+        run: |
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config python3-pip \
+            libcurl4-openssl-dev zlib1g-dev desktop-file-utils
+          # 22.04 ships CMake 3.22 and this project needs 3.24 or newer. The pip
+          # wheel is a plain binary and avoids pinning a download URL that would
+          # rot on its own schedule.
+          pip3 install --no-cache-dir "cmake>=3.24"
+          cmake --version
+
+      - name: Validate the desktop entry
+        run: desktop-file-validate packaging/gittop.desktop
+
+      # Release, not Debug: this binary is the one people run.
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Package
+        working-directory: build
+        run: |
+          cpack -G DEB
+          cpack -G TGZ
+          ls -lh ./*.deb ./*.tar.gz
+
+      # Two failures this catches, both of which otherwise only appear after
+      # publishing: a package that installs but cannot run, and a binary whose
+      # glibc floor is higher than the base it was supposed to be built against.
+      - name: Smoke-test the package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dpkg -i build/*.deb
+          got=$(gittop --version)
+          echo "installed binary reports: $got"
+          [ "$got" = "gittop $VERSION" ] || { echo "expected gittop $VERSION" >&2; exit 1; }
+          gittop --config-path
+
+          # The floor this container exists to enforce. Compared with sort -V
+          # rather than a pattern, because the symbol list legitimately contains
+          # three-component versions like 2.2.5 that any regex for "2.35 or
+          # below" gets wrong in one direction or the other.
+          floor=2.35
+          highest=$(objdump -T /usr/bin/gittop \
+            | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "highest glibc symbol required: $highest (floor $floor)"
+          if [ "$(printf '%s\n%s\n' "$highest" "$floor" | sort -V | tail -1)" != "$floor" ]; then
+            echo "binary demands glibc $highest — it will not start on Debian 12" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: |
+            build/*.deb
+            build/*.tar.gz
+            release-notes.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    # Plain runner: this job only needs the gh CLI, which is preinstalled here
+    # and absent from the build container.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           gh release create "$TAG" \
-            --title "gittop $VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "gittop ${TAG#v}" \
             --notes-file release-notes.md \
-            --verify-tag
-
-# Deliberately not here: a build. gittop links FTXUI, libgit2 and nlohmann/json
-# through FetchContent, so a release build starts by compiling all three, and a
-# useful Linux binary would also need a decision about how libcurl and OpenSSL
-# are linked — a dynamically linked one built on ubuntu-latest carries that
-# runner's glibc and would not run on an older distribution. Attaching binaries
-# is worth doing, but it is its own job with its own answer to that question,
-# not a step to bolt onto the notes.
+            --verify-tag \
+            ./*.deb ./*.tar.gz

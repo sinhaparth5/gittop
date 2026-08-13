@@ -1,0 +1,17 @@
+[Desktop Entry]
+# Version is the version of the *desktop entry spec* this file follows, not
+# gittop's. Putting the application version here is the classic mistake and
+# makes desktop-file-validate fail.
+Version=1.5
+Type=Application
+Name=gittop
+GenericName=Git Dashboard
+Comment=Terminal dashboard for Git, GitHub and GitLab
+Exec=gittop
+Icon=gittop
+# gittop draws on the alternate screen and reads raw keys, so it needs a
+# terminal. Without this the launcher runs it headless and nothing appears.
+Terminal=true
+Categories=Development;RevisionControl;ConsoleOnly;
+Keywords=git;github;gitlab;ci;pipeline;dashboard;tui;terminal;
+StartupNotify=false

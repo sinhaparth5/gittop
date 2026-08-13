@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.24)
 # GITTOP_VERSION below, so `--version`, the settings page and the splash cannot
 # drift from each other or from the release; the workflow in
 # .github/workflows/release.yml refuses a tag that does not match it.
-project(gittop VERSION 2026.08.0 LANGUAGES C CXX)
+project(gittop VERSION 2026.08.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -142,3 +142,113 @@ target_link_libraries(gittop PRIVATE
 target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)
 
 target_compile_definitions(gittop PRIVATE GITTOP_VERSION="${PROJECT_VERSION}")
+
+# ---------------------------------------------------------------- install
+include(GNUInstallDirs)
+
+install(TARGETS gittop RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT gittop)
+
+# A TUI still earns a menu entry — btop ships one — and Terminal=true is the
+# line that makes a launcher open a terminal for it rather than starting it
+# headless, where it would draw its alternate screen into nothing.
+install(FILES packaging/gittop.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+        COMPONENT gittop)
+
+# The scalable icon is what current desktops prefer and the one that stays sharp
+# at whatever size a panel asks for; the rasters below are for the environments
+# that will not render SVG. Both live under hicolor, which is the theme every
+# other theme falls back to, so the icon resolves regardless of what the user
+# has selected.
+install(FILES assets/logo.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+        RENAME gittop.svg
+        COMPONENT gittop)
+
+foreach(icon_size IN ITEMS 16 24 32 48 64 128 256)
+  install(FILES assets/icons/gittop-${icon_size}.png
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${icon_size}x${icon_size}/apps
+          RENAME gittop.png
+          COMPONENT gittop)
+endforeach()
+
+install(FILES README.md CHANGELOG.md LICENSE
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}
+        COMPONENT gittop)
+
+# ---------------------------------------------------------------- package
+# `cpack -G DEB` and `cpack -G TGZ` from the build directory. The release
+# workflow runs both; neither needs anything installed that the build did not
+# already need.
+# Only gittop's own files. FetchContent brings libgit2's CMakeLists into this
+# project, install rules and all, and libgit2 offers no option to turn them off
+# — so without this the package ships /usr/include/git2/**, /usr/lib/libgit2.a
+# and libgit2.pc, which is a 16 MB package that also collides file-for-file with
+# libgit2-dev on any machine that has it. Every install() above is tagged
+# COMPONENT gittop; libgit2's are untagged and therefore excluded here.
+set(CPACK_COMPONENTS_ALL gittop)
+
+# Component install has to be switched on per generator, or CPACK_COMPONENTS_ALL
+# is quietly ignored and the monolithic install runs — which looks like it
+# worked right up until you list the package contents. ALL_COMPONENTS_IN_ONE
+# keeps it a single package and a single file name rather than one per
+# component, which with one component would only be a longer name.
+set(CPACK_DEB_COMPONENT_INSTALL ON)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+
+# So the tarball unpacks into a directory of its own rather than emptying bin/
+# and share/ into whatever the user was standing in. This is the component-install
+# spelling of the setting — plain CPACK_INCLUDE_TOPLEVEL_DIRECTORY is ignored
+# once CPACK_*_COMPONENT_INSTALL is on. The DEB generator overrides it either
+# way and keeps its paths rooted at ./usr, which is what dpkg requires.
+set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY 1)
+set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/CPackProjectConfig.cmake")
+
+set(CPACK_PACKAGE_NAME gittop)
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_VENDOR "Parth Sinha")
+set(CPACK_PACKAGE_CONTACT "Parth <sinhaparth555@gmail.com>")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/sinhaparth5/gittop")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "btop-inspired terminal dashboard for Git, GitHub and GitLab")
+set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE)
+
+# Release builds carry debug info that triples the download for nothing a user
+# can act on. The sources are the debugger anyone would actually reach for.
+set(CPACK_STRIP_FILES ON)
+
+# The tarball name; the .deb takes DEB-DEFAULT below instead, because Debian
+# names a package by its own architecture ("amd64") and CMAKE_SYSTEM_PROCESSOR
+# says "x86_64", which would produce a file dpkg refuses to guess about.
+set(CPACK_PACKAGE_FILE_NAME "gittop-${PROJECT_VERSION}-linux-${CMAKE_SYSTEM_PROCESSOR}")
+
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+set(CPACK_DEBIAN_PACKAGE_SECTION devel)
+set(CPACK_DEBIAN_PACKAGE_PRIORITY optional)
+
+# dpkg-shlibdeps reads the built binary and works out the runtime packages from
+# what it actually links, which is the only way to get libc and libcurl right
+# for the distribution it was built on rather than guessing version numbers.
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+
+# The one dependency shlibdeps cannot see. libgit2 is built USE_HTTPS=
+# OpenSSL-Dynamic, which dlopen()s libssl at run time, so nothing in the binary
+# references it and an https remote would fail at the first fetch with no clue
+# why. Named explicitly and appended to what shlibdeps finds.
+# The alternation covers the t64 transition: Ubuntu 24.04 and later renamed the
+# package to libssl3t64, and a package depending only on the old name is
+# uninstallable there for a reason the user cannot act on.
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libssl3 | libssl3t64")
+
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+"btop-inspired terminal dashboard for Git, GitHub and GitLab
+ gittop shows the state of a Git repository in a terminal: working tree,
+ history, branches, a commit graph, diffs and stashes, with no network and no
+ account needed. Given either, it adds panels for the repository as the
+ provider describes it, CI runs and pipelines, and open pull or merge requests.
+ .
+ It reads repositories through libgit2 rather than by parsing the output of
+ git(1), and supports GitHub, GitLab and self-hosted instances of both.")
+
+include(CPack)

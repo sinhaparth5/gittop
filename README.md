@@ -7,7 +7,7 @@
 **A btop-style terminal dashboard for Git and CI.**
 
 <p>
-  <img src="https://img.shields.io/badge/status-pre--alpha-f0883e?style=flat-square" alt="Status: pre-alpha">
+  <img src="https://img.shields.io/github/v/release/sinhaparth5/gittop?style=flat-square&color=3fb950&label=release" alt="Latest release">
   <img src="https://img.shields.io/badge/license-GPL--3.0-3fb950?style=flat-square" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
   <img src="https://img.shields.io/badge/build-CMake-064F8C?style=flat-square&logo=cmake&logoColor=white" alt="Built with CMake">
@@ -35,9 +35,31 @@ connection.
 > [!NOTE]
 > Everything on this page runs today except the things listed under [Planned](#planned):
 > repository state, diffs, stashes, rebase helpers, filtering, CI, pull requests, push and pull,
-> sign-in, settings, themes, custom layouts and the mouse all work. All eight phases of the roadmap
-> are done. See
+> sign-in, settings, themes, custom layouts and the mouse all work. Every phase of the roadmap is
+> done. See
 > [Current status](#current-status) for the full picture.
+
+## Installing
+
+Download the latest [release](https://github.com/sinhaparth5/gittop/releases).
+
+```bash
+sudo dpkg -i gittop_*_amd64.deb        # Ubuntu 22.04+, Debian 12+
+```
+
+Or the portable tarball for any other distribution — unpack it and put `bin/gittop` on your `PATH`:
+
+```bash
+tar xzf gittop-*-linux-x86_64.tar.gz
+```
+
+Both carry the icon and a desktop entry, so gittop shows up in application menus as well as on the
+command line. To build it yourself instead, see [Building it](#building-it).
+
+**Windows:** run gittop under WSL and install the `.deb` there. There is no native Windows build —
+the ssh passphrase channel, the browser opener and the `0600` config permissions are POSIX, so a
+port is real work rather than a second build target. gittop already knows it is under WSL: it opens
+browsers with `wslview` and detects Windows Terminal's colour support.
 
 ## What works today
 
