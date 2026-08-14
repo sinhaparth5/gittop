@@ -17,6 +17,35 @@ published.
 
 ---
 
+## 2026.08.2 — 2026-08-14
+
+Documentation. gittop itself is unchanged from 2026.08.1 — same binary, same behaviour — so there
+is nothing here to upgrade for unless you want the README.
+
+### Added
+
+- A demo GIF on the README, which is the thing a terminal application is hardest to describe in
+  prose. It runs through all ten views, the `/` filter, the help overlay and a theme change.
+- `scripts/demo-repo.sh`, which builds the repository the GIF is recorded against: six months of
+  history over four branches, two merges, three stashes and a working tree with something in every
+  column. It is checked in because a recording nobody can reproduce goes stale the first time the
+  UI moves and there is no way to tell that it has. It touches no network — the upstream it pushes
+  to is a bare repository beside it.
+
+### Changed
+
+- The README described configuration as a file to edit. Most of it has been a settings page since
+  2026.08.0, so the theme, glyph set, panel border, colour depth, animations, startup card and
+  compact layout now say so, and the file is described as where they are saved rather than how you
+  reach them. A custom palette and the tab set are still the file, and the README now says why.
+- Dropped a phase table whose eight rows all read "Done", a note that listed every working feature
+  before the section that lists every working feature, and two libgit2 function names that meant
+  nothing to anyone deciding whether to install this. Open issues are the roadmap now.
+- `demo.tape` recorded against whatever directory you ran it from and used a VHS theme name that no
+  longer parses. It also predated the settings and sign-in views, so it never showed them.
+
+---
+
 ## 2026.08.1 — 2026-08-13
 
 Packaging. 2026.08.0 was published with release notes and nothing to download — this release is

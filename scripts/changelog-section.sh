@@ -47,13 +47,22 @@ section=$(
 
 # Drop leading and trailing blank lines, so the release body neither starts with
 # whitespace nor trails the separator that precedes the next section.
+#
+# The separator is a line of its own and has to be matched as one: trimming only
+# blank lines leaves the "---" that sits between sections, which renders as a
+# horizontal rule hanging off the bottom of the release page. Trailing blanks and
+# separators are stripped in one pass because the file has a blank line on either
+# side of every rule.
 section=$(printf '%s\n' "$section" | awk '
   { lines[NR] = $0 }
   END {
     first = 1
     last = NR
     while (first <= NR && lines[first] ~ /^[[:space:]]*$/) { first++ }
-    while (last >= first && lines[last] ~ /^[[:space:]]*$/) { last-- }
+    while (last >= first &&
+           (lines[last] ~ /^[[:space:]]*$/ || lines[last] ~ /^[[:space:]]*-{3,}[[:space:]]*$/)) {
+      last--
+    }
     for (i = first; i <= last; i++) { print lines[i] }
   }
 ')
