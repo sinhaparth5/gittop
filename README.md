@@ -16,6 +16,8 @@
   <img src="https://img.shields.io/badge/platform-Linux-333e58?style=flat-square&logo=linux&logoColor=white" alt="Platform: Linux">
 </p>
 
+<img src="assets/demo.gif" width="900" alt="gittop cycling through the status, history, diff, branches, graph, stashes and settings views, then the filter, the help overlay and a theme change">
+
 </div>
 
 ---
@@ -31,13 +33,6 @@ The local half works with no network. libgit2 reads the repo directly, so stagin
 a commit does not shell out to `git` or depend on its output format. The remote half talks to the
 GitHub and GitLab REST APIs and degrades to the local view when there is no token, no remote, or no
 connection.
-
-> [!NOTE]
-> Everything on this page runs today except the things listed under [Planned](#planned):
-> repository state, diffs, stashes, rebase helpers, filtering, CI, pull requests, push and pull,
-> sign-in, settings, themes, custom layouts and the mouse all work. Every phase of the roadmap is
-> done. See
-> [Current status](#current-status) for the full picture.
 
 ## Installing
 
@@ -74,8 +69,7 @@ Ten views, switched with `1` through `9` and `0`, or cycled with `tab`.
 - Stage and unstage per file (`space`, or `s` and `u`), or stage everything with `a`
 - Discard, behind a confirm dialog. Tracked files restore from the index, matching `git restore`;
   untracked files are deleted, and the dialog says which of the two is about to happen
-- Commit from an overlay, written through `git_commit_create`
-- Keybinding help on `?`
+- Commit from an overlay
 
 Status is conveyed by glyph and letter as well as color, so a row reads correctly without being
 able to separate green from amber.
@@ -115,8 +109,8 @@ able to separate green from amber.
   still in it is not what anyone means by stashing their work
 - The list shows each entry's index, the branch it came from, its subject and its age
 - `a` applies and keeps the entry, `p` pops and `d` drops, the last two behind a confirm
-- Apply and pop are `GIT_CHECKOUT_SAFE`, so one that would write over an uncommitted edit stops
-  and says which file is in the way, and pop keeps the entry when it cannot apply cleanly
+- Apply and pop stop rather than write over an uncommitted edit, naming the file in the way, and
+  pop keeps the entry when it cannot apply cleanly
 
 **Rebase and interrupted work.**
 
@@ -223,7 +217,7 @@ when there is no room for four.
 `f` fetches, `p` pulls, `P` pushes. All three run on a worker thread with a progress bar, and
 `esc` gives up on one mid-flight.
 
-Pull fast-forwards or refuses. A branch that has genuinely diverged needs a merge commit or a
+Pull fast-forwards or refuses. A branch that has diverged needs a merge commit or a
 rebase, and doing either implicitly behind a key called "pull" is how a tool loses work that
 exists nowhere else — so gittop fetches, says what it found, and leaves the decision alone. A
 fast-forward that would write over an uncommitted change stops and names the file in the way.
@@ -240,15 +234,17 @@ all apply, and a remote that works from the shell works here with nothing else t
 
 Eight built in: `default`, `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`, `daylight`
 — a light theme designed as one rather than a dark theme inverted — and `accessible`. `t` cycles
-them; `theme.name` in the config picks one to start with.
+them, and the settings page picks one from a list and keeps it.
 
-Palettes are written in sixteen roles, so a theme of your own is those same roles under
+A theme of your own is still a file, because there is no sensible way to type sixteen colours into
+a terminal row. Palettes are written in sixteen roles, so yours is those same roles under
 `[theme.colors]` — anything you leave out keeps the value it had.
 
 Colour degrades on the way to the screen rather than in the panels: truecolor when `COLORTERM`
 says so, the 256-colour cube when `TERM` does, the base sixteen otherwise, and none at all under
 `NO_COLOR`. Every status in gittop is a glyph and a letter as well as a colour, so the monochrome
-case is legible rather than merely supported.
+case is legible rather than merely supported. The settings page shows what was detected and lets
+you pin it, which is the quickest way to find out that a terminal has been lying about its depth.
 
 **On `accessible`.** The seven curated palettes were measured against a dichromat simulation, and
 most of them put staged and conflicted on colours that are indistinguishable to someone with
@@ -260,6 +256,10 @@ red/green axis onto blue and amber: worst case 36.6 ΔE across normal vision, de
 protanopia and tritanopia.
 
 ## Glyphs, borders and motion
+
+All four of these are rows on the settings page — glyph set, panel border, animations and the
+startup card — and they change as you press them. The file is what they are saved to, not how you
+reach them:
 
 ```toml
 [theme]
@@ -307,7 +307,8 @@ Any view left out is simply not there — a reasonable thing to want on a reposi
 worth watching. The digit keys are positional, so `2` reaches whatever you put second and the tab
 prints the same number; there is no way for a tab to advertise a key that goes somewhere else.
 `compact` forces the narrow layout at any width, which gittop otherwise switches to under 84
-columns on its own.
+columns on its own; that one is also a row on the settings page. Which tabs exist stays in the file
+— it is a decision you make once, not one you want a keystroke away from.
 
 ## Tokens
 
@@ -321,7 +322,9 @@ export GITHUB_TOKEN=ghp_...      # or GH_TOKEN, or GITTOP_TOKEN for either provi
 export GITLAB_TOKEN=glpat-...    # or CI_JOB_TOKEN
 ```
 
-Otherwise gittop reads `~/.config/gittop/config.toml`, which it creates `0600`:
+Otherwise the token lives in `~/.config/gittop/config.toml`, which gittop creates `0600`. Signing
+in with `L` writes it for you, so the usual way to get a token on disk is to press a key rather than
+to open an editor.
 
 ```bash
 gittop --init-config    # writes a commented starter
@@ -331,40 +334,16 @@ gittop --config-path    # prints where it looks
 A token is never printed back to you, masked or otherwise. The remote panel names the variable or
 the file it came from and nothing else.
 
-## Planned
+## What is not here yet
 
-**Locally, offline:**
+Staging a hunk rather than a whole file. Interactive rebase with reword, squash, drop and reorder
+— `B` today is `rebase @{upstream}` and nothing else. Merge, so a pull that is not a fast-forward
+has an option besides rebasing. More than one page of CI and pull request history. Opening a pull
+request, rather than only reading one.
 
-- Staging a hunk rather than a whole file, and a word-level highlight inside a changed line
-- Interactive rebase proper: reword, squash, drop, reorder — `B` today is `rebase @{upstream}`
-- Stash messages, and stashing only what is staged
-
-**On screen:**
-
-- A demo GIF. [`demo.tape`](demo.tape) is the VHS script for it; the recording is not made yet
-- A render check across kitty, alacritty, wezterm, GNOME Terminal and tmux
-
-**From GitHub and GitLab:**
-
-- More than one page of CI and pull request history
-- Merge, so a pull that is not a fast-forward has a second option besides rebasing
-- Review state and check status on a pull request row
-
-## Current status
-
-All eight phases are done. [`progress.md`](progress.md) holds the full plan: stack decisions,
-the source layout, per-task checkboxes, known risks, and a work log.
-
-| Phase | Scope                                               | State |
-| ----- | --------------------------------------------------- | ----- |
-| 0     | CMake, FTXUI window, libgit2 linked, repo detection | Done  |
-| 1     | Local status dashboard, staging, discard, commit    | Done  |
-| 2     | History, commit graph, activity heatmap, branches   | Done  |
-| 3     | Config, tokens, provider detection, async HTTP      | Done  |
-| 4     | Pipelines and CI panels                             | Done  |
-| 5     | Pull requests, push/pull, themes, mouse             | Done  |
-| 6     | Diff viewer, stash, rebase helpers, search, layouts | Done  |
-| 7     | Visual design pass                                  | Done  |
+[Open issues](https://github.com/sinhaparth5/gittop/issues) track these and are the current list;
+[`progress.md`](progress.md) has the stack decisions, the source layout and the work log behind
+them.
 
 ## Keys
 
@@ -402,21 +381,14 @@ Keys that appear twice are scoped to a view: `s` stages on the status view and s
 diff view, `d` discards, changes the graph bucket, and drops a stash. Which one a key means is a
 fact about where you are, not something the config decides.
 
-## Built with
-
-|            |                                                   |
-| ---------- | ------------------------------------------------- |
-| Language   | C++20                                             |
-| TUI        | [FTXUI](https://github.com/ArthurSonzogni/FTXUI)  |
-| Git access | [libgit2](https://libgit2.org/)                   |
-| HTTP       | [libcurl](https://curl.se/libcurl/)               |
-| JSON       | [nlohmann/json](https://github.com/nlohmann/json) |
-| Build      | CMake with FetchContent                           |
-
 ## Building it
 
-Needs a C++20 compiler, CMake 3.24 or newer, zlib, and libcurl. FTXUI, libgit2, and nlohmann/json
-are fetched and built by CMake.
+C++20, drawn with [FTXUI](https://github.com/ArthurSonzogni/FTXUI), reading Git through
+[libgit2](https://libgit2.org/), talking to the providers over [libcurl](https://curl.se/libcurl/)
+and [nlohmann/json](https://github.com/nlohmann/json).
+
+Needs a C++20 compiler, CMake 3.24 or newer, zlib, and libcurl. The other three are fetched and
+built by CMake.
 
 ```bash
 sudo apt install libcurl4-openssl-dev     # or libcurl-devel, or curl on Homebrew
