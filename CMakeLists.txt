@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.24)
 # GITTOP_VERSION below, so `--version`, the settings page and the splash cannot
 # drift from each other or from the release; the workflow in
 # .github/workflows/release.yml refuses a tag that does not match it.
-project(gittop VERSION 2026.08.3 LANGUAGES C CXX)
+project(gittop VERSION 2026.08.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

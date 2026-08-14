@@ -3,6 +3,8 @@
 #include <array>
 #include <string>
 
+#include "model/remote.hpp"
+
 namespace gittop::ui {
 
 // The same rule the theme layer enforces for colour, applied to characters.
@@ -84,6 +86,10 @@ struct GlyphSet {
   const char* watcher;
 
   // ---------------------------------------------------------------- providers
+  // The mark that goes in front of a provider's name, a host, or a remote. Read
+  // through ProviderGlyph() rather than by hand: five panels each had their own
+  // copy of that switch, which is five places for a fourth provider to be
+  // forgotten.
   const char* github;
   const char* gitlab;
   const char* provider_unknown;
@@ -134,6 +140,25 @@ struct GlyphSet {
 };
 
 const GlyphSet& glyphs();
+
+// The mark for one provider, from whichever set is active. Everything that
+// prints a provider's name, its host, or a remote pointing at it puts this in
+// front, so the same repository is recognisable at a glance from the remote
+// panel, the CI header, the pull list, the sign-in pane and the settings page.
+std::string ProviderGlyph(model::Provider provider);
+
+// The GitHub and GitLab marks are the one place the nerd icons are worth having
+// on their own terms, and the reason is that they are *logos*: no arrangement of
+// geometric shapes is the octocat or the tanuki, so unicode here is an
+// approximation in a way that `✓` for a passing check is not. Hence a switch of
+// their own — on it, the two provider marks come from the nerd set whatever
+// `theme.icons` says, and nothing else does.
+//
+// Off by default, for the same reason auto never picks the whole nerd set: a
+// font without the private-use icons draws tofu, and gittop cannot ask. It is
+// ignored in ascii mode, where the terminal has already said it wants 7 bits.
+bool ProviderLogos();
+void SetProviderLogos(bool on);
 
 // Auto never picks Nerd. There is no way to ask a terminal whether the font it
 // is using has the private-use icons in it, and guessing wrong fills the screen

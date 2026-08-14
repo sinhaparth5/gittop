@@ -17,6 +17,41 @@ published.
 
 ---
 
+## 2026.08.4 — 2026-08-14
+
+Both changes are the same complaint from two directions: a panel that was showing you less than it
+appeared to, without saying so.
+
+### Added
+
+- `b` on the CI view picks which ref the run list is filtered to — the checked-out branch, every
+  ref, or any branch or tag in the repository. It was pinned to whatever HEAD was on, which on a
+  repository whose workflow triggers on tags means every run it has is attributed to a tag and the
+  panel is permanently empty. An empty run list and a repository with no CI at all looked identical
+  and there was no way to tell them apart without leaving the app. The picker offers tags because
+  that is where those runs are: a tag-triggered run carries the tag name in the same field a branch
+  would be in, on both providers, so one filter covers both. The header now always names what is
+  being filtered on, and tells an "all refs" you chose apart from a detached HEAD falling into it —
+  the same request, two different facts. Rebindable as `ci_ref` under `[keys]`.
+- `theme.logos` draws the GitHub and GitLab marks as their real logos from a Nerd Font, and there is
+  a *provider logos* row on the settings page that toggles it. It is deliberately separate from
+  `theme.icons`: those two marks are the only glyphs gittop draws that are logos, and no arrangement
+  of geometric shapes is the octocat or the tanuki, whereas the unicode `✓` is a perfectly good
+  check. So this turns on the part of the nerd set worth having without committing the rest of the
+  interface to a patched font. Off by default, for the same reason nothing selects `nerd`
+  automatically, and ignored under `icons = "ascii"`.
+- The settings page's REMOTES card marks each remote with its provider, so an origin on one host and
+  a mirror on the other are one glyph apart rather than two URLs to read.
+
+### Fixed
+
+- A long branch name pushed the CI header off the end of the row. FTXUI clips at the cell and says
+  nothing, so the header read `0 runnext refresh in` with no sign anything was missing. The header
+  chip, the empty state and the picker rows are now measured in cells and truncated, which is what
+  the rest of gittop already did.
+
+---
+
 ## 2026.08.3 — 2026-08-14
 
 Two bugs that both had the same shape: gittop drew something that looked fine and was not.

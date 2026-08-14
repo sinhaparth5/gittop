@@ -86,19 +86,6 @@ std::string Until(std::int64_t when) {
   return "resets in " + std::to_string(delta / 3600) + "h";
 }
 
-std::string ProviderGlyph(Provider provider) {
-  const GlyphSet& g = glyphs();
-  switch (provider) {
-    case Provider::GitHub:
-      return g.github;
-    case Provider::GitLab:
-      return g.gitlab;
-    case Provider::Unknown:
-      break;
-  }
-  return g.provider_unknown;
-}
-
 Element Section(const std::string& title, Element body, bool focused = false) {
   return Panel(title, std::move(body), {.focused = focused});
 }

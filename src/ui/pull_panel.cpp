@@ -113,19 +113,6 @@ Swatch MergeColor(MergeStatus status) {
   return t.text_faint;
 }
 
-std::string ProviderGlyph(Provider provider) {
-  const GlyphSet& g = glyphs();
-  switch (provider) {
-    case Provider::GitHub:
-      return g.github;
-    case Provider::GitLab:
-      return g.gitlab;
-    case Provider::Unknown:
-      break;
-  }
-  return g.provider_unknown;
-}
-
 // What the provider calls them. Printing "pull requests" at a GitLab user is
 // the sort of small wrongness that makes a tool feel like it was built for
 // somewhere else.

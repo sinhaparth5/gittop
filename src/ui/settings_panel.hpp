@@ -22,6 +22,7 @@ enum class SettingsAction {
   NextRemote,
   NextTheme,
   NextIcons,
+  ToggleLogos,
   NextBorder,
   NextDepth,
   ToggleAnimations,
@@ -57,6 +58,10 @@ struct SettingsGroup {
 struct SettingsRemote {
   std::string name;
   std::string url;
+  // Which host this one points at, so the card can put the provider's mark in
+  // front of it. A repository with an origin on one provider and a mirror on
+  // the other is otherwise two lines of URL to read.
+  model::Provider provider = model::Provider::Unknown;
   bool active = false;
 };
 

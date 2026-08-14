@@ -137,19 +137,6 @@ Swatch StatusColor(RunStatus status) {
   return t.text_faint;
 }
 
-std::string ProviderGlyph(Provider provider) {
-  const GlyphSet& g = glyphs();
-  switch (provider) {
-    case Provider::GitHub:
-      return g.github;
-    case Provider::GitLab:
-      return g.gitlab;
-    case Provider::Unknown:
-      break;
-  }
-  return g.provider_unknown;
-}
-
 std::string CiName(Provider provider) {
   switch (provider) {
     case Provider::GitHub:
