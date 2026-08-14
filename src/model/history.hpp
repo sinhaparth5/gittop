@@ -43,7 +43,16 @@ struct Branch {
   std::string name;
   std::string upstream;
   bool is_head = false;
+
+  // `has_upstream` means the tracking ref resolved, which is the only case
+  // where `ahead` and `behind` are counts of anything. `upstream_gone` is the
+  // branch that still asks for an upstream in its config but whose tracking ref
+  // no longer exists — deleted on the remote and pruned since. Both cannot be
+  // true, and when the second one is, `upstream` carries the configured name,
+  // because which upstream went away is the useful half of the fact.
   bool has_upstream = false;
+  bool upstream_gone = false;
+
   std::size_t ahead = 0;
   std::size_t behind = 0;
   std::int64_t time = 0;

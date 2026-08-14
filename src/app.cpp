@@ -1223,6 +1223,12 @@ void App::StartTransfer(TransferKind kind) {
         return git::Push(path, remote_name, /*set_upstream=*/true, credentials, sink, &cancel);
       });
       break;
+    case TransferKind::Prune:
+      transfer_fetcher_.Start([path, remote_name, credentials, sink](
+                                  const std::atomic<bool>& cancel) {
+        return git::Prune(path, remote_name, credentials, sink, &cancel);
+      });
+      break;
     case TransferKind::None:
       break;
   }
@@ -1244,6 +1250,25 @@ void App::RequestPush() {
 void App::PerformPush() {
   CloseOverlay();
   StartTransfer(TransferKind::Push);
+}
+
+void App::RequestPrune() {
+  DiscoverRemotes();
+  if (remotes_.empty()) {
+    Note("this repository has no remote", true);
+    return;
+  }
+  // Asks first for the same reason push does, from the other direction: this one
+  // only changes the local copy, but it is the only thing in gittop that deletes
+  // a ref rather than adding to one, and which refs go is decided by a server
+  // rather than by anything on screen.
+  confirm_kind_ = ConfirmKind::Prune;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformPrune() {
+  CloseOverlay();
+  StartTransfer(TransferKind::Prune);
 }
 
 void App::RequestPassphrase(TransferKind kind) {
@@ -1876,6 +1901,9 @@ ui::TransferView App::TransferViewState() const {
     case TransferKind::Push:
       view.title = "Pushing " + snapshot_.branch;
       break;
+    case TransferKind::Prune:
+      view.title = "Pruning " + (remotes_.empty() ? "" : remotes_[remote_index_].name);
+      break;
     case TransferKind::None:
       view.title = "Working";
       break;
@@ -2444,8 +2472,9 @@ ui::Scope App::CurrentScope() const {
       return ui::Scope::Diff;
     case ui::View::Stashes:
       return ui::Scope::Stash;
-    case ui::View::History:
     case ui::View::Branches:
+      return ui::Scope::Branches;
+    case ui::View::History:
     case ui::View::Remote:
     case ui::View::Pipelines:
     case ui::View::Pulls:
@@ -2576,6 +2605,9 @@ bool App::Perform(ui::Action action) {
       return true;
     case ui::Action::SignIn:
       RequestSignIn();
+      return true;
+    case ui::Action::Prune:
+      RequestPrune();
       return true;
     case ui::Action::Fetch:
       StartTransfer(TransferKind::Fetch);
@@ -2850,6 +2882,15 @@ int App::Run() {
             std::string("Abort the ") + model::OperationName(operation_.operation) + "?",
             operation_.detail,
             "Everything the operation has done so far is discarded.", "abort");
+
+      case ConfirmKind::Prune: {
+        const std::string remote_name =
+            remotes_.empty() ? "the remote" : remotes_[remote_index_].name;
+        return ui::ConfirmPane(
+            "Prune remote-tracking refs for " + remote_name + "?",
+            remote_name + "/* refs whose branch is gone on the server",
+            "Your local branches are not touched.", "prune");
+      }
 
       case ConfirmKind::Discard:
         break;
@@ -3220,6 +3261,9 @@ int App::Run() {
                 break;
               case ConfirmKind::OperationAbort:
                 PerformOperationAbort();
+                break;
+              case ConfirmKind::Prune:
+                PerformPrune();
                 break;
               case ConfirmKind::Discard:
                 PerformDiscard();

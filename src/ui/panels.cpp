@@ -706,6 +706,14 @@ Element TrackingLine(const model::StatusSnapshot& snapshot) {
   const Theme& t = theme();
   const GlyphSet& g = glyphs();
 
+  if (snapshot.upstream_gone) {
+    // A third state, and the one that used to be drawn as the second: the
+    // upstream is still configured, so this branch is asking for a ref that has
+    // been deleted. Saying "no upstream" there invites a `git push -u` that
+    // recreates a branch somebody closed on purpose.
+    return hbox({Gap(), text(g.gone) | color(t.warning),
+                 text(" upstream gone") | color(t.warning), filler()});
+  }
   if (!snapshot.has_upstream) {
     // Not the same as "in sync", and drawn differently on purpose: a branch
     // with no upstream has nothing to be ahead or behind of, and printing
@@ -749,7 +757,9 @@ Element BranchCard(const model::StatusSnapshot& snapshot) {
       }),
       TrackingLine(snapshot),
   };
-  if (snapshot.has_upstream) {
+  // Named in both cases. Which upstream went away is most of what the line
+  // above is telling you.
+  if (snapshot.has_upstream || snapshot.upstream_gone) {
     rows.push_back(hbox({
         Gap(),
         text(Truncate(snapshot.upstream, kSidebarCells - 2 - kSpace)) | color(t.text_faint),
@@ -874,6 +884,12 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(KeyChip(keys, Action::Open, "change"));
     chips.push_back(KeyChip(keys, Action::SignIn, "sign in"));
     chips.push_back(KeyChip(keys, Action::Theme, "theme"));
+  } else if (view == View::Branches) {
+    chips.push_back(Chip(move, "move"));
+    chips.push_back(KeyChip(keys, Action::Fetch, "fetch"));
+    // The only place the prune key is offered, and the only place its effect is
+    // visible: a branch reading "gone" here is what it removes the ref for.
+    chips.push_back(KeyChip(keys, Action::Prune, "prune"));
   } else if (view == View::Stashes) {
     chips.push_back(KeyChip(keys, Action::StashSave, "stash"));
     chips.push_back(KeyChip(keys, Action::StashApply, "apply"));
@@ -1106,6 +1122,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Fetch, "fetch from the active remote"),
       line(Action::Pull, "pull, fast-forward only"),
       line(Action::Push, "push this branch, after a confirm"),
+      line(Action::Prune, "drop refs for branches the remote lost"),
       line(Action::NextRemote, "switch to the next remote"),
       line(Action::SignIn, "sign in to GitHub or GitLab"),
       text(""),

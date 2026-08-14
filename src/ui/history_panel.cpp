@@ -296,7 +296,15 @@ Element BranchList(const model::HistorySnapshot& history, int selected, int widt
     // Both counts padded to the same field whether or not they are present, so
     // the upstream name after them starts in the same column on every row.
     Elements tracking;
-    if (!branch.has_upstream) {
+    if (branch.upstream_gone) {
+      // Deliberately not ahead/behind: there is nothing left to be ahead of, and
+      // a count against a ref that describes a branch nobody can push to any
+      // more reads as a fact about the remote when it is a fact about a stale
+      // local ref. The glyph carries it as well as the colour, which is the same
+      // rule every status in gittop follows.
+      tracking.push_back(text(Fit(g.gone + std::string(" gone"), kTrackingCells)) |
+                         color(t.warning));
+    } else if (!branch.has_upstream) {
       tracking.push_back(text(Fit("no upstream", kTrackingCells)) | color(t.text_faint));
     } else if (branch.ahead == 0 && branch.behind == 0) {
       tracking.push_back(text(Fit("in sync", kTrackingCells)) | color(t.text_faint));

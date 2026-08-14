@@ -156,6 +156,36 @@ void ReadVelocity(git_repository* repo, const git_oid* tip, std::int64_t today,
       *std::max_element(branch->velocity.begin(), branch->velocity.end());
 }
 
+// The upstream a branch asks for in its config, whether or not it still exists.
+//
+// `git_branch_upstream` resolves the tracking ref, so it fails identically for
+// a branch that never had an upstream and for one whose upstream was deleted on
+// the server and pruned here. `git_branch_upstream_name` reads
+// `branch.<name>.remote` and `.merge` and runs them through the remote's
+// refspec — config only, no ref lookup — and that gap is the whole signal.
+// Without it the second branch is drawn as though nobody ever pushed it.
+//
+// Returns the short form ("origin/topic"), or empty when there really is no
+// upstream configured.
+std::string ConfiguredUpstream(git_repository* repo, git_reference* ref) {
+  git_buf full = GIT_BUF_INIT;
+  if (git_branch_upstream_name(&full, repo, git_reference_name(ref)) != 0) {
+    return {};
+  }
+  std::string name = full.ptr != nullptr ? std::string(full.ptr, full.size) : std::string();
+  git_buf_dispose(&full);
+
+  // "refs/heads/" as well, because `branch.<name>.remote = .` tracks a branch in
+  // this same repository and never goes through a refspec.
+  for (const std::string& prefix : {std::string("refs/remotes/"), std::string("refs/heads/")}) {
+    if (name.rfind(prefix, 0) == 0) {
+      name.erase(0, prefix.size());
+      break;
+    }
+  }
+  return name;
+}
+
 // Ahead/behind against the branch's own upstream. `git_graph_ahead_behind`
 // walks only as far as the merge base, so on a branch that tracks closely this
 // is a handful of objects; it is not the revwalk the lazy-read rule is about.
@@ -167,6 +197,8 @@ void ReadTracking(git_repository* repo, git_reference* head, model::StatusSnapsh
   }
   git_reference* upstream = nullptr;
   if (git_branch_upstream(&upstream, head) != 0) {
+    snap->upstream = ConfiguredUpstream(repo, head);
+    snap->upstream_gone = !snap->upstream.empty();
     return;
   }
   const char* name = nullptr;
@@ -651,6 +683,9 @@ model::HistorySnapshot Repository::ReadHistory(std::size_t max_commits,
           }
         }
         git_reference_free(upstream);
+      } else {
+        branch.upstream = ConfiguredUpstream(repo, ref);
+        branch.upstream_gone = !branch.upstream.empty();
       }
 
       if (const git_oid* tip = git_reference_target(ref); tip != nullptr) {

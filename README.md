@@ -83,6 +83,8 @@ able to separate green from amber.
 **Branches.**
 
 - Local branches with ahead/behind counts against their upstream, checked-out branch first
+- A branch whose upstream was deleted on the remote reads `gone` rather than a count against a
+  ref that no longer describes anything, and `x` prunes the tracking refs that have gone stale
 
 **Graph.**
 
@@ -370,6 +372,7 @@ them.
 | `B`               | Rebase this branch onto its upstream, after a confirm                |
 | `o`               | Continue or abort a rebase, merge or cherry-pick                     |
 | `f` `p` `P`       | Fetch / pull / push                                                  |
+| `x`               | Branches view: prune remote-tracking refs, after a confirm           |
 | `R`               | Switch to the next remote                                            |
 | `L`               | Sign in to GitHub or GitLab                                          |
 | `t`               | Next theme                                                           |

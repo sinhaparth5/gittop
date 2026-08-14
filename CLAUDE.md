@@ -115,6 +115,14 @@ drawing FTXUI itself emits for borders and separators, which gittop does not cho
 private-use icons, and guessing wrong fills the screen with tofu — so it is opt-in and nothing else
 is. Ascii is chosen for a non-UTF-8 locale, `TERM=dumb` or `TERM=linux`; unicode otherwise.
 
+**The nerd icons are written as `\uXXXX` escapes and have to stay that way.** They are private-use
+code points: invisible in an editor without a patched font, dropped by anything that normalises
+text, and silent when they go. Twenty-nine of the thirty-one were empty strings from Phase 7 until
+2026.08.2 — the comments naming them were all still there — and three releases shipped a nerd set
+that drew blanks, because noticing needs both a patched font and an opt-in nobody defaults into.
+An escape is ASCII and survives every pipeline a character does not. Look code points up by the
+`nf-*` name beside each entry, in `glyphnames.json` in ryanoasis/nerd-fonts.
+
 **`model/` types are provider-neutral.** GitHub says `stargazers_count` and GitLab says
 `star_count`; both become `RepoInfo::stars` in `remote/client.cpp`. If a file under `ui/` ever
 needs to know which provider replied, the abstraction has leaked. `model::RunStatus` is the hard
@@ -151,7 +159,9 @@ Since Phase 5 that handler does not compare against `Event` literals: it asks `u
 while it is on screen — `Lookup` tries the view's scope before the global one — and it is a
 property of the action rather than something the config can set, because where an action applies
 is a fact about what it does. Phase 6 added two more scopes: `Diff` takes `s` for switching sides
-and `Stash` takes `a`, `p` and `d`. Two scoped bindings in different views never meet, so the
+and `Stash` takes `a`, `p` and `d`; `Branches` takes `x` for the prune, scoped because a network
+call with a destructive edge should only be reachable from the one screen that shows what it would
+remove. Two scoped bindings in different views never meet, so the
 diff's `s` and the status view's `s` are not a conflict; a scoped key over a *global* one is
 (the stash view's `p` over `pull`), and the checker only reports that when the config is what
 arranged it.
@@ -262,6 +272,19 @@ keep:
 - **`git_remote_push` returns zero for a push the server refused.** The refusal arrives only
   through the `push_update_reference` callback. Anything that calls push and does not read
   `ctx.rejections` will report success for a rejected non-fast-forward.
+
+**A deleted upstream is two states, and only one of them is visible offline.** A branch whose
+remote counterpart was deleted keeps a remote-tracking ref until something prunes it, and while
+that ref resolves nothing local can tell it apart from a healthy one — `git branch -vv` says
+nothing either, so this is not gittop being uniquely blind. Once the ref *is* pruned, the branch
+still has `branch.<name>.remote` and `.merge` in its config, and that gap is the signal:
+`git_branch_upstream` resolves the ref and fails, `git_branch_upstream_name` reads only the config
+and succeeds. `ConfiguredUpstream` in `repository.cpp` is that pair, and it is what turns "no
+upstream" — which invites a `push -u` that recreates a branch somebody closed on purpose — into
+`gone` with the dead upstream named. `git::Prune` is the other half: a fetch with
+`GIT_FETCH_PRUNE`, on the Branches scope behind a confirm, which is the only thing that converts
+the invisible state into the visible one. It reports by diffing the tracking refs across the
+fetch rather than by subtracting counts, because a fetch adds refs as well as removing them.
 
 Cancellation is only checked from libgit2's progress callbacks, so a server that accepts and then
 says nothing never fires one. `git::Library` sets `GIT_OPT_SET_SERVER_CONNECT_TIMEOUT` and

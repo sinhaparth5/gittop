@@ -60,6 +60,9 @@ struct StatusSnapshot {
   // fetch, so it says what the last fetch knew and not what the server has.
   std::string upstream;
   bool has_upstream = false;
+  // Configured but no longer resolvable — see model::Branch, which carries the
+  // same pair for every branch rather than only for the checked-out one.
+  bool upstream_gone = false;
   std::size_t ahead = 0;
   std::size_t behind = 0;
 

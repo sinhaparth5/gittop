@@ -66,6 +66,7 @@ class App {
     Rebase,
     OperationContinue,
     OperationAbort,
+    Prune,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -75,6 +76,7 @@ class App {
     Fetch,
     Pull,
     Push,
+    Prune,
   };
 
   // Reads the config into the theme and the keymap. Runs before the first frame
@@ -193,6 +195,8 @@ class App {
   void StartTransfer(TransferKind kind);
   void RequestPush();
   void PerformPush();
+  void RequestPrune();
+  void PerformPrune();
   void CollectTransfer();
   void CancelTransfer();
   ui::TransferView TransferViewState() const;
