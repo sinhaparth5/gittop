@@ -168,6 +168,11 @@ void App::ApplyConfig() {
   }
   ui::SetGlyphMode(icons);
 
+  // Separate from theme.icons and deliberately so: the provider marks are the
+  // only glyphs gittop draws that are logos, and wanting those is not the same
+  // want as replacing every check and arrow with a private-use icon.
+  ui::SetProviderLogos(config_.GetBool("theme.logos", false));
+
   ui::PanelBorder border = ui::PanelBorder::Rounded;
   const std::string wanted_border = config_.Get("theme.border", "rounded");
   if (!ui::ParsePanelBorder(wanted_border, &border)) {
@@ -1752,7 +1757,8 @@ ui::SettingsView App::SettingsViewState() const {
     // Through SafeUrl here rather than in the panel, because this is the last
     // point that has the raw one: a remote configured as https://user:token@…
     // must not reach anything under ui/ with the token still in it.
-    view.remotes.push_back({remotes_[i].name, ui::SafeUrl(remotes_[i].url), i == remote_index_});
+    view.remotes.push_back({remotes_[i].name, ui::SafeUrl(remotes_[i].url),
+                            remotes_[i].provider, i == remote_index_});
   }
 
   view.config_path = config_path_;
@@ -1815,6 +1821,16 @@ void App::ActivateSetting() {
       ui::SetGlyphMode(next);
       settings_dirty_ = true;
       Note("icons: " + ui::GlyphModeName(next), false);
+      return;
+    }
+
+    case ui::SettingsAction::ToggleLogos: {
+      const bool on = !ui::ProviderLogos();
+      ui::SetProviderLogos(on);
+      settings_dirty_ = true;
+      // Names the font requirement on the way on and not on the way off, since
+      // a user who has just turned them off is looking at the answer already.
+      Note(on ? "provider logos on — needs a Nerd Font" : "provider logos off", false);
       return;
     }
 
@@ -1887,6 +1903,7 @@ void App::SaveSettings() {
   config_.Set("theme.name", ui::ThemeName());
   config_.Set("theme.border", ui::PanelBorderName(ui::PanelBorderNow()));
   config_.Set("theme.animations", ui::ReducedMotion() ? "false" : "true");
+  config_.Set("theme.logos", ui::ProviderLogos() ? "true" : "false");
   config_.Set("theme.splash", splash_ ? "true" : "false");
   config_.Set("layout.compact", compact_ ? "true" : "false");
 

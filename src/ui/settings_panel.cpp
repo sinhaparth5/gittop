@@ -47,19 +47,6 @@ std::string OnOff(bool on) {
   return on ? "on" : "off";
 }
 
-std::string ProviderGlyph(Provider provider) {
-  const GlyphSet& g = glyphs();
-  switch (provider) {
-    case Provider::GitHub:
-      return g.github;
-    case Provider::GitLab:
-      return g.gitlab;
-    case Provider::Unknown:
-      break;
-  }
-  return g.provider_unknown;
-}
-
 // ----------------------------------------------------------------- the groups
 
 SettingsGroup AccountGroup(const SettingsView& view) {
@@ -155,6 +142,17 @@ SettingsGroup AppearanceGroup(const SettingsView& view) {
   icons.action = SettingsAction::NextIcons;
   icons.verb = "next set";
   group.rows.push_back(std::move(icons));
+
+  SettingsRow logos;
+  logos.label = "provider logos";
+  logos.value = OnOff(ProviderLogos());
+  // Its own row rather than a consequence of the icons row, because it is the
+  // one part of the nerd set worth having on a terminal that wants none of the
+  // rest: a hexagon is not the GitHub logo, whereas ✓ is a perfectly good check.
+  logos.note = "GitHub and GitLab marks; needs a patched font";
+  logos.action = SettingsAction::ToggleLogos;
+  logos.verb = "toggle";
+  group.rows.push_back(std::move(logos));
 
   SettingsRow border;
   border.label = "panel border";
@@ -359,9 +357,12 @@ Element RemotesCard(const SettingsView& view) {
         filler(),
     }));
     // The URL is already through SafeUrl by the time it reaches this file.
+    const std::string mark = ProviderGlyph(entry.provider);
     rows.push_back(hbox({
         Gap(kSpaceWide),
-        text(Truncate(entry.url, kSidecarCells - 2 - kSpaceWide)) | color(t.text_faint),
+        text(mark + " ") | color(entry.active ? t.accent : t.text_faint),
+        text(Truncate(entry.url, kSidecarCells - 2 - kSpaceWide - TextWidth(mark) - 1)) |
+            color(t.text_faint),
         filler(),
     }));
   }

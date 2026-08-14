@@ -292,6 +292,12 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # One of: auto, ascii, unicode, nerd.
 # icons = "auto"
 
+# The GitHub and GitLab marks, drawn as their real logos from a Nerd Font. This
+# is separate from `icons` on purpose: those two are the only glyphs gittop
+# draws that are logos, and no arrangement of geometric shapes is the octocat.
+# Needs a patched font — with an ordinary one you get two empty boxes.
+# logos = false
+
 # Panel borders. One of: rounded, light, heavy, double.
 # heavy falls back to light under icons = "ascii", where its characters are the
 # one part of the line-drawing set a non-UTF-8 terminal tends not to have.

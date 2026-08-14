@@ -301,6 +301,10 @@ bool Contains(const char* haystack, const char* needle) {
 GlyphMode g_mode = GlyphMode::Unicode;
 bool g_resolved = false;
 
+// Off until something asks for it, which is `theme.logos` or the settings row.
+// Deliberately not detected: see the note on ProviderLogos().
+bool g_provider_logos = false;
+
 }  // namespace
 
 GlyphMode DetectGlyphMode() {
@@ -360,6 +364,31 @@ const GlyphSet& glyphs() {
       break;
   }
   return kUnicode;
+}
+
+bool ProviderLogos() {
+  return g_provider_logos;
+}
+
+void SetProviderLogos(bool on) {
+  g_provider_logos = on;
+}
+
+std::string ProviderGlyph(model::Provider provider) {
+  // Ascii is excluded rather than overridden: a non-UTF-8 locale is the terminal
+  // saying it cannot carry these bytes at all, which is a different statement
+  // from a font that happens to lack the icons.
+  const bool logos = g_provider_logos && GlyphModeNow() != GlyphMode::Ascii;
+  const GlyphSet& g = logos ? kNerd : glyphs();
+  switch (provider) {
+    case model::Provider::GitHub:
+      return g.github;
+    case model::Provider::GitLab:
+      return g.gitlab;
+    case model::Provider::Unknown:
+      break;
+  }
+  return g.provider_unknown;
 }
 
 std::string GlyphModeName(GlyphMode mode) {

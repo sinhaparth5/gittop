@@ -271,6 +271,7 @@ reach them:
 ```toml
 [theme]
 icons = "auto"        # auto, ascii, unicode, nerd
+logos = false         # the real GitHub and GitLab marks; needs a Nerd Font
 border = "rounded"    # rounded, light, heavy, double
 animations = true
 splash = true
@@ -281,6 +282,12 @@ sets is one line rather than a patch. `auto` picks `ascii` when the locale is no
 says the terminal has no shapes, and `unicode` otherwise. It never picks `nerd`: there is no way to
 ask a terminal whether its font has the private-use icons, and guessing wrong fills the screen with
 empty boxes — so that one is yours to turn on.
+
+`logos` is that opt-in narrowed to the two glyphs most worth it. The GitHub and GitLab marks go in
+front of the provider's name everywhere it appears — the remote panel, the CI header, the pull list,
+the sign-in pane, and the settings page's remote row and remotes card — and with `logos = true` they
+are drawn as the real octocat and tanuki from a Nerd Font while the rest of the interface stays on
+whatever `icons` chose. A hexagon is not a logo; a `✓`, on the other hand, is a perfectly good check.
 
 Text is measured in terminal cells rather than bytes, so a Japanese commit message or an emoji in a
 filename is truncated with an ellipsis at the right column instead of tearing the panel border.

@@ -31,19 +31,6 @@ using model::Provider;
 // being allowed to shorten them: a truncated URL is not a URL.
 constexpr int kPaneCells = 74;
 
-std::string ProviderGlyph(Provider provider) {
-  const GlyphSet& g = glyphs();
-  switch (provider) {
-    case Provider::GitHub:
-      return g.github;
-    case Provider::GitLab:
-      return g.gitlab;
-    case Provider::Unknown:
-      break;
-  }
-  return g.provider_unknown;
-}
-
 Element Line(const std::string& body, ftxui::Color tint) {
   return hbox({text("  "), text(body) | color(tint)});
 }
