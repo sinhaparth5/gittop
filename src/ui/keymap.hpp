@@ -70,6 +70,7 @@ enum class Action {
   StashDrop,
 
   Prune,
+  CiRef,
 
   Rebase,
   Operation,
@@ -95,6 +96,7 @@ enum class Scope {
   Diff,
   Stash,
   Branches,
+  Ci,
 };
 
 struct Binding {

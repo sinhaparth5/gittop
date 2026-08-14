@@ -76,6 +76,7 @@ struct GlyphSet {
   const char* ahead;
   const char* behind;
   const char* gone;  // an upstream that is configured but no longer there
+  const char* tag;   // a tag, beside `branch` in a list that holds both
 
   // ---------------------------------------------------------- remote counters
   const char* star;

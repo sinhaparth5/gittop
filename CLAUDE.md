@@ -161,7 +161,8 @@ property of the action rather than something the config can set, because where a
 is a fact about what it does. Phase 6 added two more scopes: `Diff` takes `s` for switching sides
 and `Stash` takes `a`, `p` and `d`; `Branches` takes `x` for the prune, scoped because a network
 call with a destructive edge should only be reachable from the one screen that shows what it would
-remove. Two scoped bindings in different views never meet, so the
+remove, and `Ci` takes `b` for the ref picker, which means nothing anywhere else.
+Two scoped bindings in different views never meet, so the
 diff's `s` and the status view's `s` are not a conflict; a scoped key over a *global* one is
 (the stash view's `p` over `pull`), and the checker only reports that when the config is what
 arranged it.
@@ -410,6 +411,38 @@ jobs. That asymmetry is the point, not an inconsistency. The CI
 poll loop runs only while its view is on screen, only when authenticated, and stops below a fifth
 of the remaining budget — and says which of those it is doing in the panel header, because a
 dashboard that has silently stopped updating looks exactly like one where nothing is happening.
+
+## The CI ref filter
+
+**An empty run list is two different pieces of news and the header is what separates them.** The CI
+view asks a provider for the runs on one ref, and that ref used to be the checked-out branch always,
+derived from the status snapshot and unchangeable. gittop's own release workflow triggers on
+tags, so every run it has is attributed to `v2026.08.1` and the like — which meant that standing on
+`master`, the panel showed an empty state reading "no CI runs", indistinguishable from a repository
+with no CI configured at all. `App::CiFilter` is the fix: `Branch` follows HEAD as it moves, `All`
+sends no filter, `Ref` is pinned to something picked from `b`.
+
+Three things hold it together.
+
+- **`CiFilterRef()` is the only place the ref is decided**, and `HeadBranch()` the only place the
+  detached-HEAD rule lives. A second copy of either is how the request and the header end up
+  disagreeing about what was asked, which is the bug this section exists about.
+- **`All` and a detached `Branch` send the identical empty filter and are not the same state.** One
+  is a choice and one is a fallback, so `PipelineView::all_refs_pinned` carries the difference and
+  the header draws them differently — accent for the choice, faint plus "no branch checked out" for
+  the fallback. `ApplyRefPick` compares the *resolved* ref rather than the mode for exactly this
+  reason: moving between those two on a detached HEAD changes a word on screen and nothing about
+  the request, and refetching would spend rate budget to redraw it.
+- **The ref list is `Repository::ReadRefs()`, read on the first `b` and re-read on `r`.** Branches
+  and tags share one list because a provider's filter takes one string and does not care which kind
+  it names — a tag-triggered GitHub run carries the tag in `head_branch`. Local and remote-tracking
+  branches collapse to one row for the same reason: `origin/master` and `master` are one query.
+  Tags sort newest-first by their peeled commit time, because on a tags-only workflow the newest tag
+  is the whole reason the list was opened; branches sort alphabetically, because that is how a
+  branch gets looked up.
+
+`RunsEndpoint` needed no change at all — it has always omitted the filter for an empty string, since
+that is the path a detached HEAD already took.
 
 ## Config
 

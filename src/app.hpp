@@ -53,6 +53,17 @@ class App {
     kFilter = 5,
     kOperation = 6,
     kSignIn = 7,
+    kRefPicker = 8,
+  };
+
+  // Where the CI view's ref filter comes from. `Branch` follows the checked-out
+  // branch as it changes; `Ref` is pinned to something the user picked and does
+  // not. `All` and a detached `Branch` send the same empty filter and are still
+  // two different states, because only one of them is a choice.
+  enum class CiFilter {
+    Branch,
+    All,
+    Ref,
   };
 
   // What a `y` in the confirm overlay is agreeing to. One overlay rather than
@@ -170,6 +181,16 @@ class App {
   void StartJobFetch();
   void CollectJobs();
   void ToggleJobs();
+
+  // The ref the CI view asks about. Resolved in one place because three callers
+  // need the same answer and a second copy of the detached-HEAD rule is how the
+  // header and the request end up disagreeing about what was asked.
+  // The checked-out branch, or empty when HEAD is detached or unborn.
+  std::string HeadBranch() const;
+  std::string CiFilterRef() const;
+  void OpenRefPicker();
+  void ApplyRefPick();
+  ui::RefPickerView RefPickerViewState() const;
 
   // Pull requests are one request and no interval. Nothing about a review moves
   // second to second, and the drill-down needs no request at all: everything it
@@ -343,6 +364,17 @@ class App {
   int pipeline_selected_ = 0;
   bool jobs_open_ = false;
   std::chrono::steady_clock::time_point last_pipeline_fetch_{};
+
+  // The CI view's ref filter, and the list the picker offers. The refs are read
+  // from the repository on the first open rather than at startup — this is the
+  // one thing on the CI view that costs nothing and is still not worth paying
+  // for until somebody asks — and re-read on `r`, so a tag pushed while gittop
+  // was running is there the next time the list opens.
+  CiFilter ci_filter_ = CiFilter::Branch;
+  std::string ci_ref_;
+  std::vector<model::RefEntry> ci_refs_;
+  bool ci_refs_loaded_ = false;
+  int ref_picker_selected_ = 0;
 
   model::PullSnapshot pulls_;
   remote::Fetcher<model::PullSnapshot> pull_fetcher_;

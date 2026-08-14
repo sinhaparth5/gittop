@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ui/glyphs.hpp"
+#include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -192,7 +193,7 @@ Element RefreshNote(const PipelineView& view, bool fetching, int frame) {
 }
 
 Element Header(const PipelineSnapshot& snapshot, const RemoteRef& ref, const PipelineView& view,
-               bool fetching, int frame) {
+               bool fetching, int width, int frame) {
   const Theme& t = theme();
 
   Elements row{
@@ -200,12 +201,27 @@ Element Header(const PipelineSnapshot& snapshot, const RemoteRef& ref, const Pip
       text(CiName(ref.provider)) | bold | color(t.text),
   };
 
-  if (snapshot.branch.empty()) {
-    // A detached HEAD has no branch to filter by. Saying so beats an unlabelled
-    // list that quietly spans every branch in the repository.
-    row.push_back(text("  all branches ") | color(t.bg) | bgcolor(t.text_faint));
+  // What is left for the ref name once the provider, the run count and the
+  // refresh note have had theirs. A branch name has no length limit and gittop
+  // is currently sitting on an 88-cell one, which pushed every other term in
+  // this row off the end — FTXUI clips at the cell and says nothing, so the
+  // header read "0 runnext refresh in" with no sign that anything was missing.
+  const int ref_cells = std::clamp(width - 56, 12, 60);
+
+  // The filter is a chip rather than a sentence because it is the one thing on
+  // this panel that decides what the list below can possibly contain, and an
+  // empty list under an unlabelled header reads as "no CI here" when it means
+  // "no CI on this ref". Accent when it was chosen, faint when it is a fallback:
+  // a detached HEAD and an explicit "all refs" send the identical request and
+  // are not the same fact.
+  if (!snapshot.branch.empty()) {
+    row.push_back(text("  " + Truncate(snapshot.branch, ref_cells) + " ") | bold | color(t.bg) |
+                  bgcolor(t.accent));
+  } else if (view.all_refs_pinned) {
+    row.push_back(text("  all refs ") | bold | color(t.bg) | bgcolor(t.accent));
   } else {
-    row.push_back(text("  " + snapshot.branch + " ") | bold | color(t.bg) | bgcolor(t.accent));
+    row.push_back(text("  all refs ") | color(t.bg) | bgcolor(t.text_faint));
+    row.push_back(text(" no branch checked out") | color(t.text_faint));
   }
 
   if (snapshot.state == FetchState::Ready) {
@@ -312,19 +328,39 @@ Element RunList(const PipelineSnapshot& snapshot, const PipelineView& view, bool
   const Theme& t = theme();
 
   if (snapshot.runs.empty()) {
+    const bool everything = snapshot.branch.empty();
+    // Truncated for the same reason the header chip is: this line is centred in
+    // the panel and a ref long enough to fill it pushes its own explanation off
+    // both edges.
     const std::string where =
-        snapshot.branch.empty() ? "this repository" : "branch " + snapshot.branch;
-    return vbox({
+        everything ? "this repository" : "branch " + Truncate(snapshot.branch, 48);
+    // Two different pieces of news, and they were being told as one. With a ref
+    // filter on, an empty list says nothing about whether this repository has
+    // CI — gittop's own runs are all attributed to tags, so the checked-out
+    // branch shows nothing while five runs exist — and the way out is a key the
+    // user has no reason to know about. Only when the filter is already off is
+    // "nothing has run" the actual answer.
+    Elements body{
         filler(),
         hbox({filler(), text(glyphs().empty_ci) | bold | color(t.text_dim), filler()}),
         text(""),
         hbox({filler(), text("no CI runs for " + where) | color(t.text), filler()}),
         text(""),
-        hbox({filler(),
-              text("a run appears here the moment one starts") | color(t.text_faint),
-              filler()}),
-        filler(),
-    });
+    };
+    if (everything) {
+      body.push_back(hbox({filler(),
+                           text("a run appears here the moment one starts") | color(t.text_faint),
+                           filler()}));
+    } else {
+      body.push_back(hbox({filler(), Chip(view.ref_key, "look at another ref"), filler()}));
+      body.push_back(text(""));
+      body.push_back(hbox({filler(),
+                           text("runs on tags and other branches are not shown here") |
+                               color(t.text_faint),
+                           filler()}));
+    }
+    body.push_back(filler());
+    return vbox(std::move(body));
   }
 
   if (row_boxes != nullptr) {
@@ -504,7 +540,7 @@ Element PipelinePanel(const PipelineSnapshot& snapshot, const JobList& jobs, con
   const bool wide = width >= 96;
   const bool fetching = snapshot.state == FetchState::Loading;
 
-  Elements body{Header(snapshot, ref, view, fetching, frame)};
+  Elements body{Header(snapshot, ref, view, fetching, width, frame)};
   // Tracked rather than asked for afterwards: a node's requirement is only
   // filled in during layout, so there is no way to look at a built element and
   // find out whether it already stretches.
@@ -561,6 +597,90 @@ Element PipelinePanel(const PipelineSnapshot& snapshot, const JobList& jobs, con
     body.back() = std::move(body.back()) | flex;
   }
   return vbox(std::move(body));
+}
+
+Element RefPickerPane(const std::vector<model::RefEntry>& entries, const RefPickerView& view,
+                      int width, int height) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+
+  // The pane is sized by its longest row, so an 88-cell branch name would make
+  // it wider than the terminal it is centred in. Names are cut here rather than
+  // by the frame, which cuts silently.
+  const int name_cells = std::clamp(width - 34, 16, 64);
+
+  // The list is what varies; the frame around it does not, so the rows are
+  // built once here and the two specials are drawn by the same lambda as the
+  // refs. Two row builders is how a picker ends up with a cursor that skips the
+  // first entry.
+  const auto row = [&t, &g, name_cells](const std::string& label, const std::string& note, const char* mark,
+                            Swatch mark_color, bool selected, bool active) {
+    Elements cells{
+        text(selected ? g.cursor : " ") | color(t.accent),
+        text(" "),
+        text(mark) | color(mark_color),
+        text(" "),
+        text(Truncate(label, name_cells)) | color(selected ? t.text : t.text_dim) |
+            (selected ? bold : nothing),
+    };
+    if (!note.empty()) {
+      cells.push_back(text("  " + note) | color(t.text_faint));
+    }
+    cells.push_back(filler());
+    // A tick rather than a highlight, because the selected row already owns the
+    // highlight and "where the cursor is" and "what is being shown" are
+    // different questions the moment you start moving.
+    cells.push_back(text(active ? std::string(g.check) + " " : "  ") | color(t.success));
+
+    Element element = hbox(std::move(cells));
+    if (selected) {
+      element = std::move(element) | bgcolor(t.surface_alt) | focus;
+    }
+    return element;
+  };
+
+  Elements rows;
+  rows.reserve(entries.size() + kRefPickerSpecials);
+
+  const bool has_head = !view.head_branch.empty();
+  rows.push_back(row(has_head ? view.head_branch : "current branch",
+                     has_head ? "current branch" : "HEAD is detached", g.branch,
+                     has_head ? t.accent : t.text_faint, view.selected == 0,
+                     !view.active_all && view.active.empty()));
+  rows.push_back(row("all refs", "every branch and tag", g.bullet, t.text_faint,
+                     view.selected == 1, view.active_all));
+
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    const model::RefEntry& entry = entries[i];
+    const int index = static_cast<int>(i) + kRefPickerSpecials;
+    rows.push_back(row(entry.name, {}, entry.is_tag ? g.tag : g.branch,
+                       entry.is_tag ? t.warning : t.text_dim, view.selected == index,
+                       !view.active_all && entry.name == view.active));
+  }
+
+  // Leaves room for the frame, the title, the two separators and the key row.
+  const int list_height = std::clamp(height - 8, 4, 18);
+
+  return vbox({
+             hbox({
+                 text(" CI ref ") | bold | color(t.accent),
+                 text(std::to_string(entries.size()) +
+                      (entries.size() == 1 ? " ref" : " refs")) |
+                     color(t.text_faint),
+                 filler(),
+             }),
+             separator() | color(t.border),
+             Scrollable(vbox(std::move(rows))) | size(HEIGHT, LESS_THAN, list_height),
+             separator() | color(t.border),
+             hbox({
+                 text(" "),
+                 Chip("j/k", "move"),
+                 Chip("enter", "show it"),
+                 filler(),
+                 Chip("esc", "keep the current one"),
+             }),
+         }) |
+         PaneFrame() | size(WIDTH, GREATER_THAN, 52);
 }
 
 }  // namespace gittop::ui

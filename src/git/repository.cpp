@@ -3,11 +3,14 @@
 #include <git2.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -317,6 +320,105 @@ std::optional<Repository> Repository::Discover(const std::string& start_path, st
 std::string Repository::WorkdirPath() const {
   const char* wd = git_repository_workdir(repo_.get());
   return wd != nullptr ? std::string(wd) : std::string{};
+}
+
+std::vector<model::RefEntry> Repository::ReadRefs() const {
+  std::vector<model::RefEntry> refs;
+
+  git_strarray names{};
+  if (git_reference_list(&names, repo_.get()) != 0) {
+    return refs;
+  }
+
+  // Sorted by the target's commit time, newest first, but only for tags. A
+  // branch list reads alphabetically because that is how people look a branch
+  // up; a tag list read that way puts v1.0 above v2026.08.3, and on a repository
+  // whose CI only ever runs on tags the newest one is the whole reason to open
+  // this list.
+  std::vector<std::pair<std::int64_t, model::RefEntry>> tags;
+  std::vector<model::RefEntry> branches;
+
+  const std::string heads = "refs/heads/";
+  const std::string remotes = "refs/remotes/";
+  const std::string tag_prefix = "refs/tags/";
+
+  for (std::size_t i = 0; i < names.count; ++i) {
+    const char* raw = names.strings[i];
+    if (raw == nullptr) {
+      continue;
+    }
+    const std::string full = raw;
+
+    if (full.rfind(heads, 0) == 0) {
+      branches.push_back({full.substr(heads.size()), false});
+      continue;
+    }
+
+    if (full.rfind(remotes, 0) == 0) {
+      // The remote's own name is not part of what a provider matches: a run on
+      // GitHub records `master`, never `origin/master`. Splitting on the first
+      // separator rather than against the configured remote names keeps this a
+      // string operation, which is all it needs to be.
+      const std::string rest = full.substr(remotes.size());
+      const std::size_t slash = rest.find('/');
+      if (slash == std::string::npos) {
+        continue;
+      }
+      const std::string name = rest.substr(slash + 1);
+      // `origin/HEAD` is a symbolic ref naming the default branch, not a branch
+      // of its own, and asking a provider for runs on a branch called HEAD gets
+      // an empty list rather than an error.
+      if (name.empty() || name == "HEAD") {
+        continue;
+      }
+      branches.push_back({name, false});
+      continue;
+    }
+
+    if (full.rfind(tag_prefix, 0) == 0) {
+      std::int64_t when = 0;
+      git_reference* ref = nullptr;
+      if (git_reference_lookup(&ref, repo_.get(), full.c_str()) == 0) {
+        git_object* commit = nullptr;
+        // Peel rather than read the ref's own oid: an annotated tag's ref points
+        // at the tag object, which has no commit time on it.
+        if (git_reference_peel(&commit, ref, GIT_OBJECT_COMMIT) == 0) {
+          when = git_commit_time(reinterpret_cast<git_commit*>(commit));
+          git_object_free(commit);
+        }
+        git_reference_free(ref);
+      }
+      tags.push_back({when, {full.substr(tag_prefix.size()), true}});
+    }
+  }
+
+  git_strarray_dispose(&names);
+
+  std::sort(branches.begin(), branches.end(),
+            [](const model::RefEntry& a, const model::RefEntry& b) { return a.name < b.name; });
+  std::stable_sort(tags.begin(), tags.end(),
+                   [](const auto& a, const auto& b) { return a.first > b.first; });
+
+  // A local branch and its remote-tracking counterpart are one name to a
+  // provider, so they are one row here. A tag sharing a name with a branch is
+  // one row too, and it is the branch that survives: the request they would
+  // both produce is identical, and two rows that send the same query and differ
+  // only in a label is a list that looks broken.
+  std::unordered_set<std::string> seen;
+  const auto take = [&refs, &seen](const model::RefEntry& entry) {
+    if (!seen.insert(entry.name).second) {
+      return;
+    }
+    refs.push_back(entry);
+  };
+
+  for (const model::RefEntry& branch : branches) {
+    take(branch);
+  }
+  for (const auto& tag : tags) {
+    take(tag.second);
+  }
+  return refs;
 }
 
 std::vector<std::pair<std::string, std::string>> Repository::ReadRemotes() const {

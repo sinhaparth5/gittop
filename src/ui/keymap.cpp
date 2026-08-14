@@ -92,6 +92,7 @@ const NamedAction kActionNames[] = {
     {"stash_pop", Action::StashPop},
     {"stash_drop", Action::StashDrop},
     {"prune", Action::Prune},
+    {"ci_ref", Action::CiRef},
 
     {"rebase", Action::Rebase},
     {"operation", Action::Operation},
@@ -117,6 +118,8 @@ std::string ScopeName(Scope scope) {
       return "stash";
     case Scope::Branches:
       return "branches";
+    case Scope::Ci:
+      return "ci";
     case Scope::Global:
       break;
   }
@@ -278,6 +281,11 @@ Keymap::Keymap() {
   // key would be a network call with a destructive edge available from every
   // screen, including several that have nothing to do with branches.
   Bind(Action::Prune, Scope::Branches, "x");
+
+  // Scoped for the same reason, from the other direction: the ref picker only
+  // means anything beside a run list, and `b` is a letter worth leaving free
+  // everywhere else.
+  Bind(Action::CiRef, Scope::Ci, "b");
 
   // The graph pans along a timeline instead of selecting rows, so it takes the
   // horizontal keys and reuses g/G for the ends of time rather than the ends of

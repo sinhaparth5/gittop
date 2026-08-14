@@ -52,6 +52,7 @@ constexpr GlyphSet kAscii{
     .ahead = "^",
     .behind = "v",
     .gone = "x",
+    .tag = "#",
 
     .star = "*",
     .fork = "Y",
@@ -134,6 +135,10 @@ constexpr GlyphSet kUnicode{
     .ahead = "↑",
     .behind = "↓",
     .gone = "✗",
+    // Same geometric block as branch and detached rather than a nicer-looking
+    // tag character from somewhere else: a font that draws ◆ and ◇ draws this
+    // one too, which is not true of the tag glyphs that live off on their own.
+    .tag = "◈",
 
     .star = "★",
     .fork = "⑂",
@@ -244,6 +249,7 @@ constexpr GlyphSet kNerd{
     .ahead = "↑",
     .behind = "↓",
     .gone = "\uf127",              // nf-fa-unlink
+    .tag = "\uf02b",               // nf-fa-tag
 
     .star = "\uf005",              // nf-fa-star
     .fork = "\uf126",              // nf-fa-code_fork
