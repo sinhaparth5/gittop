@@ -75,6 +75,7 @@ struct GlyphSet {
   const char* detached;  // HEAD on a commit rather than on a branch
   const char* ahead;
   const char* behind;
+  const char* gone;  // an upstream that is configured but no longer there
 
   // ---------------------------------------------------------- remote counters
   const char* star;

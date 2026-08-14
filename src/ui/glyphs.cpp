@@ -51,6 +51,7 @@ constexpr GlyphSet kAscii{
     .detached = "@",
     .ahead = "^",
     .behind = "v",
+    .gone = "x",
 
     .star = "*",
     .fork = "Y",
@@ -132,6 +133,7 @@ constexpr GlyphSet kUnicode{
     .detached = "◇",
     .ahead = "↑",
     .behind = "↓",
+    .gone = "✗",
 
     .star = "★",
     .fork = "⑂",
@@ -188,9 +190,22 @@ constexpr GlyphSet kUnicode{
 // the one cell wcwidth reports, which tears a border; that is a property of the
 // font rather than of gittop, and the reason the default stays Unicode.
 //
-// Only the roles with a genuinely better icon are swapped. Everything else falls
-// through to the Unicode shape, because an icon that means nothing is worse than
-// the geometric one it replaced.
+// Only the roles with a better icon are swapped. Everything else falls through
+// to the Unicode shape, because an icon that means nothing is worse than the
+// geometric one it replaced — which is why the arrows and the box shapes here
+// are the same characters the Unicode set uses.
+//
+// The icons are written as `\uXXXX` escapes rather than as the characters
+// themselves, and that is not a style preference. Every one of these is a
+// private-use code point: it renders as nothing in an editor without a patched
+// font, survives no copy-paste that normalises text, and says nothing when it
+// goes missing. Twenty-nine of them had gone missing exactly that way and the
+// set shipped drawing blanks for a release, because the only way to notice is
+// to have a Nerd Font installed and to opt into a set that is opt-in by design.
+// An escape is ASCII: it shows up in a diff, in a terminal and in an editor, so
+// a lost one is visible before it ships rather than after. The `nf-*` name
+// beside each is the Nerd Fonts glyph name and is what to look the code point
+// up by — `glyphnames.json` in ryanoasis/nerd-fonts is the table.
 constexpr GlyphSet kNerd{
     .name = "nerd",
 
@@ -207,49 +222,50 @@ constexpr GlyphSet kNerd{
     .arrow_right = "→",
     .arrow_enter = "⏎",
 
-    .check = "",       // nf-fa-check
-    .cross = "",       // nf-fa-times
-    .warning = "",     // nf-fa-warning
-    .alert = "",       // nf-oct-alert
-    .paused = "",      // nf-fa-pause
+    .check = "\uf00c",             // nf-fa-check
+    .cross = "\uf00d",             // nf-fa-times
+    .warning = "\uf071",           // nf-fa-warning
+    .alert = "\uf421",             // nf-oct-alert
+    .paused = "\uf04c",            // nf-fa-pause
 
-    .staged = "",      // nf-oct-diff_added
-    .unstaged = "",    // nf-oct-diff_modified
-    .untracked = "",   // nf-fa-question
-    .conflict = "",    // nf-oct-alert
+    .staged = "\uf457",            // nf-oct-diff_added
+    .unstaged = "\uf459",          // nf-oct-diff_modified
+    .untracked = "\uf128",         // nf-fa-question
+    .conflict = "\uf421",          // nf-oct-alert
 
-    .node = "",        // nf-oct-git_commit
+    .node = "\uf417",              // nf-oct-git_commit
     .node_head = "◉",
     .lane_vertical = "│",
     .lane_close = "╯",
     .lane_open = "╮",
 
-    .branch = "",      // nf-dev-git_branch
-    .detached = "",  // nf-oct-git_commit
+    .branch = "\ue725",            // nf-dev-git_branch
+    .detached = "\uf417",          // nf-oct-git_commit
     .ahead = "↑",
     .behind = "↓",
+    .gone = "\uf127",              // nf-fa-unlink
 
-    .star = "",        // nf-fa-star
-    .fork = "",        // nf-fa-code_fork
-    .issue = "",       // nf-oct-issue_opened
-    .watcher = "",     // nf-fa-eye
+    .star = "\uf005",              // nf-fa-star
+    .fork = "\uf126",              // nf-fa-code_fork
+    .issue = "\uf41b",             // nf-oct-issue_opened
+    .watcher = "\uf06e",           // nf-fa-eye
 
-    .github = "",      // nf-fa-github
-    .gitlab = "",      // nf-fa-gitlab
-    .provider_unknown = "",  // nf-fa-cloud
+    .github = "\uf09b",            // nf-fa-github
+    .gitlab = "\uf296",            // nf-fa-gitlab
+    .provider_unknown = "\uf0c2",  // nf-fa-cloud
 
-    .ci_success = "",   // nf-fa-check_circle
-    .ci_failed = "",    // nf-fa-times_circle
-    .ci_running = "",   // nf-fa-refresh
-    .ci_pending = "",   // nf-fa-clock_o
-    .ci_cancelled = "", // nf-fa-ban
-    .ci_skipped = "",   // nf-fa-minus_circle
+    .ci_success = "\uf058",        // nf-fa-check_circle
+    .ci_failed = "\uf057",         // nf-fa-times_circle
+    .ci_running = "\uf021",        // nf-fa-refresh
+    .ci_pending = "\uf017",        // nf-fa-clock_o
+    .ci_cancelled = "\uf05e",      // nf-fa-ban
+    .ci_skipped = "\uf056",        // nf-fa-minus_circle
 
-    .empty_diff = "",   // nf-oct-diff
-    .empty_stash = "",  // nf-fa-archive
-    .empty_pull = "",   // nf-oct-git_pull_request
-    .empty_ci = "",     // nf-fa-cogs
-    .empty_generic = "",// nf-fa-inbox
+    .empty_diff = "\uf440",        // nf-oct-diff
+    .empty_stash = "\uf187",       // nf-fa-archive
+    .empty_pull = "\uf407",        // nf-oct-git_pull_request
+    .empty_ci = "\uf085",          // nf-fa-cogs
+    .empty_generic = "\uf01c",     // nf-fa-inbox
 
     .axis_tick = "┤",
     .axis_origin = "┼",
@@ -260,7 +276,7 @@ constexpr GlyphSet kNerd{
     .diff_minus = "−",
     .pause_bars = "‖",
     .mask = "•••",
-    .key = "",   // nf-fa-key
+    .key = "\uf084",               // nf-fa-key
 
     .heat_ramp = {"·", "░", "▒", "▓", "█"},
 

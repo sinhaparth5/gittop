@@ -382,6 +382,9 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # stash_apply = "a"
 # stash_pop = "p"
 # stash_drop = "d"
+#
+# Branches view only.
+# prune = "x"
 # pan_left = "h left"
 # pan_right = "l right"
 # bucket_day = "d"

@@ -69,6 +69,8 @@ enum class Action {
   StashPop,
   StashDrop,
 
+  Prune,
+
   Rebase,
   Operation,
 
@@ -92,6 +94,7 @@ enum class Scope {
   Graph,
   Diff,
   Stash,
+  Branches,
 };
 
 struct Binding {

@@ -17,6 +17,34 @@ published.
 
 ---
 
+## 2026.08.3 — 2026-08-14
+
+Two bugs that both had the same shape: gittop drew something that looked fine and was not.
+
+### Fixed
+
+- A branch whose upstream was deleted on the remote was drawn as though it had never been pushed.
+  It still has an upstream in its config, so "no upstream" invited a `git push -u` that would
+  recreate a branch somebody closed on purpose. It now reads `gone`, names the upstream that went
+  away, and prints no ahead/behind — counts against a ref that no longer describes anything are not
+  facts about the remote. The branch card on the status view had the same gap and gets the same
+  treatment.
+- The `nerd` glyph set drew blanks. Twenty-nine of its thirty-one icons were empty strings: the
+  comments naming them were all still there, the characters were not, and they had been missing
+  since the set was introduced. Nothing selects `nerd` automatically, which is why three releases
+  shipped it that way. The icons are now written as `\uXXXX` escapes, so a lost one is visible in a
+  diff rather than silent.
+
+### Added
+
+- `x` on the Branches view prunes the remote-tracking refs whose branches are gone from the server,
+  behind a confirm, and reports which ones went. This is the only thing that can find a stale ref:
+  while it still resolves, nothing local can tell it from a healthy one — `git branch -vv` cannot
+  either. An ordinary fetch still honours the repository's own `remote.<name>.prune` and is never
+  made to prune on gittop's initiative.
+
+---
+
 ## 2026.08.2 — 2026-08-14
 
 Documentation. gittop itself is unchanged from 2026.08.1 — same binary, same behaviour — so there

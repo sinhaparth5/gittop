@@ -302,13 +302,47 @@ std::string ReceivedNote(const git_indexer_progress* stats) {
   return note;
 }
 
-TransferResult RunFetch(git_repository* repo, git_remote* remote, Context* ctx) {
+// Every remote-tracking ref for one remote, short form ("origin/topic"),
+// sorted. Read before and after a pruning fetch: the difference between the two
+// is exactly what was pruned, which is a better thing to report than a count
+// derived from sizes — a fetch creates tracking refs as well as removing them,
+// so the two lists are not nested and subtracting their sizes would undercount.
+std::vector<std::string> TrackingRefs(git_repository* repo, const std::string& remote_name) {
+  const std::string root = "refs/remotes/";
+  const std::string prefix = root + remote_name + "/";
+
+  std::vector<std::string> names;
+  git_strarray list = {};
+  if (git_reference_list(&list, repo) != 0) {
+    return names;
+  }
+  for (std::size_t i = 0; i < list.count; ++i) {
+    const std::string ref = list.strings[i];
+    if (ref.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    // refs/remotes/<name>/HEAD is the remote's default branch as a symbolic
+    // ref, not a branch anybody tracks, and prune leaves it alone. Counting it
+    // would report a prune that never happened.
+    if (ref.compare(prefix.size(), std::string::npos, "HEAD") == 0) {
+      continue;
+    }
+    names.push_back(ref.substr(root.size()));
+  }
+  git_strarray_dispose(&list);
+
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+TransferResult RunFetch(git_repository* repo, git_remote* remote, Context* ctx, bool prune) {
   git_fetch_options options;
   git_fetch_options_init(&options, GIT_FETCH_OPTIONS_VERSION);
   InstallCallbacks(&options.callbacks, ctx);
-  // Whatever the repository's own remote.<name>.prune says. Deciding to delete
-  // someone's tracking refs is not a dashboard's call to make.
-  options.prune = GIT_FETCH_PRUNE_UNSPECIFIED;
+  // Unless the user asked for a prune by name, whatever the repository's own
+  // remote.<name>.prune says. Deciding on its own to delete someone's tracking
+  // refs is not a dashboard's call to make; doing it when asked is.
+  options.prune = prune ? GIT_FETCH_PRUNE : GIT_FETCH_PRUNE_UNSPECIFIED;
   options.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_AUTO;
 
   ctx->progress.phase = TransferPhase::Connecting;
@@ -413,9 +447,70 @@ TransferResult Fetch(const std::string& repo_path, const std::string& remote_nam
   ctx.cancel = cancel;
   ctx.credentials = &credentials;
 
-  TransferResult result = RunFetch(repo.get(), remote.get(), &ctx);
+  TransferResult result = RunFetch(repo.get(), remote.get(), &ctx, /*prune=*/false);
   ctx.progress.phase = result.ok ? TransferPhase::Done : TransferPhase::Failed;
   Publish(&ctx);
+  return result;
+}
+
+TransferResult Prune(const std::string& repo_path, const std::string& remote_name,
+                     const Credentials& credentials, std::shared_ptr<ProgressSink> sink,
+                     const std::atomic<bool>* cancel) {
+  RepoHandle repo;
+  TransferResult failure;
+  if (!Open(repo_path, &repo, &failure)) {
+    return failure;
+  }
+  RemoteHandle remote;
+  if (!LookupRemote(repo.get(), remote_name, &remote, &failure)) {
+    return failure;
+  }
+
+  Context ctx;
+  ctx.sink = sink.get();
+  ctx.cancel = cancel;
+  ctx.credentials = &credentials;
+
+  // Read across the fetch rather than asking the server twice. git_remote_ls
+  // would name the branches that still exist, but only while the connection is
+  // open, and git_remote_fetch closes it — so this would mean a second connect
+  // to learn something the prune itself already decides.
+  const std::vector<std::string> before = TrackingRefs(repo.get(), remote_name);
+  TransferResult result = RunFetch(repo.get(), remote.get(), &ctx, /*prune=*/true);
+  ctx.progress.phase = result.ok ? TransferPhase::Done : TransferPhase::Failed;
+  Publish(&ctx);
+  if (!result.ok) {
+    return result;
+  }
+  const std::vector<std::string> after = TrackingRefs(repo.get(), remote_name);
+
+  std::vector<std::string> pruned;
+  std::set_difference(before.begin(), before.end(), after.begin(), after.end(),
+                      std::back_inserter(pruned));
+
+  if (pruned.empty()) {
+    // Not a failure and not a fetch summary either: the question asked was
+    // "is anything here stale", and "no" is a real answer worth printing.
+    result.summary = "nothing to prune";
+    result.detail = "every remote-tracking ref still has a branch behind it";
+    result.no_op = true;
+    return result;
+  }
+
+  result.summary = Plural(pruned.size(), "stale ref", "stale refs") + " pruned";
+  result.no_op = false;
+
+  // Named, up to three. Which branches went is the whole content of the answer,
+  // and a bare count leaves the user to diff two things they cannot see.
+  constexpr std::size_t kNamed = 3;
+  std::string detail;
+  for (std::size_t i = 0; i < pruned.size() && i < kNamed; ++i) {
+    detail += (i == 0 ? "" : ", ") + pruned[i];
+  }
+  if (pruned.size() > kNamed) {
+    detail += " and " + std::to_string(pruned.size() - kNamed) + " more";
+  }
+  result.detail = std::move(detail);
   return result;
 }
 
@@ -442,7 +537,7 @@ TransferResult Pull(const std::string& repo_path, const std::string& remote_name
   ctx.cancel = cancel;
   ctx.credentials = &credentials;
 
-  TransferResult fetched = RunFetch(repo.get(), remote.get(), &ctx);
+  TransferResult fetched = RunFetch(repo.get(), remote.get(), &ctx, /*prune=*/false);
   if (!fetched.ok) {
     ctx.progress.phase = TransferPhase::Failed;
     Publish(&ctx);

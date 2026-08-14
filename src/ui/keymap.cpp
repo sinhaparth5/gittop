@@ -91,6 +91,7 @@ const NamedAction kActionNames[] = {
     {"stash_apply", Action::StashApply},
     {"stash_pop", Action::StashPop},
     {"stash_drop", Action::StashDrop},
+    {"prune", Action::Prune},
 
     {"rebase", Action::Rebase},
     {"operation", Action::Operation},
@@ -114,6 +115,8 @@ std::string ScopeName(Scope scope) {
       return "diff";
     case Scope::Stash:
       return "stash";
+    case Scope::Branches:
+      return "branches";
     case Scope::Global:
       break;
   }
@@ -270,6 +273,11 @@ Keymap::Keymap() {
   Bind(Action::StashApply, Scope::Stash, "a");
   Bind(Action::StashPop, Scope::Stash, "p");
   Bind(Action::StashDrop, Scope::Stash, "d");
+
+  // Scoped to the one view that shows what it would remove. A global prune
+  // key would be a network call with a destructive edge available from every
+  // screen, including several that have nothing to do with branches.
+  Bind(Action::Prune, Scope::Branches, "x");
 
   // The graph pans along a timeline instead of selecting rows, so it takes the
   // horizontal keys and reuses g/G for the ends of time rather than the ends of

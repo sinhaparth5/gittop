@@ -105,6 +105,15 @@ TransferResult Fetch(const std::string& repo_path, const std::string& remote_nam
                      const Credentials& credentials, std::shared_ptr<ProgressSink> sink,
                      const std::atomic<bool>* cancel);
 
+// A fetch that also deletes the remote-tracking refs whose branches are gone
+// from the server, and says which ones it deleted. Separate from Fetch and
+// never implied by it: an ordinary fetch honours the repository's own
+// remote.<name>.prune, and quietly removing refs somebody else's tooling may be
+// reading is not something a dashboard should do on its own initiative.
+TransferResult Prune(const std::string& repo_path, const std::string& remote_name,
+                     const Credentials& credentials, std::shared_ptr<ProgressSink> sink,
+                     const std::atomic<bool>* cancel);
+
 // Fetch, then fast-forward the current branch to its upstream if that is all it
 // takes. A history that has genuinely diverged is left alone and reported:
 // merging and rebasing are Phase 6, and doing either implicitly behind a
