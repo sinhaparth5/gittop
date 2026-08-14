@@ -876,19 +876,114 @@ void App::CollectFetch() {
   }
 }
 
+std::string App::HeadBranch() const {
+  // A detached or unborn HEAD has no branch to filter by, and ReadStatus
+  // reports those as a parenthesised placeholder rather than a ref anything
+  // would match. Empty is the answer, and every caller here treats it as
+  // "every ref" rather than as a name to send.
+  const bool on_a_branch = !snapshot_.head_detached && !snapshot_.head_unborn &&
+                           !snapshot_.branch.empty() && snapshot_.branch.front() != '(';
+  return on_a_branch ? snapshot_.branch : std::string();
+}
+
+std::string App::CiFilterRef() const {
+  switch (ci_filter_) {
+    case CiFilter::All:
+      return {};
+    case CiFilter::Ref:
+      return ci_ref_;
+    case CiFilter::Branch:
+      break;
+  }
+  return HeadBranch();
+}
+
+void App::OpenRefPicker() {
+  if (!ci_refs_loaded_) {
+    ci_refs_ = repo_.ReadRefs();
+    ci_refs_loaded_ = true;
+  }
+
+  // Opens on the row that is showing rather than at the top. The common use is
+  // "put it back", and a picker that always starts at row zero makes the way
+  // back a thing you have to find.
+  ref_picker_selected_ = 0;
+  if (ci_filter_ == CiFilter::All) {
+    ref_picker_selected_ = 1;
+  } else if (ci_filter_ == CiFilter::Ref) {
+    for (std::size_t i = 0; i < ci_refs_.size(); ++i) {
+      if (ci_refs_[i].name == ci_ref_) {
+        ref_picker_selected_ = static_cast<int>(i) + ui::kRefPickerSpecials;
+        break;
+      }
+    }
+  }
+  OpenOverlay(kRefPicker);
+}
+
+void App::ApplyRefPick() {
+  // The *request* the old filter produced, not the mode that produced it. With
+  // a detached HEAD, "current branch" and "all refs" resolve to the same empty
+  // filter, and moving between them is a change to the header and to nothing
+  // else — a refetch there would spend a request to redraw a word.
+  const std::string was = CiFilterRef();
+
+  if (ref_picker_selected_ <= 0) {
+    ci_filter_ = CiFilter::Branch;
+    ci_ref_.clear();
+  } else if (ref_picker_selected_ == 1) {
+    ci_filter_ = CiFilter::All;
+    ci_ref_.clear();
+  } else {
+    const std::size_t index = static_cast<std::size_t>(ref_picker_selected_) -
+                              ui::kRefPickerSpecials;
+    if (index >= ci_refs_.size()) {
+      CloseOverlay();
+      return;
+    }
+    ci_filter_ = CiFilter::Ref;
+    ci_ref_ = ci_refs_[index].name;
+  }
+
+  CloseOverlay();
+
+  // Picking what is already showing must not spend a request. The rate budget
+  // this view already stops polling to protect is not worth a round trip that
+  // can only come back with the list on screen.
+  if (CiFilterRef() == was) {
+    return;
+  }
+
+  // The runs, the drill-down and the cursor all describe the old filter, so
+  // none of them survives. Idle rather than Loading is what makes the reload go
+  // through EnsurePipelines' terms instead of around them.
+  pipelines_ = model::PipelineSnapshot{};
+  jobs_ = model::JobList{};
+  jobs_open_ = false;
+  pipeline_selected_ = 0;
+  RebuildFilter();
+  StartPipelineFetch();
+}
+
+ui::RefPickerView App::RefPickerViewState() const {
+  ui::RefPickerView view;
+  view.selected = ref_picker_selected_;
+  view.active = ci_filter_ == CiFilter::Ref ? ci_ref_ : std::string();
+  view.active_all = ci_filter_ == CiFilter::All;
+  // The row names the branch rather than the mode, so it is worth something
+  // when you have forgotten which branch you are on — which is most of why the
+  // CI view was confusing in the first place.
+  view.head_branch = HeadBranch();
+  return view;
+}
+
 void App::StartPipelineFetch() {
   DiscoverRemotes();
   if (!remote_.ref.valid() || pipeline_fetcher_.Running()) {
     return;
   }
 
-  // A detached or unborn HEAD has no branch to filter by, and ReadStatus
-  // reports those as a parenthesised placeholder rather than a ref anything
-  // would match. Asking for every branch beats asking for one that cannot
-  // exist and rendering the empty answer as "no CI".
-  const bool on_a_branch = !snapshot_.head_detached && !snapshot_.head_unborn &&
-                           !snapshot_.branch.empty() && snapshot_.branch.front() != '(';
-  const std::string branch = on_a_branch ? snapshot_.branch : std::string();
+  const std::string branch = CiFilterRef();
 
   pipelines_.state = model::FetchState::Loading;
   pipelines_.branch = branch;
@@ -1141,6 +1236,8 @@ ui::PipelineView App::PipelineViewState() const {
   view.auto_paused = !allowed;
   view.paused_reason = std::move(reason);
   view.next_refresh = allowed ? SecondsToRefresh() : -1;
+  view.all_refs_pinned = ci_filter_ == CiFilter::All;
+  view.ref_key = keys_.KeyFor(ui::Action::CiRef);
   return view;
 }
 
@@ -2304,6 +2401,10 @@ void App::Reload() {
       Note("no remote to fetch", true);
       return;
     }
+    // The ref list goes stale the same way the runs do — a tag pushed while
+    // gittop was open is exactly the ref somebody would then want to look at —
+    // and re-reading it is a handful of ref lookups, not a request.
+    ci_refs_loaded_ = false;
     StartPipelineFetch();
     Note("refreshing CI", false);
     return;
@@ -2474,9 +2575,10 @@ ui::Scope App::CurrentScope() const {
       return ui::Scope::Stash;
     case ui::View::Branches:
       return ui::Scope::Branches;
+    case ui::View::Pipelines:
+      return ui::Scope::Ci;
     case ui::View::History:
     case ui::View::Remote:
-    case ui::View::Pipelines:
     case ui::View::Pulls:
     // Claims no keys of its own. Everything it does is on `enter`, which is
     // already the global "act on this row", so a scope here would only be a
@@ -2608,6 +2710,9 @@ bool App::Perform(ui::Action action) {
       return true;
     case ui::Action::Prune:
       RequestPrune();
+      return true;
+    case ui::Action::CiRef:
+      OpenRefPicker();
       return true;
     case ui::Action::Fetch:
       StartTransfer(TransferKind::Fetch);
@@ -2956,8 +3061,14 @@ int App::Run() {
     return ui::SignInPane(SignInViewState(), token_input->Render(), spinner_);
   });
 
+  // ------------------------------------------------------- ref picker overlay
+  auto ref_picker_pane = Renderer([this, &screen] {
+    return ui::RefPickerPane(ci_refs_, RefPickerViewState(), screen.dimx(), screen.dimy());
+  });
+
   auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane,
-                                 passphrase_pane, filter_pane, operation_pane, signin_pane},
+                                 passphrase_pane, filter_pane, operation_pane, signin_pane,
+                                 ref_picker_pane},
                                 &overlay_index_);
 
   // --------------------------------------------------------------- main view
@@ -3279,6 +3390,53 @@ int App::Run() {
           // Swallow any other typed key so a stray keystroke cannot answer a
           // destructive question by accident.
           return event.is_character();
+
+        case kRefPicker: {
+          if (event == Event::Escape) {
+            CloseOverlay();
+            return true;
+          }
+          if (event == Event::Return) {
+            ApplyRefPick();
+            return true;
+          }
+          // Through the keymap rather than against Event literals, so the same
+          // keys that move every other list move this one — including a
+          // rebound j/k, which a hard-coded comparison here would quietly
+          // exclude from the only list in the program that is not a view.
+          const int last = static_cast<int>(ci_refs_.size()) + ui::kRefPickerSpecials - 1;
+          int step = 0;
+          switch (keys_.Lookup(ui::Scope::Global, event)) {
+            case ui::Action::Down:
+              step = 1;
+              break;
+            case ui::Action::Up:
+              step = -1;
+              break;
+            case ui::Action::PageDown:
+              step = 10;
+              break;
+            case ui::Action::PageUp:
+              step = -10;
+              break;
+            case ui::Action::First:
+              ref_picker_selected_ = 0;
+              return true;
+            case ui::Action::Last:
+              ref_picker_selected_ = last;
+              return true;
+            default:
+              break;
+          }
+          if (step != 0) {
+            ref_picker_selected_ = std::clamp(ref_picker_selected_ + step, 0, last);
+            return true;
+          }
+          // Anything else is swallowed rather than passed down: the dashboard
+          // behind this is dimmed and a key that acts on it from here would act
+          // on a list nobody can see.
+          return !event.is_mouse();
+        }
 
         case kPassphrase:
           // esc here abandons the transfer that the prompt is standing in front

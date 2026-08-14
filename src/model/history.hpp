@@ -66,6 +66,17 @@ struct Branch {
   bool velocity_known = false;
 };
 
+// A ref a CI provider might have attributed a run to. Branches and tags share
+// one list and one field because the providers' filters take a single string
+// and do not care which kind it names: a tag-triggered GitHub run carries the
+// tag in `head_branch`, and a GitLab tag pipeline carries it in `ref`. Names
+// are short — `master`, `v2026.08.3` — because that is what those filters
+// match, not `refs/heads/master`.
+struct RefEntry {
+  std::string name;
+  bool is_tag = false;
+};
+
 struct HistorySnapshot {
   std::vector<Commit> commits;
   std::vector<Branch> branches;

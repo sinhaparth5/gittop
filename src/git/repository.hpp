@@ -76,6 +76,13 @@ class Repository {
   // the view: the stash reflog is a handful of entries, not a revwalk.
   model::StashList ReadStashes() const;
 
+  // Every branch and tag, by the short name a CI provider's ref filter matches.
+  // Pure, and cheap: one `git_reference_list` and a peel per tag, with no
+  // revwalk anywhere. Read on demand rather than at startup — nothing needs it
+  // until somebody asks the CI view to look at a ref other than the one that is
+  // checked out.
+  std::vector<model::RefEntry> ReadRefs() const;
+
   // Pure, and defined in git/rebase.cpp. Read on every status refresh, because
   // a dashboard that does not notice an interrupted merge shows the conflicted
   // files and no reason for them.

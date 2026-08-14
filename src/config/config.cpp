@@ -385,6 +385,9 @@ constexpr const char* kTemplate = R"(# gittop configuration
 #
 # Branches view only.
 # prune = "x"
+#
+# CI view only.
+# ci_ref = "b"
 # pan_left = "h left"
 # pan_right = "l right"
 # bucket_day = "d"

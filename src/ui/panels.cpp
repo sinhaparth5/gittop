@@ -866,6 +866,10 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
   } else if (view == View::Pipelines) {
     chips.push_back(Chip(move, "move"));
     chips.push_back(KeyChip(keys, Action::Open, "jobs"));
+    // Before refresh, because an empty list is far more often the wrong ref
+    // than a stale answer, and this is the only place the picker is advertised
+    // while the list has something in it.
+    chips.push_back(KeyChip(keys, Action::CiRef, "ref"));
     chips.push_back(KeyChip(keys, Action::Reload, "refresh"));
   } else if (view == View::Pulls) {
     chips.push_back(Chip(move, "move"));
@@ -1123,6 +1127,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Pull, "pull, fast-forward only"),
       line(Action::Push, "push this branch, after a confirm"),
       line(Action::Prune, "drop refs for branches the remote lost"),
+      line(Action::CiRef, "CI view: show runs for another ref"),
       line(Action::NextRemote, "switch to the next remote"),
       line(Action::SignIn, "sign in to GitHub or GitLab"),
       text(""),

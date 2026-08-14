@@ -147,6 +147,11 @@ able to separate green from amber.
 **CI.**
 
 - Workflow runs from GitHub Actions and pipelines from GitLab CI, for the branch you are on
+- `b` filters by any other ref — a branch, a tag, or every ref at once. Worth knowing about if
+  your workflow triggers on tags: the runs are all attributed to the tag, so the branch you are
+  standing on has none of them and an unfiltered look is the only one that shows anything
+- The header always names the ref the list is filtered to, because an empty list under the wrong
+  filter looks exactly like a repository with no CI
 - Passed, failed, running, queued, manual, cancelled and skipped, each with its own glyph and word
   as well as its own colour
 - Duration per run, counting up while one is still going, and how long ago it started
@@ -373,6 +378,7 @@ them.
 | `o`               | Continue or abort a rebase, merge or cherry-pick                     |
 | `f` `p` `P`       | Fetch / pull / push                                                  |
 | `x`               | Branches view: prune remote-tracking refs, after a confirm           |
+| `b`               | CI view: show runs for another branch, a tag, or every ref           |
 | `R`               | Switch to the next remote                                            |
 | `L`               | Sign in to GitHub or GitLab                                          |
 | `t`               | Next theme                                                           |
