@@ -88,8 +88,14 @@ jobs:
 
       - name: Install the toolchain
         run: |
+          # `file` is needed by CPack's DEB generator for
+          # CPACK_DEBIAN_PACKAGE_SHLIBDEPS, and it is not a dependency of
+          # anything else here — it is simply present on ordinary systems, which
+          # is why this only shows up on a minimal container installed with
+          # --no-install-recommends. dpkg-shlibdeps and objdump, the other two
+          # tools that step needs, do come with build-essential.
           apt-get install -y --no-install-recommends \
-            build-essential pkg-config python3-pip \
+            build-essential pkg-config python3-pip file \
             libcurl4-openssl-dev zlib1g-dev desktop-file-utils
           # 22.04 ships CMake 3.22 and this project needs 3.24 or newer. The pip
           # wheel is a plain binary and avoids pinning a download URL that would
@@ -120,7 +126,11 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          dpkg -i build/*.deb
+          # apt rather than `dpkg -i`, because apt resolves the Depends field
+          # and therefore proves it is satisfiable. dpkg would unpack the
+          # package regardless and leave a broken install that still runs here,
+          # which is the failure a user hits and CI would not.
+          apt-get install -y ./build/*.deb
           got=$(gittop --version)
           echo "installed binary reports: $got"
           [ "$got" = "gittop $VERSION" ] || { echo "expected gittop $VERSION" >&2; exit 1; }

@@ -56,9 +56,10 @@ publishing a binary that would not start.
 
 ## 2026.08.0 — 2026-08-13
 
-First release, source only — there are no downloads attached to it; build it with CMake or take
-2026.08.1 above. gittop is a btop-inspired terminal dashboard for Git: the local repository first,
-so it is useful with no network and no account, plus GitHub and GitLab panels when there is one.
+First release, source only — there are no downloads attached to it; build it with CMake, or take
+2026.08.1, which attaches a `.deb` and a tarball. gittop is a btop-inspired terminal dashboard for
+Git: the local repository first, so it is useful with no network and no account, plus GitHub and
+GitLab panels when there is one.
 
 ### Ten views
 
