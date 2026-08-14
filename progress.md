@@ -473,7 +473,10 @@ twice made no sense. What is left here is the audit, not the mechanism.
 - [x] Loading skeletons with a travelling highlight on all three async panels
 - [x] Graceful truncation with an ellipsis, never mid-glyph, budgets by arithmetic
 - [x] One error presentation: `PanelStyle::alarm`, used by all three remote panels
-- [ ] Demo GIF — `demo.tape` is written and checked in; VHS is not installed here to run it
+- [x] Demo GIF — `assets/demo.gif`, rendered from `demo.tape` against the repository
+      `scripts/demo-repo.sh` generates. Recorded at full palette on purpose: 64 colours turns the
+      graph's author gradient grey and blotchy, and dropping 44% of the frames saves 5% of the file
+      because GIF only pays for pixels that change
 
 **Verification**
 - [ ] Render check across kitty, alacritty, wezterm, GNOME Terminal and tmux — needs those terminals
