@@ -5,6 +5,8 @@
 #include <iomanip>
 #include <sstream>
 
+#include "platform/platform.hpp"
+
 namespace gittop::remote {
 namespace {
 
@@ -58,7 +60,9 @@ std::int64_t ParseIso8601(const std::string& text) {
   if (stream.fail()) {
     return 0;
   }
-  return static_cast<std::int64_t>(timegm(&tm));
+  // Not mktime: these timestamps are UTC and mktime would read them as local,
+  // shifting every "3 minutes ago" on screen by the machine's own offset.
+  return platform::TimestampFromUtc(tm);
 }
 
 std::string StringField(const nlohmann::json& object, const char* key) {

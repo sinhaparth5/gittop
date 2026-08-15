@@ -1,0 +1,27 @@
+# The toolchain scripts/build-windows.sh builds in: a mingw-w64 cross compiler
+# for x86_64 Windows, and Wine to run what comes out.
+#
+# Pinned to a Debian release rather than :latest so the cross toolchain does not
+# change under the script between one checkout and the next — a port that
+# compiles on Tuesday and not on Thursday for reasons nobody changed is worse
+# than one that does not compile at all.
+FROM debian:trixie
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates \
+      cmake \
+      file \
+      git \
+      mingw-w64 \
+      mingw-w64-tools \
+      ninja-build \
+      nsis \
+      python3 \
+      wine \
+      wine64 \
+      xz-utils \
+      zip \
+ && rm -rf /var/lib/apt/lists/*
+
+# None of Wine's fixme: chatter is about gittop, and there is a great deal of it.
+ENV WINEDEBUG=-all

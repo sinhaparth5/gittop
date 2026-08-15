@@ -350,6 +350,11 @@ GlyphMode DetectGlyphMode() {
   // but in practice an unset LANG under a modern terminal emulator is far more
   // often an incomplete environment than a genuine 7-bit one, and the shapes
   // used here are the common ones rather than the exotic ones.
+  //
+  // Every Windows console lands here, since none of these variables exists
+  // there, and Unicode is the right answer for the same reason rather than by
+  // accident: FTXUI puts the console into CP_UTF8 in both directions before
+  // anything is drawn, so the bytes below arrive as the characters they are.
   return GlyphMode::Unicode;
 }
 

@@ -1,0 +1,49 @@
+// Windows resources for gittop.exe: the icon Explorer draws, and the version
+// block its properties dialog reads.
+//
+// This is the Windows counterpart to packaging/gittop.desktop and the hicolor
+// icons — the same information, carried inside the binary rather than installed
+// beside it, because that is where this platform looks for it. An executable
+// with no version block shows blank fields in every properties dialog and in
+// anything that inventories installed software, which for a signed-in
+// dashboard reads as something that arrived from nowhere.
+//
+// Configured by CMake so the version comes from project(gittop VERSION ...) and
+// cannot drift from what --version prints.
+
+#include <windows.h>
+
+// The icon has to be first by ID, because Explorer shows the numerically
+// lowest-numbered icon resource as the file's icon.
+1 ICON "@GITTOP_ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+  FILEVERSION     @GITTOP_VERSION_MAJOR@,@GITTOP_VERSION_MINOR@,@GITTOP_VERSION_PATCH@,0
+  PRODUCTVERSION  @GITTOP_VERSION_MAJOR@,@GITTOP_VERSION_MINOR@,@GITTOP_VERSION_PATCH@,0
+  FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+  FILEFLAGS       0
+  FILEOS          VOS_NT_WINDOWS32
+  FILETYPE        VFT_APP
+  FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    // 0409 is US English, 04B0 is the UTF-16 codepage. The pair has to match
+    // the Translation value below or the properties dialog shows nothing at all.
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "Parth Sinha"
+      VALUE "FileDescription",  "btop-inspired terminal dashboard for Git, GitHub and GitLab"
+      VALUE "FileVersion",      "@GITTOP_VERSION@"
+      VALUE "InternalName",     "gittop"
+      VALUE "LegalCopyright",   "GPL-3.0-or-later"
+      VALUE "OriginalFilename", "gittop.exe"
+      VALUE "ProductName",      "gittop"
+      VALUE "ProductVersion",   "@GITTOP_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "platform/platform.hpp"
 #include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -23,10 +24,7 @@ constexpr std::int64_t kSecondsPerDay = 86400;
 constexpr int kAxisWidth = 6;
 
 std::tm ToTm(std::int64_t epoch_day) {
-  const auto seconds = static_cast<std::time_t>(epoch_day * kSecondsPerDay);
-  std::tm out{};
-  gmtime_r(&seconds, &out);
-  return out;
+  return platform::UtcFromTimestamp(epoch_day * kSecondsPerDay);
 }
 
 // Epoch day 0 was a Thursday, so shifting by three puts Monday at zero.

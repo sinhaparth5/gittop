@@ -1,15 +1,12 @@
 #include "remote/oauth.hpp"
 
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <string>
 #include <vector>
 
+#include "platform/platform.hpp"
 #include "remote/api.hpp"
 
 namespace gittop::remote {
@@ -305,58 +302,34 @@ PollResult PollDeviceFlow(const model::RemoteRef& ref, const std::string& origin
 }
 
 bool OpenInBrowser(const std::string& url) {
-  // Deliberately strict. This string came off the network, and the next thing
-  // that happens to it is an exec: anything that is not obviously a web URL is
-  // not worth the argument about whether some opener would have been safe with
-  // it. A leading "-" would also be read as a flag by the opener.
+  // Deliberately strict, and this check is the whole reason handing the string
+  // onwards is safe. It came off the network, and what happens to it next is a
+  // command line: an exec here, and on Windows a substitution into the
+  // registered protocol handler's own template, which is a command line being
+  // built somewhere gittop cannot see. Anything that is not obviously a web URL
+  // is not worth the argument about whether some opener would have survived it.
   if (url.rfind("https://", 0) != 0 || url.size() > 2048) {
     return false;
   }
   for (const unsigned char c : url) {
+    // Control characters and space: a leading "-" would be read as a flag by an
+    // opener, and whitespace would split one argument into two.
     if (c <= 0x20 || c == 0x7F) {
+      return false;
+    }
+    // The shell and command-line metacharacters, none of which RFC 3986 allows
+    // in a URI in the first place — so rejecting them costs nothing real and
+    // closes the one hole the control-character check above leaves open. A
+    // quote is the one that matters: it is 0x22, it passed the test above, and
+    // it is exactly what would end an argument early inside a handler template
+    // like `firefox.exe -url "%1"`.
+    if (c == '"' || c == '\'' || c == '\\' || c == '`' || c == '<' || c == '>' ||
+        c == '|' || c == '^' || c == '&' || c == '$') {
       return false;
     }
   }
 
-  static constexpr const char* kOpeners[] = {
-      "xdg-open",   // freedesktop
-      "wslview",    // WSL, where xdg-open often exists and does nothing useful
-      "open",       // macOS
-  };
-
-  // Double fork, so the opener is reparented to init and never becomes a
-  // zombie: there is no later point in a TUI's life that would naturally reap
-  // it, and a dashboard that leaks a process per sign-in is a dashboard with a
-  // slow leak.
-  const pid_t first = fork();
-  if (first < 0) {
-    return false;
-  }
-  if (first == 0) {
-    if (fork() == 0) {
-      // The opener writes to stderr on a good day and to stdout on a bad one,
-      // and both of those are the alternate screen this program is drawing on.
-      const int null = ::open("/dev/null", O_RDWR);
-      if (null >= 0) {
-        dup2(null, STDIN_FILENO);
-        dup2(null, STDOUT_FILENO);
-        dup2(null, STDERR_FILENO);
-        if (null > STDERR_FILENO) {
-          close(null);
-        }
-      }
-      setsid();
-      for (const char* opener : kOpeners) {
-        execlp(opener, opener, url.c_str(), static_cast<char*>(nullptr));
-      }
-      _exit(127);
-    }
-    _exit(0);
-  }
-
-  int status = 0;
-  waitpid(first, &status, 0);
-  return true;
+  return platform::OpenUrl(url);
 }
 
 }  // namespace gittop::remote

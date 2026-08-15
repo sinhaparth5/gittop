@@ -17,6 +17,51 @@ published.
 
 ---
 
+## 2026.08.7 — 2026-08-15
+
+gittop runs on Windows.
+
+### Added
+
+- **A native `gittop.exe`.** Two downloads on the release page: an installer that offers to put
+  gittop on your `PATH`, and a zip you can unpack and run without an administrator. It is one
+  self-contained file — no Visual C++ redistributable, no OpenSSL, nothing to install beside it.
+
+  WSL was the previous answer and still works, but it was an answer about where to run Linux rather
+  than about Windows.
+
+  What that took, in case any of it matters to you:
+
+  - HTTPS goes through **WinHTTP and Schannel**, so gittop trusts the certificates Windows trusts
+    and there is no CA bundle shipped alongside it that could go stale.
+  - ssh remotes run the **`ssh.exe` that ships with Windows**, which means your `~/.ssh/config`,
+    your agent and your `known_hosts` work exactly as they do from any other terminal — the same
+    property the Linux build has, and for the same reason.
+  - The config lives at `%APPDATA%\gittop\config.toml`. `gittop --config-path` prints it.
+  - It is secured with an **owner-only ACL** rather than `0600`, and the ACL is written *protected*
+    so it does not silently inherit whatever the parent folder was granting. A write that cannot
+    secure the file now fails and says so instead of leaving a token where other accounts can read
+    it — on every platform, not only this one.
+  - **ctrl-v** reads the Windows clipboard directly rather than looking for `wl-paste` or `xclip`,
+    which do not exist there.
+  - gittop asks the console how much colour it can render, because a Windows console sets neither
+    `TERM` nor `COLORTERM` — the two variables every other terminal answers that with. Without it
+    the dashboard came out monochrome on a machine perfectly capable of 24-bit colour. Use Windows
+    Terminal if you can; a legacy `conhost` window predates 24-bit support and gets sixteen colours.
+
+  Known limitation: ssh key **passphrase prompting** is implemented on Windows but unverified there.
+  If your key is passphrase-protected and not loaded into an agent, a push may fail rather than
+  asking. Keys in `ssh-agent`, and unencrypted keys, are unaffected.
+
+### Changed
+
+- `scripts/build-windows.sh` builds `gittop.exe` from a Linux checkout and runs it under Wine, using
+  only docker. This project has no test target and CI only runs on a tag, so without it the first
+  thing to notice a broken Windows build would have been a release. It found two real portability
+  bugs the first time it ran.
+
+---
+
 ## 2026.08.6 — 2026-08-15
 
 Two ways gittop was losing things you gave it: settings you changed, and text you pasted.

@@ -7,10 +7,6 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -21,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "platform/platform.hpp"
 #include "remote/api.hpp"
 #include "remote/client.hpp"
 #include "remote/http.hpp"
@@ -56,85 +53,12 @@ constexpr const char* kPasteEnd = "\x1b[201~";
 // something gittop does not control.
 constexpr std::size_t kClipboardLimit = 64 * 1024;
 
-// Reads the system clipboard by running whichever helper the session actually
-// has, in the order it is most likely to be the right one: Wayland first, then
-// the two X11 tools.
-//
-// This exists because a terminal never *sends* the clipboard on ctrl-v — paste
-// is ctrl-shift-v, and plain ctrl-v arrives as byte 0x16 that every input box
-// on earth ignores. Asking the clipboard directly is the only way that keystroke
-// can mean what the person pressing it thinks it means.
-//
-// Fork and exec with an argv, never a shell: the whole point is to end up
-// holding untrusted text, and handing that to /bin/sh is a command injection
-// with extra steps. The same reason remote::OpenInBrowser does it this way.
-std::string ReadClipboard() {
-  static const char* const kTools[][4] = {
-      {"wl-paste", "--no-newline", nullptr, nullptr},
-      {"xclip", "-selection", "clipboard", "-o"},
-      {"xsel", "--clipboard", "--output", nullptr},
-  };
-
-  for (const auto& tool : kTools) {
-    int fds[2] = {-1, -1};
-    if (::pipe(fds) != 0) {
-      continue;
-    }
-
-    const pid_t pid = ::fork();
-    if (pid < 0) {
-      ::close(fds[0]);
-      ::close(fds[1]);
-      continue;
-    }
-
-    if (pid == 0) {
-      ::dup2(fds[1], STDOUT_FILENO);
-      ::close(fds[0]);
-      ::close(fds[1]);
-      // stderr to /dev/null: a missing X display makes xclip complain, and the
-      // complaint would land on the alternate screen gittop is drawing on.
-      const int null = ::open("/dev/null", O_WRONLY);
-      if (null >= 0) {
-        ::dup2(null, STDERR_FILENO);
-        ::close(null);
-      }
-      std::vector<char*> argv;
-      for (const char* arg : tool) {
-        if (arg != nullptr) {
-          argv.push_back(const_cast<char*>(arg));
-        }
-      }
-      argv.push_back(nullptr);
-      ::execvp(argv[0], argv.data());
-      ::_exit(127);  // not installed, which is the ordinary case for two of three
-    }
-
-    ::close(fds[1]);
-    std::string out;
-    char buffer[4096];
-    ssize_t got = 0;
-    while ((got = ::read(fds[0], buffer, sizeof(buffer))) > 0) {
-      out.append(buffer, static_cast<std::size_t>(got));
-      if (out.size() > kClipboardLimit) {
-        out.resize(kClipboardLimit);
-        break;
-      }
-    }
-    ::close(fds[0]);
-
-    int status = 0;
-    ::waitpid(pid, &status, 0);
-    const bool ran = WIFEXITED(status) && WEXITSTATUS(status) == 0;
-    if (ran && !out.empty()) {
-      return out;
-    }
-    // A tool that is present but exited non-zero has answered: the clipboard is
-    // empty, or this is the wrong display server. Trying the next one costs a
-    // fork and settles which of those it was.
-  }
-  return {};
-}
+// Where the clipboard itself is read is `platform::ReadClipboard`, because the
+// two platforms do not answer this question the same way at all: Windows has a
+// clipboard in the operating system, while X11 and Wayland keep it in another
+// process that gittop can only reach by running one of three helper tools which
+// may not be installed. A single "run wl-paste" here would have been a call site
+// that had already chosen the mechanism.
 
 // One page. More runs than anyone scrolls in a sitting, and one request rather
 // than the pagination that a second page would need.
@@ -1721,11 +1645,9 @@ void App::PasteFromClipboard() {
     return;
   }
 
-  std::string text = ReadClipboard();
+  std::string text = platform::ReadClipboard(kClipboardLimit);
   if (text.empty()) {
-    // Three tools tried and none of them answered. Naming one is the difference
-    // between a user installing it and a user filing this as a gittop bug.
-    Note("clipboard is empty, or needs wl-clipboard / xclip installed", true);
+    Note(platform::ClipboardEmptyHint(), true);
     return;
   }
 
@@ -3135,7 +3057,7 @@ int App::Run() {
   // Skipped when stdout is not a terminal. A splash is a thing to look at, and
   // there is nobody looking at a redirected stream — it would only be a second
   // and a half of escape codes in whatever is reading the output.
-  if (splash_ && isatty(STDOUT_FILENO) == 1) {
+  if (splash_ && platform::StdoutIsTerminal()) {
     splash_until_ = std::chrono::steady_clock::now() +
                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<float>(kSplashSeconds));

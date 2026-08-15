@@ -43,20 +43,24 @@ bool NeedsPassphrase(const std::string& url);
 
 // Serves one passphrase to the `ssh` children of a single transfer.
 //
-// The passphrase travels over a unix socket rather than the environment, argv,
-// or a temporary file. All three of those are readable by anything running as
-// this user — /proc/<pid>/environ and /proc/<pid>/cmdline are not privileged
-// reads — and a file would put a private key's passphrase on disk, which is
-// exactly what encrypting the key was meant to avoid. The socket lives in a
-// 0700 directory, is itself 0600, and is unlinked when the transfer ends.
+// The passphrase travels over a `platform::SecretServer` rather than the
+// environment, argv, or a temporary file. All three of those are readable by
+// anything running as this user — /proc/<pid>/environ and /proc/<pid>/cmdline
+// are not privileged reads, and their Windows equivalents are a few lines of
+// NtQueryInformationProcess — and a file would put a private key's passphrase
+// on disk, which is exactly what encrypting the key was meant to avoid.
+//
+// Which mechanism carries it is deliberately not this file's business: a unix
+// socket in a 0700 directory and a named pipe with an owner-only DACL are not
+// alike enough to name one of them here without the other becoming a lie.
 //
 // The listener runs on its own thread because the ssh child asks while the
 // transfer worker is blocked inside libgit2 waiting for that same child.
 class AskpassServer {
  public:
-  // Binds and starts serving `passphrase`. ok() is false if the socket could
-  // not be created, in which case the caller should run the transfer without
-  // it rather than fail: an agent-backed key still works.
+  // Starts serving `passphrase`. ok() is false if the channel could not be
+  // created, in which case the caller should run the transfer without it rather
+  // than fail: an agent-backed key still works.
   explicit AskpassServer(std::string passphrase);
   ~AskpassServer();
 
@@ -70,10 +74,11 @@ class AskpassServer {
   // somebody looking in the wrong place.
   bool served() const;
 
-  // The bound path. Public only so InstallAskpassEnv can name it; the socket is
-  // reachable to this user regardless, so this leaks nothing the filesystem
-  // does not already say.
-  const std::string& socket_path() const;
+  // Where the helper should look — a socket path or a pipe name. Public only so
+  // InstallAskpassEnv can put it in the environment, which is safe because it
+  // is a *name*: the channel is reachable to this user regardless, so this
+  // leaks nothing the filesystem or the object namespace does not already say.
+  const std::string& endpoint() const;
 
  private:
   struct Impl;

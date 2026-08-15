@@ -1,138 +1,27 @@
 #include "git/askpass.hpp"
 
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-#include <atomic>
-#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <string>
-#include <thread>
 #include <vector>
+
+#include "platform/platform.hpp"
 
 namespace gittop::git {
 namespace {
 
-constexpr const char* kSocketEnv = "GITTOP_ASKPASS_SOCKET";
-
-// The passphrase is short, but neither a write nor a read is guaranteed to
-// take all of it in one go.
-
-// For the socket. MSG_NOSIGNAL rather than a SIGPIPE handler: an ssh child that
-// gives up between connect and read must not take gittop down with it, and
-// installing a process-wide signal disposition from a library file would reach
-// well beyond what this one is responsible for.
-bool SendAll(int fd, const char* data, std::size_t size) {
-  while (size > 0) {
-    const ssize_t n = ::send(fd, data, size, MSG_NOSIGNAL);
-    if (n <= 0) {
-      if (n < 0 && errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    data += n;
-    size -= static_cast<std::size_t>(n);
-  }
-  return true;
-}
-
-// For stdout in the helper, which is a pipe ssh made and not a socket, so
-// send() would fail on it with ENOTSOCK.
-bool WriteAll(int fd, const char* data, std::size_t size) {
-  while (size > 0) {
-    const ssize_t n = ::write(fd, data, size);
-    if (n <= 0) {
-      if (n < 0 && errno == EINTR) {
-        continue;
-      }
-      return false;
-    }
-    data += n;
-    size -= static_cast<std::size_t>(n);
-  }
-  return true;
-}
-
-std::string ReadAll(int fd) {
-  std::string out;
-  char buffer[256];
-  while (true) {
-    const ssize_t n = ::read(fd, buffer, sizeof(buffer));
-    if (n < 0 && errno == EINTR) {
-      continue;
-    }
-    if (n <= 0) {
-      break;
-    }
-    out.append(buffer, static_cast<std::size_t>(n));
-  }
-  return out;
-}
-
-// Where the runtime socket goes. XDG_RUNTIME_DIR is per-user and usually a
-// tmpfs that never reaches disk, which is the right home for this; /tmp is the
-// fallback and the directory is 0700 either way.
-std::filesystem::path RuntimeBase() {
-  const char* xdg = std::getenv("XDG_RUNTIME_DIR");
-  if (xdg != nullptr && *xdg != '\0') {
-    return std::filesystem::path(xdg);
-  }
-  return std::filesystem::path("/tmp");
-}
-
-// Runs a command with all three standard streams on /dev/null and returns its
-// exit status, or -1 if it could not be run at all.
-//
-// fork/exec rather than std::system because every argument here is a path built
-// out of $HOME, and handing those to a shell would mean getting the quoting
-// exactly right forever. Nothing between fork and exec allocates.
-int RunQuiet(const std::vector<std::string>& args) {
-  std::vector<char*> argv;
-  argv.reserve(args.size() + 1);
-  for (const std::string& arg : args) {
-    argv.push_back(const_cast<char*>(arg.c_str()));
-  }
-  argv.push_back(nullptr);
-
-  const pid_t pid = ::fork();
-  if (pid < 0) {
-    return -1;
-  }
-  if (pid == 0) {
-    const int null_fd = ::open("/dev/null", O_RDWR);
-    if (null_fd >= 0) {
-      ::dup2(null_fd, STDIN_FILENO);
-      ::dup2(null_fd, STDOUT_FILENO);
-      ::dup2(null_fd, STDERR_FILENO);
-      if (null_fd > STDERR_FILENO) {
-        ::close(null_fd);
-      }
-    }
-    ::execvp(argv[0], argv.data());
-    _exit(127);
-  }
-
-  int status = 0;
-  while (::waitpid(pid, &status, 0) < 0) {
-    if (errno != EINTR) {
-      return -1;
-    }
-  }
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
+constexpr const char* kEndpointEnv = "GITTOP_ASKPASS_SOCKET";
 
 // The identity files ssh tries when nothing in ~/.ssh/config says otherwise.
+//
+// ~/.ssh is the same directory on both platforms — Windows OpenSSH reads
+// %USERPROFILE%\.ssh and uses the same file names — so only the home directory
+// is platform-dependent, and platform::HomeDir already knows the three places
+// it can be written down here.
 std::vector<std::filesystem::path> DefaultIdentityFiles() {
-  const char* home = std::getenv("HOME");
-  if (home == nullptr || *home == '\0') {
+  const std::string home = platform::HomeDir();
+  if (home.empty()) {
     return {};
   }
   const std::filesystem::path ssh_dir = std::filesystem::path(home) / ".ssh";
@@ -148,15 +37,6 @@ std::vector<std::filesystem::path> DefaultIdentityFiles() {
     }
   }
   return found;
-}
-
-std::string SelfExePath() {
-  std::error_code ec;
-  const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (ec) {
-    return {};
-  }
-  return exe.string();
 }
 
 }  // namespace
@@ -180,13 +60,15 @@ bool IsSshUrl(const std::string& url) {
 }
 
 bool AgentHasIdentities() {
-  const char* sock = std::getenv("SSH_AUTH_SOCK");
-  if (sock == nullptr || *sock == '\0') {
+  // The cheap check first, and on Windows there is no cheap check to make —
+  // see platform::MaySshAgentBeRunning, where the agent is a service on a fixed
+  // pipe rather than an address in the environment.
+  if (!platform::MaySshAgentBeRunning()) {
     return false;
   }
   // `ssh-add -l` exits 0 with identities, 1 with none, 2 when it cannot reach
   // an agent. Only the first means ssh will get in without asking us.
-  return RunQuiet({"ssh-add", "-l"}) == 0;
+  return platform::RunQuiet({"ssh-add", "-l"}) == 0;
 }
 
 bool HasEncryptedDefaultKey() {
@@ -196,7 +78,7 @@ bool HasEncryptedDefaultKey() {
     // an unencrypted key and non-zero for a passphrase-protected one, which is
     // the question being asked here — and it never touches the network or
     // prompts, because -P supplies the passphrase up front.
-    if (RunQuiet({"ssh-keygen", "-y", "-P", "", "-f", key.string()}) != 0) {
+    if (platform::RunQuiet({"ssh-keygen", "-y", "-P", "", "-f", key.string()}) != 0) {
       return true;
     }
   }
@@ -210,193 +92,68 @@ bool NeedsPassphrase(const std::string& url) {
 }
 
 struct AskpassServer::Impl {
-  std::string passphrase;
-  std::filesystem::path dir;
-  std::string socket_path;
-  int listen_fd = -1;
-  int stop_pipe[2] = {-1, -1};
-  std::thread thread;
-  std::atomic<bool> served{false};
-
-  void Serve() {
-    while (true) {
-      struct pollfd fds[2];
-      fds[0] = {listen_fd, POLLIN, 0};
-      fds[1] = {stop_pipe[0], POLLIN, 0};
-
-      const int ready = ::poll(fds, 2, -1);
-      if (ready < 0) {
-        if (errno == EINTR) {
-          continue;
-        }
-        return;
-      }
-      // POLLHUP as well as POLLIN: the destructor closes the write end, and a
-      // byte that never arrived leaves the hangup as the only signal there is.
-      // Checking POLLIN alone would spin here instead — poll returns
-      // immediately on a hungup pipe, every time, forever.
-      if ((fds[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
-        return;  // the transfer ended
-      }
-      if ((fds[0].revents & POLLIN) == 0) {
-        continue;
-      }
-
-      const int client = ::accept(listen_fd, nullptr, nullptr);
-      if (client < 0) {
-        continue;
-      }
-      // Filesystem permissions are the whole access check, exactly as they are
-      // for ssh-agent's own socket: the directory is 0700, so a peer that got
-      // this far is already running as this user.
-      if (SendAll(client, passphrase.data(), passphrase.size())) {
-        served.store(true);
-      }
-      ::close(client);
-    }
-  }
+  platform::SecretServer channel;
+  explicit Impl(std::string passphrase) : channel(std::move(passphrase)) {}
 };
 
-AskpassServer::AskpassServer(std::string passphrase) : impl_(std::make_unique<Impl>()) {
-  impl_->passphrase = std::move(passphrase);
+AskpassServer::AskpassServer(std::string passphrase)
+    : impl_(std::make_unique<Impl>(std::move(passphrase))) {}
 
-  std::string tmpl = (RuntimeBase() / "gittop-XXXXXX").string();
-  // mkdtemp creates the directory 0700, which is the permission that matters
-  // here — the socket inside it is unreachable to anyone who cannot traverse it.
-  if (::mkdtemp(tmpl.data()) == nullptr) {
-    return;
-  }
-  impl_->dir = tmpl;
-  impl_->socket_path = (impl_->dir / "askpass.sock").string();
+AskpassServer::~AskpassServer() = default;
 
-  struct sockaddr_un addr {};
-  addr.sun_family = AF_UNIX;
-  if (impl_->socket_path.size() >= sizeof(addr.sun_path)) {
-    return;
-  }
-  std::memcpy(addr.sun_path, impl_->socket_path.c_str(), impl_->socket_path.size() + 1);
+bool AskpassServer::ok() const { return impl_->channel.ok(); }
 
-  impl_->listen_fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (impl_->listen_fd < 0) {
-    return;
-  }
-  if (::bind(impl_->listen_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0 ||
-      ::chmod(impl_->socket_path.c_str(), S_IRUSR | S_IWUSR) < 0 ||
-      ::listen(impl_->listen_fd, 4) < 0) {
-    ::close(impl_->listen_fd);
-    impl_->listen_fd = -1;
-    return;
-  }
-  if (::pipe(impl_->stop_pipe) < 0) {
-    ::close(impl_->listen_fd);
-    impl_->listen_fd = -1;
-    return;
-  }
+bool AskpassServer::served() const { return impl_->channel.served(); }
 
-  impl_->thread = std::thread([this] { impl_->Serve(); });
-}
-
-AskpassServer::~AskpassServer() {
-  // This byte is the only thing that ends Serve's poll, and the join() below
-  // waits on that thread forever — so a write that does not land hangs the quit
-  // path rather than losing a notification nobody reads. A bare ::write can fail
-  // with EINTR, which is why this goes through WriteAll and its retry like every
-  // other write in this file; the `(void)::write` it replaces both ignored that
-  // and did not silence the warning, since GCC drops the cast for
-  // warn_unused_result.
-  //
-  // Closing the write end here rather than with the other fds after the join is
-  // the belt to that braces: an empty pipe with no writer left polls POLLHUP, so
-  // the thread wakes even in the case where the write failed anyway.
-  if (impl_->stop_pipe[1] >= 0) {
-    const char byte = 0;
-    (void)WriteAll(impl_->stop_pipe[1], &byte, 1);
-    ::close(impl_->stop_pipe[1]);
-    impl_->stop_pipe[1] = -1;
-  }
-  if (impl_->thread.joinable()) {
-    impl_->thread.join();
-  }
-  for (int fd : {impl_->stop_pipe[0], impl_->stop_pipe[1], impl_->listen_fd}) {
-    if (fd >= 0) {
-      ::close(fd);
-    }
-  }
-  // The passphrase outlives this object only if something copied it, and
-  // nothing does — but the socket must not outlive the transfer either way.
-  if (!impl_->dir.empty()) {
-    std::error_code ec;
-    std::filesystem::remove_all(impl_->dir, ec);
-  }
-}
-
-bool AskpassServer::ok() const { return impl_->listen_fd >= 0; }
-
-bool AskpassServer::served() const { return impl_->served.load(); }
-
-const std::string& AskpassServer::socket_path() const { return impl_->socket_path; }
+const std::string& AskpassServer::endpoint() const { return impl_->channel.endpoint(); }
 
 bool InstallAskpassEnv(const AskpassServer& server) {
   if (!server.ok()) {
     return false;
   }
-  const std::string exe = SelfExePath();
+  const std::string exe = platform::ExecutablePath();
   if (exe.empty()) {
     return false;
   }
-  if (::setenv("SSH_ASKPASS", exe.c_str(), 1) != 0 ||
-      ::setenv("SSH_ASKPASS_REQUIRE", "force", 1) != 0 ||
-      ::setenv(kSocketEnv, server.socket_path().c_str(), 1) != 0) {
-    return false;
-  }
-  return true;
+  return platform::SetEnv("SSH_ASKPASS", exe.c_str()) &&
+         platform::SetEnv("SSH_ASKPASS_REQUIRE", "force") &&
+         platform::SetEnv(kEndpointEnv, server.endpoint().c_str());
 }
 
 void ClearAskpassEnv() {
-  ::unsetenv("SSH_ASKPASS");
-  ::unsetenv("SSH_ASKPASS_REQUIRE");
-  ::unsetenv(kSocketEnv);
+  platform::UnsetEnv("SSH_ASKPASS");
+  platform::UnsetEnv("SSH_ASKPASS_REQUIRE");
+  platform::UnsetEnv(kEndpointEnv);
 }
 
 bool RunningAsAskpassHelper() {
-  const char* sock = std::getenv(kSocketEnv);
-  return sock != nullptr && *sock != '\0';
+  const char* endpoint = std::getenv(kEndpointEnv);
+  return endpoint != nullptr && *endpoint != '\0';
 }
 
 int RunAskpassHelper() {
-  const char* sock = std::getenv(kSocketEnv);
-  if (sock == nullptr || *sock == '\0') {
+  const char* endpoint = std::getenv(kEndpointEnv);
+  if (endpoint == nullptr || *endpoint == '\0') {
     return 1;
   }
 
-  struct sockaddr_un addr {};
-  addr.sun_family = AF_UNIX;
-  const std::size_t len = std::strlen(sock);
-  if (len >= sizeof(addr.sun_path)) {
-    return 1;
-  }
-  std::memcpy(addr.sun_path, sock, len + 1);
-
-  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return 1;
-  }
-  if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-    ::close(fd);
-    return 1;
-  }
-
-  const std::string passphrase = ReadAll(fd);
-  ::close(fd);
+  const std::string passphrase = platform::ReadSecretFrom(endpoint);
   if (passphrase.empty()) {
     return 1;
   }
 
-  // ssh reads one line from the helper's stdout and strips the newline. Written
-  // with write() rather than std::cout so nothing of it lingers in a stream
-  // buffer that some later flush could put somewhere else.
+  // ssh reads one line from the helper's stdout and strips the newline.
+  //
+  // Written with fwrite to the C stream rather than std::cout because this
+  // process is a one-shot helper whose entire output is a secret: an iostream
+  // would leave a copy in its own buffer as well as this one, and there is
+  // nothing to gain from formatting. The explicit fflush is what makes the
+  // write happen before the return below rather than at some later teardown.
   const std::string line = passphrase + "\n";
-  if (!WriteAll(STDOUT_FILENO, line.data(), line.size())) {
+  if (std::fwrite(line.data(), 1, line.size(), stdout) != line.size()) {
+    return 1;
+  }
+  if (std::fflush(stdout) != 0) {
     return 1;
   }
   return 0;

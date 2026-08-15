@@ -1,7 +1,5 @@
 #include "config/config.hpp"
 
-#include <sys/stat.h>
-
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -11,6 +9,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "platform/platform.hpp"
 
 namespace gittop::config {
 namespace {
@@ -278,7 +278,8 @@ std::string TableHeader(const std::string& table) {
 
 constexpr const char* kTemplate = R"(# gittop configuration
 #
-# This file can hold API tokens, so gittop creates it 0600 and never prints a
+# This file can hold API tokens, so gittop creates it readable only by you —
+# 0600 on Linux and macOS, an owner-only ACL on Windows — and never prints a
 # token back to you. An environment variable always wins over anything here, so
 # CI and throwaway shells never need to write a secret to disk.
 #
@@ -486,16 +487,16 @@ std::string Config::DefaultPath() {
     return explicit_path;
   }
 
-  const std::string xdg = Env("XDG_CONFIG_HOME");
-  if (!xdg.empty()) {
-    return (std::filesystem::path(xdg) / "gittop" / "config.toml").string();
-  }
-
-  const std::string home = Env("HOME");
-  if (home.empty()) {
+  // GITTOP_CONFIG above is checked first and on every platform, because a user
+  // who set it has already answered this question. Everything below is the
+  // default, and where that lands is the one thing about a config file that is
+  // genuinely a platform convention rather than a preference: XDG on POSIX,
+  // %APPDATA% on Windows. platform::ConfigDir owns the difference.
+  const std::string dir = platform::ConfigDir();
+  if (dir.empty()) {
     return "gittop.toml";  // no home to speak of; stay relative rather than guess
   }
-  return (std::filesystem::path(home) / ".config" / "gittop" / "config.toml").string();
+  return (std::filesystem::path(dir) / "config.toml").string();
 }
 
 Config Config::Load(const std::string& path, std::string* error) {
@@ -737,8 +738,8 @@ bool Config::Save(const std::string& path, std::string* error) const {
       }
       return false;
     }
-    // A token's directory has no business being group- or world-readable.
-    ::chmod(parent.c_str(), S_IRWXU);
+    // A token's directory has no business being readable by anyone else.
+    platform::RestrictToOwner(parent.string());
   }
 
   const std::string body = loaded_ ? Rewrite() : Generate();
@@ -759,8 +760,14 @@ bool Config::Save(const std::string& path, std::string* error) const {
     return false;
   }
 
-  if (::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0 && error != nullptr) {
-    *error = "wrote " + path + " but could not set it to 0600";
+  // Reported rather than attempted quietly. This file can hold a token, and one
+  // that ended up readable by other accounts is worse than a save that failed
+  // and said so — the second is a problem somebody fixes.
+  std::string permission_error;
+  if (!platform::RestrictToOwner(path, &permission_error)) {
+    if (error != nullptr) {
+      *error = "wrote " + path + " but " + permission_error;
+    }
     return false;
   }
   return true;
@@ -784,7 +791,7 @@ bool Config::WriteTemplate(const std::string& path, std::string* error) {
       }
       return false;
     }
-    ::chmod(parent.c_str(), S_IRWXU);
+    platform::RestrictToOwner(parent.string());
   }
 
   std::ofstream file(path, std::ios::trunc);
@@ -797,7 +804,7 @@ bool Config::WriteTemplate(const std::string& path, std::string* error) {
   file << kTemplate;
   file.close();
 
-  ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
+  platform::RestrictToOwner(path);
   return true;
 }
 

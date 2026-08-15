@@ -51,10 +51,28 @@ tar xzf gittop-*-linux-x86_64.tar.gz
 Both carry the icon and a desktop entry, so gittop shows up in application menus as well as on the
 command line. To build it yourself instead, see [Building it](#building-it).
 
-**Windows:** run gittop under WSL and install the `.deb` there. There is no native Windows build —
-the ssh passphrase channel, the browser opener and the `0600` config permissions are POSIX, so a
-port is real work rather than a second build target. gittop already knows it is under WSL: it opens
-browsers with `wslview` and detects Windows Terminal's colour support.
+### Windows
+
+There is a native `gittop.exe`. Two downloads, and which you want depends on whether you would
+rather have it on your `PATH` or not have an installer:
+
+```
+gittop-<version>-windows-x86_64.exe    installer — offers to add gittop to PATH
+gittop-<version>-windows-x86_64.zip    unpack and run, no administrator needed
+```
+
+It is a single self-contained binary: no Visual C++ redistributable, no OpenSSL, nothing to install
+beside it. HTTPS goes through WinHTTP and Schannel, so it trusts the certificates Windows trusts,
+and ssh remotes run the `ssh.exe` that ships with Windows — which means your `~/.ssh/config`, your
+agent and your `known_hosts` work exactly as they do from any other terminal.
+
+Use it in **Windows Terminal** rather than the old console window. gittop asks the console what it
+can render and will use 24-bit colour where it is available, but a legacy `conhost` window predates
+that and gets sixteen colours, which is a duller dashboard than the one in the screenshots.
+
+WSL still works and is still a good answer if that is where your repositories live — install the
+`.deb` inside it as above. gittop knows when it is there: it opens browsers with `wslview` and
+detects Windows Terminal's colour support either way.
 
 ## What works today
 
@@ -199,7 +217,9 @@ one you get is not a preference:
   build to one registered application and that is a packaging decision, so today this is the route
   every host takes. Set `hosts."<host>".client_id` to get the other one.
 
-The token is written to the config file at `0600` in a `0700` directory. An environment variable
+The token is written to the config file readable only by you — `0600` in a `0700` directory on
+Linux and macOS, an owner-only ACL on Windows, and a write that cannot secure the file fails rather
+than leaving a token somewhere other accounts can read it. An environment variable
 still beats it, so CI never needs anything on disk; a sign-in that could not be saved keeps working
 for the session and says on screen that it will not survive a restart. There is no code path that
 prints a token, masked or otherwise.
@@ -336,7 +356,9 @@ export GITHUB_TOKEN=ghp_...      # or GH_TOKEN, or GITTOP_TOKEN for either provi
 export GITLAB_TOKEN=glpat-...    # or CI_JOB_TOKEN
 ```
 
-Otherwise the token lives in `~/.config/gittop/config.toml`, which gittop creates `0600`. Signing
+Otherwise the token lives in `~/.config/gittop/config.toml` — `%APPDATA%\gittop\config.toml` on
+Windows, and `gittop --config-path` prints whichever applies. gittop creates it readable only by
+you. Signing
 in with `L` writes it for you, so the usual way to get a token on disk is to press a key rather than
 to open an editor.
 
@@ -427,6 +449,33 @@ libgit2's transports are on, and neither costs a build dependency. HTTPS uses li
 headers are needed to build and the binary is not tied to the version it compiled against. SSH
 runs the system `ssh` instead of libssh2 — cheaper to build, and better behaved, since it inherits
 your own ssh configuration.
+
+### On Windows
+
+The same command works, with Visual Studio 2022 or newer:
+
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+cmake --build build --config Release
+```
+
+Nothing has to be installed first — libcurl is fetched and built here too, since Windows has no
+system copy, and it uses Schannel rather than a bundled CA file. `MultiThreaded` links the C++
+runtime statically, which is what makes the result a single file that runs on a machine with no
+redistributable installed.
+
+`cpack -G ZIP -C Release` and `cpack -G NSIS -C Release` produce the two downloads above.
+
+You can also build it from Linux without a Windows machine, which is how the port is checked
+between releases:
+
+```bash
+scripts/build-windows.sh --run       # cross-compile with mingw-w64 and run under Wine
+```
+
+That needs only docker. It is not a substitute for building on Windows — a different compiler and
+a different C runtime — but it catches the mistakes that actually get made, and it runs in one
+command from a checkout.
 
 ## License
 

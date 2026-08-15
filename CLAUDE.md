@@ -90,6 +90,8 @@ src/
 │                   nothing to say to the revwalk. internal.hpp is the little they share.
 │                   Also graph.cpp (lane assignment), transfer.cpp and askpass.cpp
 ├── config/         a hand-written strict-TOML-subset reader and writer (no parser dependency)
+├── platform/       platform.hpp names every operation that leaves the process; posix.cpp and
+│                   windows.cpp are the two implementations and CMakeLists compiles exactly one
 ├── remote/         provider detection, tokens, HTTP, the shared api.cpp, one file per endpoint
 │                   family (client = repo, pipelines = CI), plus the worker and the ticker
 └── ui/             one file per panel group, plus the four files that are not panels at all:
@@ -99,11 +101,11 @@ src/
 ```
 
 `app.cpp` is 3.5k lines and holds every piece of state and every key; `panels.cpp` and
-`repository.cpp` are the next largest. Nothing here is worth opening blind — the four rules below
+`repository.cpp` are the next largest. Nothing here is worth opening blind — the rules below
 name the file that owns each decision, and this repository carries a CodeGraph index, so
 `codegraph explore "<symbol>"` gets to the definition and its callers in one step.
 
-## Four rules that keep this codebase working
+## Five rules that keep this codebase working
 
 **`ui/` names semantic roles, never colors — and since Phase 7, never characters either.** Everything comes from `ui::theme()`. A raw
 `ftxui::Color` literal anywhere under `src/ui/` outside `theme.cpp` is a bug, and it is the only
@@ -159,6 +161,34 @@ the authoritative list; the escapes are private-use code points, so a wrong one 
 a patched font and silent with one. Validating all 34 shipped points against that file takes a
 dozen lines of Python and is the only thing standing between this set and the three releases that
 shipped blank glyphs.
+
+**`platform/` names every operation that leaves the process, and nothing else calls a
+platform API.** This is the colour and glyph rule a third time, and it was added for the third
+time for the same reason: `fork()` is a mechanism, "run this and tell me what it printed" is the
+role, and a call site that wrote the mechanism down had already chosen it. `platform.hpp` names
+about twenty roles — run a process, read the clipboard, open a URL, restrict a file to its owner,
+find this executable, where the config lives, is stdout a terminal, hand a secret to a child.
+`posix.cpp` and `windows.cpp` implement them and **CMakeLists compiles exactly one**, rather than
+both living behind an `#ifdef` in a shared file: a file that compiles on both platforms but only
+ever runs on one is a file whose dead half rots unnoticed, which is precisely what happened to the
+nerd glyph set for three releases.
+
+Two things about it that are easy to get wrong. **A role can have no POSIX meaning at all and that
+is not a bug** — `ReadClipboard` runs one of three helper tools on Linux and calls the operating
+system on Windows, and the whole point of naming the role is that neither shape is imposed on the
+other; `ClipboardEmptyHint` exists because "install wl-clipboard" is not advice you give a Windows
+user. And **a difference this thin still belongs here**: `TimestampFromUtc` exists only because the
+function is called `timegm` on POSIX and `_mkgmtime` on Windows, and the alternative was an
+`#ifdef` in `remote/api.cpp`, a file about what a provider sends that has no business knowing which
+platform it is on.
+
+The security-relevant halves are not equivalent and must not be assumed to be. `RestrictToOwner` is
+`chmod` on one side and a **protected** DACL on the other, and the word protected is load-bearing:
+a Windows file inherits its parent's permissions unless inheritance is explicitly severed, so the
+naive port grants the owner, reports success, and leaves the token exactly as readable as it was.
+It reports failure rather than doing its best quietly, and `Config::Save` propagates that — a save
+that could not secure the file fails, because a token file that silently ended up readable is worse
+than one that failed and said so.
 
 **`model/` types are provider-neutral.** GitHub says `stargazers_count` and GitLab says
 `star_count`; both become `RepoInfo::stars` in `remote/client.cpp`. If a file under `ui/` ever
@@ -356,14 +386,20 @@ spawns. Four things that shape the file:
 - **The helper is chosen by the environment, not a flag**, and the check is the first thing in
   `main` — ssh puts *its own prompt* in `argv[1]`, so the argument parser would otherwise try to
   open a repository called `Enter passphrase for key '...':`.
-- **The passphrase travels over a unix socket**, not the environment, argv, or a file.
-  `/proc/<pid>/environ` and `/cmdline` are unprivileged reads for the same user, and a file would
-  put a private key's passphrase on disk. The socket sits in a 0700 `mkdtemp` directory and is
-  unlinked with the transfer. The listener needs its own thread because ssh asks while the transfer
-  worker is already blocked in libgit2 waiting for that same child.
+- **The passphrase travels over a `platform::SecretServer`**, not the environment, argv, or a file.
+  `/proc/<pid>/environ` and `/cmdline` are unprivileged reads for the same user — the Windows
+  equivalent is a few lines of `NtQueryInformationProcess` — and a file would put a private key's
+  passphrase on disk. Which mechanism carries it is deliberately not `askpass.cpp`'s business: it is
+  a unix socket in a 0700 `mkdtemp` directory on POSIX and a named pipe with an owner-only DACL on
+  Windows, and those are not alike enough to name one in a file that runs on both. The listener
+  needs its own thread either way, because ssh asks while the transfer worker is already blocked in
+  libgit2 waiting for that same child.
 - **`InstallAskpassEnv` writes to gittop's own environment**, because the exec transport gives no
   way to set the child's. That makes it process-global, so it is called from the UI thread with no
-  transfer in flight, and cleared in `CollectTransfer`.
+  transfer in flight, and cleared in `CollectTransfer`. On Windows a process has *two* environments
+  — the CRT's copy that `getenv` reads and the Win32 block that a child inherits — and
+  `platform::SetEnv` writes both. Writing one is a variable that is set from whichever side you did
+  not look at, which is indistinguishable from never setting it.
 
 `NeedsPassphrase` requires all three of: an ssh URL, no agent holding an identity, and a default
 `~/.ssh` key that is actually encrypted. Prompting when the answer is not needed is its own bug —
@@ -379,6 +415,66 @@ it is the only one that changes something other people can see. Keep it that way
 confirms implement is that an operation asks first when it can destroy something a user cannot get
 back — the working tree in a merge abort's hard reset, a branch in `Prune` — or when it is visible
 to other people, which is push and only push. Anything new that can lose work joins that list.
+
+## Windows
+
+There is a native `gittop.exe`. It is not a second product and not a fork: the same sources build
+it, and the only file that knows which platform it is on is `platform/windows.cpp`.
+
+**Two dependency choices differ, and both keep the property the Linux ones were chosen for** —
+no build dependency, and the platform's own certificate store. libgit2 takes `USE_HTTPS=WinHTTP`
+rather than `OpenSSL-Dynamic`, because there is no libssl to dlopen on a stock Windows and WinHTTP
+verifies against the store the machine's administrator actually manages. libcurl is *fetched* here
+rather than taken from the system, because there is no system copy — and the objection in
+`CMakeLists.txt` to a self-built curl dissolves rather than being accepted, since Schannel is the
+platform TLS backend and needs no CA bundle shipped alongside it.
+
+**`USE_SSH=exec` needed no change at all, and this is worth knowing before anybody proposes
+libssh2.** libgit2 has a complete `CreateProcess` implementation of `git_process`, so the exec
+transport runs Windows OpenSSH's `ssh.exe` and inherits the user's `~/.ssh/config`, agent and
+known_hosts exactly as it does elsewhere. `SelectSSH.cmake` puts no platform guard on it.
+
+**`scripts/build-windows.sh` builds the exe from a Linux checkout and runs it under Wine**, in a
+container built from `packaging/Dockerfile.windows`. This exists because there is no test target
+and CI only runs on a tag, so without it the only thing that ever discovers a broken port is a
+release. It found two real portability errors the first time it ran (`timegm` and `gmtime_r`, both
+now `platform::` roles) and it is the cheapest place to find the third.
+
+**What that harness can and cannot tell you, because the difference matters.** It proves the build
+compiles, the binary starts, libgit2 opens a repository and reads its status, `%APPDATA%` resolves,
+the config is written and refused on a second `--init-config`, and the alternate screen and DECSET
+2004 are both restored on quit. It **cannot** tell you anything about glyph rendering: Wine's CRT
+widens each byte of a UTF-8 string into its own codepoint on the way to stdout, which is a Wine
+emulation gap and not a gittop or FTXUI defect — the same program writing the same bytes with
+`WriteFile` to the console handle comes out clean, which is how that was established. FTXUI writes
+with `std::cout` after `SetConsoleOutputCP(CP_UTF8)`, which is the documented Windows path.
+**Real-console glyph rendering is therefore unverified rather than known-good**; the first person
+with a Windows machine should look at a border and a `✓` before assuming.
+
+**FTXUI already owns the console.** It sets `CP_UTF8` in both directions, enables virtual terminal
+processing on stdin and stdout, and restores the previous modes on exit. Do not add a second place
+that does any of this. What FTXUI does *not* do is tell gittop how much colour the console can
+render, which is why `platform::ConsoleColorBits` exists: a Windows console sets neither `TERM` nor
+`COLORTERM`, and `DetectColorDepth` would read that silence as `TERM=dumb` and go monochrome on a
+machine doing 24-bit. It is consulted only when `TERM` is *absent*, so MSYS2, Cygwin and Git Bash —
+all of which set it — keep answering for themselves.
+
+**The packaging is two artifacts because they answer two questions.** The ZIP unpacks and runs with
+no administrator and no prompt; the NSIS installer exists for the one thing the ZIP cannot do, which
+is put gittop on `PATH`. A terminal program not on `PATH` is one you cannot type the name of.
+
+`CPACK_COMPONENTS_ALL` matters here for exactly the reason it matters for the `.deb`, and the
+tempting assumption is wrong: libgit2's install rules are **not** a Unix-only concern, and the first
+zip built without component install carried the whole of `include/git2/**` at nearly twice the size.
+`scripts/build-windows.sh --package` now fails on any `include/`, `.a`, `.lib` or `.pc` in the
+archive, because that failure is otherwise silent — the package installs perfectly.
+
+`assets/gittop.ico` is checked in rather than generated at build time, so a Windows build needs no
+image tooling. It is the seven `assets/icons/gittop-*.png` in one file and is regenerated with
+`magick assets/icons/gittop-16.png ... assets/icons/gittop-256.png assets/gittop.ico` if those
+change. `packaging/gittop.rc.in` is configured with the version and compiles it into the exe
+alongside the version block — the Windows counterpart to the `.desktop` file and the hicolor icons,
+which are not installed there.
 
 ## Diffs, stashes and interrupted operations
 
