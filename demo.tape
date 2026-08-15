@@ -20,18 +20,26 @@
 Output assets/demo.gif
 
 Set Shell        "bash"
-Set FontSize     14
-Set Width        1360
-Set Height       800
-Set Padding      16
+Set FontFamily   "DejaVu Sans Mono"
+Set FontSize     18
+Set LineHeight   1.1
+Set Width        1600
+Set Height       900
+Set Padding      20
 Set Theme        "TokyoNight"
 Set TypingSpeed  55ms
-# 24 rather than the default 50. Nothing in a TUI moves fast enough to need
-# more, and the frame count is most of the file size on a README.
-Set Framerate    24
+# Thirty frames keep the bars and splash fluid without paying the default 50
+# fps cost. The oversized canvas is intentionally downscaled by the README,
+# giving its text and box drawing cleaner edges at the displayed 900px width.
+Set Framerate    30
 
 Hide
-Type "./build/gittop demo-repo" Enter
+# Start from a deterministic, disposable config instead of reading or changing
+# the recorder's real settings. Clear token variables so account state cannot
+# leak into the public GIF, and tell the ttyd session it supports truecolor.
+Type "rm -f demo-repo/.gittop-demo.toml" Enter
+Sleep 200ms
+Type "env -u NO_COLOR -u GITTOP_TOKEN -u GITHUB_TOKEN -u GH_TOKEN -u GITLAB_TOKEN -u CI_JOB_TOKEN TERM=xterm-256color COLORTERM=truecolor ./build/gittop --config demo-repo/.gittop-demo.toml demo-repo" Enter
 Sleep 300ms
 Show
 
@@ -67,14 +75,6 @@ Type "m" Sleep 1500ms
 # Stashes.
 Type "6" Sleep 2s
 
-# Settings: connecting an account, the theme, the glyph set and the layout, all
-# on one page instead of in a file. Arrow keys only — enter on a row here would
-# start a sign-in.
-Type "0" Sleep 1800ms
-Down Sleep 400ms
-Down Sleep 400ms
-Down Sleep 1200ms
-
 # The filter, live, with its match count.
 Type "2" Sleep 800ms
 Type "/" Sleep 500ms
@@ -85,10 +85,15 @@ Escape Sleep 800ms
 Type "?" Sleep 2500ms
 Escape Sleep 500ms
 
-# Themes.
-Type "t" Sleep 1300ms
-Type "t" Sleep 1300ms
-Type "t" Sleep 1300ms
+# Finish on Settings and change the theme in place. The theme is the third row:
+# two downs select it, then enter performs the row's advertised "next theme"
+# action. Keeping the cursor here makes each palette change clear and causal.
+Type "0" Sleep 1800ms
+Down Sleep 400ms
+Down Sleep 800ms
+Enter Sleep 1300ms
+Enter Sleep 1300ms
+Enter Sleep 1800ms
 
 Type "q"
 Sleep 1s

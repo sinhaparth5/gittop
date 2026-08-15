@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/platform-Linux-333e58?style=flat-square&logo=linux&logoColor=white" alt="Platform: Linux">
 </p>
 
-<img src="assets/demo.gif" width="900" alt="gittop cycling through the status, history, diff, branches, graph, stashes and settings views, then the filter, the help overlay and a theme change">
+<img src="assets/demo.gif" width="900" alt="gittop cycling through status, history, diff, branches, graph and stashes, using the filter and help overlay, then changing themes from Settings">
 
 </div>
 
