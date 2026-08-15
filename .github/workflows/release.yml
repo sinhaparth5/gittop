@@ -170,25 +170,138 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  windows:
+    name: Build and package (Windows)
+    runs-on: windows-latest
+
+    # A separate job rather than a matrix entry on the one above. The two share
+    # no steps worth sharing: that one runs in a glibc-floor container, installs
+    # apt packages, validates a desktop entry and checks an ELF symbol table,
+    # and every one of those is meaningless here. A matrix would be a matrix of
+    # `if:` conditions.
+    #
+    # There is no MSVC equivalent of the glibc floor. The Visual C++ runtime is
+    # linked statically below instead, which removes the question rather than
+    # bounding it — a user who has never installed a redistributable can still
+    # run the binary.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the version from the tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The same check the Linux job makes, and it has to be made here too: this
+      # job can be the one that runs first, and finding out after twenty minutes
+      # of building libgit2 is worse than finding out now.
+      - name: Check the tag against CMakeLists.txt
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          declared=$(sed -n 's/^project(gittop VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ "$declared" != "$VERSION" ]; then
+            echo "tag says $VERSION, CMakeLists.txt says $declared" >&2
+            exit 1
+          fi
+          echo "version $declared matches the tag"
+
+      # MSVC's static runtime. The dynamic one would make the binary depend on a
+      # Visual C++ redistributable that most machines have and some do not, and
+      # the failure when it is missing is a dialog about a missing DLL rather
+      # than anything a user could act on.
+      - name: Build
+        shell: bash
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build --config Release -j
+
+      - name: Package
+        shell: bash
+        working-directory: build
+        run: |
+          cpack -G ZIP -C Release
+          cpack -G NSIS -C Release
+          ls -lh ./*.zip ./*.exe
+
+      # The Windows counterpart of the .deb smoke test, and it catches the same
+      # class of failure: an artifact that builds and does not run. Everything
+      # here is done against the *unpacked package* rather than against
+      # build/gittop.exe, because what ships is the package.
+      - name: Smoke-test the package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          unzip -q build/gittop-"$VERSION"-windows-x86_64.zip -d unpacked
+          exe=$(find unpacked -name gittop.exe | head -1)
+          echo "testing $exe"
+
+          got=$("$exe" --version)
+          echo "packaged binary reports: $got"
+          [ "$got" = "gittop $VERSION" ] || { echo "expected gittop $VERSION" >&2; exit 1; }
+
+          # Must land under %APPDATA%, not in a Unix-shaped path. This is the one
+          # thing the cross-build under Wine cannot check, since Wine synthesises
+          # its own profile directory.
+          path=$("$exe" --config-path)
+          echo "config path: $path"
+          case "$path" in
+            *AppData*gittop*config.toml) ;;
+            *) echo "config path is not under AppData: $path" >&2; exit 1 ;;
+          esac
+
+          # Writing it exercises platform::RestrictToOwner, which is the riskiest
+          # thing in the port: a DACL that fails to apply must fail loudly, and a
+          # non-zero exit here is what proves it did not silently do nothing.
+          "$exe" --init-config
+          "$exe" --init-config && { echo "second --init-config should have failed" >&2; exit 1; }
+          echo "config written and re-write refused, as expected"
+
+      - name: Stage the artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp build/*.zip dist/
+          cp build/*.exe dist/ 2>/dev/null || true
+          ls -1 dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files-windows
+          path: dist/
+          if-no-files-found: error
+
   publish:
     name: Publish the release
-    needs: build
+    needs: [build, windows]
     # Plain runner: this job only needs the gh CLI, which is preinstalled here
     # and absent from the build container.
     runs-on: ubuntu-latest
 
     steps:
+      # Both jobs' artifacts, flattened into one directory. merge-multiple is
+      # what puts them side by side rather than in a subdirectory each, which is
+      # what the globs below assume.
       - uses: actions/download-artifact@v4
         with:
-          name: release-files
+          pattern: release-files*
+          merge-multiple: true
 
       # A missing file here reaches `gh` as an unexpanded glob and fails as a
       # shell error about `./*.deb`, which says nothing about what was actually
       # downloaded. Check first and print the directory.
+      #
+      # The Windows artifacts are in this list for a specific reason: a release
+      # that quietly ships without them looks exactly like a successful one, and
+      # the person who notices is a Windows user who cannot find a download.
       - name: Check what came back
         run: |
           ls -lR .
-          for pattern in ./*.deb ./*.tar.gz ./release-notes.md; do
+          for pattern in ./*.deb ./*.tar.gz ./*.zip ./release-notes.md; do
             # shellcheck disable=SC2086
             set -- $pattern
             [ -f "$1" ] || { echo "no artifact matching $pattern" >&2; exit 1; }
@@ -204,4 +317,4 @@ jobs:
             --title "gittop ${TAG#v}" \
             --notes-file release-notes.md \
             --verify-tag \
-            ./*.deb ./*.tar.gz
+            ./*.deb ./*.tar.gz ./*.zip ./*.exe

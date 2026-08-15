@@ -12,6 +12,10 @@ _deps
 CMakeUserPresets.json
 build
 
+# The Windows cross-build, which is a second build tree beside the native one
+# rather than a replacement for it — see scripts/build-windows.sh.
+build-win
+
 # CLion
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

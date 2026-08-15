@@ -97,7 +97,10 @@ int main(int argc, char** argv) {
       std::cerr << "gittop: " << error << '\n';
       return 1;
     }
-    std::cout << "wrote " << config_path << " (0600)\n";
+    // Not "(0600)": that is a POSIX mode and the Windows equivalent is an ACL,
+    // so naming the mechanism would make this line wrong on one platform. What
+    // the user needs to know is the property, which is the same on both.
+    std::cout << "wrote " << config_path << " (readable only by you)\n";
     return 0;
   }
 

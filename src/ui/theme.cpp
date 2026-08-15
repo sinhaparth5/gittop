@@ -7,6 +7,8 @@
 
 #include <ftxui/screen/terminal.hpp>
 
+#include "platform/platform.hpp"
+
 namespace gittop::ui {
 namespace {
 
@@ -507,6 +509,32 @@ ColorDepth DetectColorDepth() {
     return ColorDepth::None;
   }
   const char* term = std::getenv("TERM");
+
+  // A Windows console sets no TERM at all, and the check below reads a missing
+  // TERM as TERM=dumb — which would make gittop monochrome on a machine that
+  // renders 24-bit colour. So when the environment is silent, the console is
+  // asked instead; platform::ConsoleColorBits answers -1 everywhere it has
+  // nothing to add, which is everywhere but Windows.
+  //
+  // Deliberately only when TERM is *absent*. MSYS2, Cygwin and Git Bash all set
+  // it, and someone who reached gittop through one of those is using a terminal
+  // that means what TERM says — asking the console underneath it would be
+  // answering a question about the wrong layer.
+  if (term == nullptr || term[0] == '\0') {
+    switch (platform::ConsoleColorBits()) {
+      case 24:
+        return ColorDepth::TrueColor;
+      case 8:
+        return ColorDepth::Ansi256;
+      case 4:
+        return ColorDepth::Ansi16;
+      case 0:
+        return ColorDepth::None;
+      default:
+        break;  // -1: nothing to say, fall through to the environment
+    }
+  }
+
   if (term == nullptr || std::strcmp(term, "dumb") == 0 || term[0] == '\0') {
     return ColorDepth::None;
   }

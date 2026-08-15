@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.24)
 # GITTOP_VERSION below, so `--version`, the settings page and the splash cannot
 # drift from each other or from the release; the workflow in
 # .github/workflows/release.yml refuses a tag that does not match it.
-project(gittop VERSION 2026.08.6 LANGUAGES C CXX)
+project(gittop VERSION 2026.08.7 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,7 +53,25 @@ set(BUILD_CLI         OFF                CACHE BOOL   "" FORCE)
 set(BUILD_EXAMPLES    OFF                CACHE BOOL   "" FORCE)
 set(BUILD_FUZZERS     OFF                CACHE BOOL   "" FORCE)
 set(USE_SSH           "exec"             CACHE STRING "" FORCE)
-set(USE_HTTPS         "OpenSSL-Dynamic"  CACHE STRING "" FORCE)
+
+# The HTTPS backend is the one libgit2 choice that differs by platform, and it
+# differs in order to keep the property that made OpenSSL-Dynamic right here:
+# no build dependency, and the platform's own certificate store.
+#
+#   WinHTTP  is libgit2's native Windows backend. It verifies against the
+#            Windows certificate store, which is the store the machine's
+#            administrator actually manages, and it links against a DLL that
+#            ships with the operating system. OpenSSL-Dynamic would work but
+#            would dlopen a libssl that is not there on a stock Windows.
+#
+# `exec` needs no such split: libgit2 has a full CreateProcess implementation of
+# git_process, so the ssh transport runs Windows OpenSSH's ssh.exe and inherits
+# the user's ~/.ssh/config, agent and known_hosts exactly as it does elsewhere.
+if(WIN32)
+  set(USE_HTTPS       "WinHTTP"          CACHE STRING "" FORCE)
+else()
+  set(USE_HTTPS       "OpenSSL-Dynamic"  CACHE STRING "" FORCE)
+endif()
 set(USE_GSSAPI        OFF                CACHE BOOL   "" FORCE)
 set(USE_NTLMCLIENT    OFF                CACHE BOOL   "" FORCE)
 set(REGEX_BACKEND     "builtin"          CACHE STRING "" FORCE)
@@ -75,17 +93,75 @@ FetchContent_Declare(nlohmann_json
   URL      https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
   URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa)
 
-FetchContent_MakeAvailable(ftxui libgit2 nlohmann_json)
-
 # ------------------------------------------------------------------ curl
-# Taken from the system rather than vendored. libcurl is one of the very few
-# libraries where the distribution's build is the one you want: it carries the
-# platform's CA bundle and its TLS backend, and a self-built copy would have to
-# be told where the system's certificates live before it could verify anything.
-find_package(CURL 7.68 REQUIRED)
+# Taken from the system rather than vendored, *where there is a system copy*.
+# libcurl is one of the very few libraries where the distribution's build is the
+# one you want: it carries the platform's CA bundle and its TLS backend, and a
+# self-built copy would have to be told where the system's certificates live
+# before it could verify anything.
+#
+# Windows has no system libcurl, so there it is fetched — and the objection
+# above dissolves rather than being accepted, because Schannel *is* the
+# platform's TLS backend and verifies against the Windows certificate store.
+# There is no CA bundle to locate and none is shipped. HTTP_ONLY drops every
+# protocol gittop does not speak, which is all of them but HTTP and HTTPS.
+if(WIN32)
+  set(BUILD_CURL_EXE      OFF CACHE BOOL "" FORCE)
+  set(BUILD_LIBCURL_DOCS  OFF CACHE BOOL "" FORCE)
+  set(BUILD_MISC_DOCS     OFF CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+  set(ENABLE_CURL_MANUAL  OFF CACHE BOOL "" FORCE)
+  set(HTTP_ONLY           ON  CACHE BOOL "" FORCE)
+  set(CURL_USE_SCHANNEL   ON  CACHE BOOL "" FORCE)
+  set(CURL_USE_OPENSSL    OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBPSL     OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBSSH2    OFF CACHE BOOL "" FORCE)
+  set(CURL_ZLIB           OFF CACHE STRING "" FORCE)
+  set(CURL_BROTLI         OFF CACHE BOOL "" FORCE)
+  set(CURL_ZSTD           OFF CACHE BOOL "" FORCE)
+  set(USE_LIBIDN2         OFF CACHE BOOL "" FORCE)
+  set(USE_NGHTTP2         OFF CACHE BOOL "" FORCE)
+
+  FetchContent_Declare(curl
+    GIT_REPOSITORY https://github.com/curl/curl.git
+    GIT_TAG        curl-8_11_1
+    GIT_SHALLOW    TRUE)
+
+  FetchContent_MakeAvailable(ftxui libgit2 nlohmann_json curl)
+else()
+  FetchContent_MakeAvailable(ftxui libgit2 nlohmann_json)
+  find_package(CURL 7.68 REQUIRED)
+endif()
 
 # ---------------------------------------------------------------- gittop
+# Exactly one of these is compiled, chosen here rather than by an #ifdef inside a
+# file that contains both. A file that compiles on both platforms but only ever
+# runs on one is a file whose dead half rots without anyone noticing — which is
+# what happened to the nerd glyph set for three releases.
+if(WIN32)
+  set(GITTOP_PLATFORM_SOURCE src/platform/windows.cpp)
+
+  # The icon and the version block, compiled into the executable. There is no
+  # freedesktop .desktop file or hicolor icon directory here to install them
+  # into: on this platform that metadata lives inside the binary, and one
+  # without it shows blank fields in every properties dialog.
+  #
+  # Configured rather than checked in, so the version comes from
+  # project(gittop VERSION ...) like everything else and cannot drift from what
+  # `--version` prints. windres wants a forward-slashed absolute path.
+  set(GITTOP_VERSION       ${PROJECT_VERSION})
+  set(GITTOP_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+  set(GITTOP_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+  set(GITTOP_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+  set(GITTOP_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/gittop.ico")
+  configure_file(packaging/gittop.rc.in "${CMAKE_CURRENT_BINARY_DIR}/gittop.rc" @ONLY)
+  list(APPEND GITTOP_PLATFORM_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/gittop.rc")
+else()
+  set(GITTOP_PLATFORM_SOURCE src/platform/posix.cpp)
+endif()
+
 add_executable(gittop
+  ${GITTOP_PLATFORM_SOURCE}
   src/main.cpp
   src/app.cpp
   src/config/config.cpp
@@ -139,42 +215,87 @@ target_link_libraries(gittop PRIVATE
   Threads::Threads
 )
 
-target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)
+if(MSVC)
+  # /W4 is the closest thing MSVC has to -Wall -Wextra; its own /Wall includes
+  # several thousand diagnostics about the standard library's headers.
+  # /utf-8 is not optional: the sources contain UTF-8 string literals — every
+  # glyph in the unicode set — and without it MSVC reads them in the machine's
+  # ANSI code page and produces mojibake with no diagnostic.
+  target_compile_options(gittop PRIVATE /W4 /utf-8 /permissive-)
+else()
+  target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 target_compile_definitions(gittop PRIVATE GITTOP_VERSION="${PROJECT_VERSION}")
+
+if(WIN32)
+  # WIN32_LEAN_AND_MEAN and NOMINMAX are set on the target rather than at the top
+  # of windows.cpp so that every translation unit which pulls windows.h in
+  # transitively gets the same one. NOMINMAX in particular has to be global:
+  # windows.h defines min and max as macros, and they collide with <algorithm>
+  # in most of this codebase.
+  #
+  # _WIN32_WINNT 0x0601 is Windows 7, which is the floor for CancelIoEx and
+  # FILE_FLAG_FIRST_PIPE_INSTANCE. gittop needs a far newer console than that to
+  # be usable, but there is no reason for the headers to be the thing that says so.
+  target_compile_definitions(gittop PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _WIN32_WINNT=0x0601)
+
+  # advapi32  the token and ACL calls behind platform::RestrictToOwner
+  # shell32   ShellExecuteW, which is how a URL reaches the user's browser
+  # ws2_32/crypt32/bcrypt/winhttp/rpcrt4/secur32 are libgit2's and libcurl's,
+  # and are listed here because a static build of either does not carry its own
+  # dependencies with it.
+  target_link_libraries(gittop PRIVATE
+    advapi32 shell32 ws2_32 crypt32 bcrypt winhttp rpcrt4 secur32 ole32 user32)
+endif()
 
 # ---------------------------------------------------------------- install
 include(GNUInstallDirs)
 
 install(TARGETS gittop RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT gittop)
 
-# A TUI still earns a menu entry — btop ships one — and Terminal=true is the
-# line that makes a launcher open a terminal for it rather than starting it
-# headless, where it would draw its alternate screen into nothing.
-install(FILES packaging/gittop.desktop
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
-        COMPONENT gittop)
-
-# The scalable icon is what current desktops prefer and the one that stays sharp
-# at whatever size a panel asks for; the rasters below are for the environments
-# that will not render SVG. Both live under hicolor, which is the theme every
-# other theme falls back to, so the icon resolves regardless of what the user
-# has selected.
-install(FILES assets/logo.svg
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
-        RENAME gittop.svg
-        COMPONENT gittop)
-
-foreach(icon_size IN ITEMS 16 24 32 48 64 128 256)
-  install(FILES assets/icons/gittop-${icon_size}.png
-          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${icon_size}x${icon_size}/apps
-          RENAME gittop.png
+# The desktop entry and the icon theme are freedesktop mechanisms, and there is
+# no Windows equivalent to port them to: a Start menu shortcut is made by the
+# installer rather than shipped as a file, so it lives in the NSIS block below.
+if(NOT WIN32)
+  # A TUI still earns a menu entry — btop ships one — and Terminal=true is the
+  # line that makes a launcher open a terminal for it rather than starting it
+  # headless, where it would draw its alternate screen into nothing.
+  install(FILES packaging/gittop.desktop
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
           COMPONENT gittop)
-endforeach()
 
-install(FILES README.md CHANGELOG.md LICENSE
-        DESTINATION ${CMAKE_INSTALL_DOCDIR}
-        COMPONENT gittop)
+  # The scalable icon is what current desktops prefer and the one that stays
+  # sharp at whatever size a panel asks for; the rasters below are for the
+  # environments that will not render SVG. Both live under hicolor, which is the
+  # theme every other theme falls back to, so the icon resolves regardless of
+  # what the user has selected.
+  install(FILES assets/logo.svg
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+          RENAME gittop.svg
+          COMPONENT gittop)
+
+  foreach(icon_size IN ITEMS 16 24 32 48 64 128 256)
+    install(FILES assets/icons/gittop-${icon_size}.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${icon_size}x${icon_size}/apps
+            RENAME gittop.png
+            COMPONENT gittop)
+  endforeach()
+endif()
+
+# CMAKE_INSTALL_DOCDIR is share/doc/gittop, which is a Unix layout. On Windows
+# the package root *is* the application directory, so the docs go beside the
+# executable where somebody might actually open them.
+if(WIN32)
+  install(FILES README.md CHANGELOG.md LICENSE DESTINATION . COMPONENT gittop)
+else()
+  install(FILES README.md CHANGELOG.md LICENSE
+          DESTINATION ${CMAKE_INSTALL_DOCDIR}
+          COMPONENT gittop)
+endif()
 
 # ---------------------------------------------------------------- package
 # `cpack -G DEB` and `cpack -G TGZ` from the build directory. The release
@@ -193,8 +314,14 @@ set(CPACK_COMPONENTS_ALL gittop)
 # worked right up until you list the package contents. ALL_COMPONENTS_IN_ONE
 # keeps it a single package and a single file name rather than one per
 # component, which with one component would only be a longer name.
+#
+# Every generator, Windows included. It is tempting to skip this there on the
+# theory that libgit2's install rules are a Unix concern — they are not, and the
+# zip built without this line contained the whole of include/git2/**. The
+# symptom is the same on both platforms and so is the fix.
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_NSIS_COMPONENT_INSTALL ON)
 set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
 
 # So the tarball unpacks into a directory of its own rather than emptying bin/
@@ -221,7 +348,52 @@ set(CPACK_STRIP_FILES ON)
 # The tarball name; the .deb takes DEB-DEFAULT below instead, because Debian
 # names a package by its own architecture ("amd64") and CMAKE_SYSTEM_PROCESSOR
 # says "x86_64", which would produce a file dpkg refuses to guess about.
-set(CPACK_PACKAGE_FILE_NAME "gittop-${PROJECT_VERSION}-linux-${CMAKE_SYSTEM_PROCESSOR}")
+if(WIN32)
+  set(CPACK_PACKAGE_FILE_NAME "gittop-${PROJECT_VERSION}-windows-x86_64")
+else()
+  set(CPACK_PACKAGE_FILE_NAME "gittop-${PROJECT_VERSION}-linux-${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+# -------------------------------------------------------- windows packaging
+# Two artifacts, because they answer two different questions.
+#
+#   ZIP   unpack and run. This is the one that works with no administrator, no
+#         installer prompt and no uninstall entry, which is what most people
+#         want from a single-binary terminal tool — and it is the only one that
+#         can be used from a locked-down machine.
+#
+#   NSIS  an installer, which exists for the one thing the zip cannot do: put
+#         gittop on PATH. A terminal program that is not on PATH is a terminal
+#         program you cannot type the name of, and telling every Windows user to
+#         edit their environment variables by hand is not a port, it is a README
+#         apologising for one.
+if(WIN32)
+  set(CPACK_NSIS_PACKAGE_NAME "gittop")
+  set(CPACK_NSIS_DISPLAY_NAME "gittop ${PROJECT_VERSION}")
+  set(CPACK_PACKAGE_INSTALL_DIRECTORY "gittop")
+  set(CPACK_NSIS_URL_INFO_ABOUT "${CPACK_PACKAGE_HOMEPAGE_URL}")
+  set(CPACK_NSIS_HELP_LINK "${CPACK_PACKAGE_HOMEPAGE_URL}")
+  set(CPACK_NSIS_CONTACT "${CPACK_PACKAGE_CONTACT}")
+
+  # The whole reason the installer exists — it adds an "add to PATH" page.
+  set(CPACK_NSIS_MODIFY_PATH ON)
+
+  # Upgrading over an existing install rather than stacking a second copy beside
+  # it, which is what leaves two entries in Programs and Features and a stale
+  # gittop.exe earlier on PATH than the new one.
+  set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+
+  set(CPACK_NSIS_MUI_ICON   "${CMAKE_CURRENT_SOURCE_DIR}/assets/gittop.ico")
+  set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/gittop.ico")
+  set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\gittop.exe")
+
+  # NSIS reads the license page from a file it expects to be text. LICENSE has
+  # no extension, and some NSIS builds refuse it on that basis alone, so it is
+  # copied to a name they all accept rather than renamed in the repository.
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+                 "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt" COPYONLY)
+  set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt")
+endif()
 
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_PACKAGE_SECTION devel)
