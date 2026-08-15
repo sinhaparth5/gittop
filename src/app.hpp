@@ -256,9 +256,36 @@ class App {
   // The settings page. The row list is built in ui/settings_panel.cpp and read
   // from there by both this file and the renderer, so `enter` on row four
   // always acts on whatever row four is showing.
+  // The text and cursor of whichever input box is on screen, or nullptr when
+  // none is. Both come from the overlay rather than from FTXUI, because FTXUI
+  // will not say which of its components has focus and gittop already knows —
+  // an input box only exists while the overlay that owns it is open.
+  std::string* ActiveInputText();
+  int* ActiveInputCursor();
+
+  // Puts text into that box at the cursor. Returns false when there is nowhere
+  // to put it, which is what makes ctrl-v outside a box a no-op that can say so
+  // rather than a keystroke that silently does nothing.
+  bool InsertIntoActiveInput(const std::string& text);
+
+  // ctrl-v. Reads the system clipboard and inserts it.
+  void PasteFromClipboard();
+
   ui::SettingsView SettingsViewState() const;
   void ActivateSetting();
   void SaveSettings();
+
+  // Acts on the row under the cursor. Separate from ActivateSetting only so
+  // that the persist below it runs after every path through the switch,
+  // including the seven that return from inside a case.
+  void ApplySetting();
+
+  // Writes the appearance settings out. Called after every change that makes
+  // one, so the file on disk is what is on screen without anybody pressing
+  // anything; `announce` is what the explicit save row passes to get a toast,
+  // since a silent write is exactly right for a toggle that already said what
+  // it did and wrong for a row whose entire job is to write the file.
+  void PersistSettings(bool announce);
 
   const model::StatusEntry* Selected() const;
 
@@ -450,10 +477,16 @@ class App {
   int commit_selected_ = 0;
   int branch_selected_ = 0;
   int settings_selected_ = 0;
-  // A setting has been changed since the last save. Not "differs from the file":
-  // resolving what the file would produce means re-running every `auto` in
-  // ApplyConfig, and a claim gittop cannot check is worse than one it can.
+  // A setting has been changed and the write did not land. Since every change
+  // persists itself this is normally false, and it is the settings page's way
+  // of saying so — a config on a read-only filesystem is the case where it
+  // stays true and the page has to stop claiming the file agrees with it.
   bool settings_dirty_ = false;
+  // The last save failure, kept only to tell a new one from the same one
+  // repeating. A write that fails fails on every keystroke, and a toast per
+  // keystroke would bury the toggle's own message under a wall of the same
+  // error rather than reporting it once.
+  std::string settings_save_error_;
   ui::GraphView graph_;
   std::string message_;
   bool message_is_error_ = false;
@@ -478,6 +511,20 @@ class App {
   std::string commit_message_;
   model::StatusEntry discard_target_;
   ConfirmKind confirm_kind_ = ConfirmKind::Discard;
+
+  // Byte offsets into the four input buffers. Owned here rather than left to
+  // FTXUI's own defaults so that a paste can be inserted where the cursor is;
+  // FTXUI clamps these to the content on every frame, so they cannot get ahead
+  // of the string they index.
+  int commit_cursor_ = 0;
+  int token_cursor_ = 0;
+  int filter_cursor_ = 0;
+  int passphrase_cursor_ = 0;
+
+  // A bracketed paste is in flight, so the newlines arriving are the clipboard's
+  // and not somebody pressing enter. Set between the terminal's own markers,
+  // which is the only source of that distinction.
+  bool pasting_ = false;
 
   // Filled by the panels during layout and read on the next event. Never read
   // before a frame has been drawn, which the event loop guarantees.

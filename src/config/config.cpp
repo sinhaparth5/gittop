@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -202,6 +204,78 @@ std::string FormatValue(const std::string& value) {
   return out;
 }
 
+// Where a line's comment starts, or npos. Quote-aware for the same reason
+// StripComment is: a '#' inside a token is a character, not a comment.
+std::size_t CommentAt(const std::string& line) {
+  bool quoted = false;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    if (line[i] == '"' && (i == 0 || line[i - 1] != '\\')) {
+      quoted = !quoted;
+    } else if (line[i] == '#' && !quoted) {
+      return i;
+    }
+  }
+  return std::string::npos;
+}
+
+// The flat dotted key a table header and a key path add up to — the same string
+// Load stores, so the two cannot disagree about what a line is called.
+std::string JoinKey(const std::vector<std::string>& table,
+                    const std::vector<std::string>& key) {
+  std::string full;
+  for (const std::string& segment : table) {
+    full += segment;
+    full.push_back('.');
+  }
+  for (std::size_t i = 0; i < key.size(); ++i) {
+    full += key[i];
+    if (i + 1 < key.size()) {
+      full.push_back('.');
+    }
+  }
+  return full;
+}
+
+// The dotted form of a table header's segments, which is the prefix every key
+// under it carries — `{"hosts", "github.com"}` is `hosts.github.com`.
+std::string TablePath(const std::vector<std::string>& table) {
+  std::string out;
+  for (std::size_t i = 0; i < table.size(); ++i) {
+    out += table[i];
+    if (i + 1 < table.size()) {
+      out.push_back('.');
+    }
+  }
+  return out;
+}
+
+// The table a flat key belongs to, by the same rfind the generator groups on.
+// `hosts.github.com.token` lands in `hosts.github.com`, which re-reads as the
+// three segments it came from — a host with a dot in it needs no special case.
+std::string TableOf(const std::string& key) {
+  const std::size_t split = key.rfind('.');
+  return split == std::string::npos ? std::string{} : key.substr(0, split);
+}
+
+std::string LeafOf(const std::string& key) {
+  const std::size_t split = key.rfind('.');
+  return split == std::string::npos ? key : key.substr(split + 1);
+}
+
+std::string TableHeader(const std::string& table) {
+  std::vector<std::string> segments;
+  SplitPath(table, &segments);
+  std::string out = "[";
+  for (std::size_t i = 0; i < segments.size(); ++i) {
+    out += QuoteSegment(segments[i]);
+    if (i + 1 < segments.size()) {
+      out.push_back('.');
+    }
+  }
+  out.push_back(']');
+  return out;
+}
+
 constexpr const char* kTemplate = R"(# gittop configuration
 #
 # This file can hold API tokens, so gittop creates it 0600 and never prints a
@@ -216,8 +290,9 @@ constexpr const char* kTemplate = R"(# gittop configuration
 #   4. the matching [hosts."..."] entry below
 #
 # Signing in from inside gittop writes the token it receives back into this
-# file. That rewrite is generated from the settings gittop is holding, so
-# comments you add here do not survive it.
+# file. So does every change made from the Settings tab. Those writes edit this
+# file rather than replace it: your comments, your ordering and your spacing all
+# survive, and only the values that actually changed are touched.
 #
 # client_id turns the sign-in into a browser approval instead of a copy-paste.
 # It is the id of an OAuth application registered on that host with the device
@@ -272,9 +347,9 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # compact = false
 
 [theme]
-# Everything under here can also be changed from the Settings tab (`0`), and
-# saved back from the row that says so. Saving regenerates this file from the
-# settings gittop is holding, which means these comments do not survive it.
+# Everything under here can also be changed from the Settings tab (`0`), and is
+# written back the moment you change it — there is no save step. The write edits
+# this file in place, so these comments stay where you put them.
 #
 # One of: default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight.
 # `t` cycles them at run time, which is the quickest way to see them all.
@@ -431,12 +506,21 @@ Config Config::Load(const std::string& path, std::string* error) {
     return config;  // absent is the normal case, not a failure
   }
 
+  config.loaded_ = true;
+
   std::vector<std::string> table;
   std::string line;
   int line_number = 0;
 
   while (std::getline(file, line)) {
     ++line_number;
+    // A CRLF file would otherwise carry its '\r' into every preserved line and
+    // grow a second one on the way back out. Parsing never saw it — Trim eats
+    // it as whitespace — so dropping it here changes nothing but the rewrite.
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    config.source_.push_back(line);
     const std::string trimmed = Trim(StripComment(line));
     if (trimmed.empty()) {
       continue;
@@ -498,6 +582,148 @@ Config Config::Load(const std::string& path, std::string* error) {
   return config;
 }
 
+std::string Config::Generate() const {
+  // Grouped by table so the written file reads like one a person would write,
+  // and so re-reading it produces the same key set.
+  std::map<std::string, std::vector<std::pair<std::string, std::string>>> tables;
+  for (const auto& [key, value] : values_) {
+    tables[TableOf(key)].emplace_back(LeafOf(key), value);
+  }
+
+  std::ostringstream out;
+  out << "# gittop configuration\n";
+  for (const auto& [table, entries] : tables) {
+    if (!table.empty()) {
+      out << '\n' << TableHeader(table) << '\n';
+    }
+    for (const auto& [leaf, value] : entries) {
+      out << QuoteSegment(leaf) << " = " << FormatValue(value) << '\n';
+    }
+  }
+  return out.str();
+}
+
+std::string Config::Rewrite() const {
+  std::vector<std::string> out;
+  out.reserve(source_.size() + values_.size());
+
+  std::set<std::string> written;
+
+  // Where a key appended to each table should land: one past the last line that
+  // table already owns. Without this a new `theme.logos` would be written at the
+  // end of the file, under whatever header happened to come last, and mean
+  // something else entirely the next time the file was read.
+  std::map<std::string, std::size_t> table_end;
+  std::vector<std::string> table;
+
+  for (const std::string& line : source_) {
+    const std::string trimmed = Trim(StripComment(line));
+
+    if (trimmed.empty()) {  // blank, or a line that is only a comment
+      out.push_back(line);
+      continue;
+    }
+
+    if (trimmed.front() == '[') {
+      if (trimmed.back() == ']') {
+        std::vector<std::string> parsed;
+        if (SplitPath(Trim(trimmed.substr(1, trimmed.size() - 2)), &parsed)) {
+          table = std::move(parsed);
+        }
+      }
+      out.push_back(line);
+      // Anchored even when the table has no keys yet, so the first setting
+      // saved under an empty `[theme]` goes inside it rather than after it.
+      table_end[TablePath(table)] = out.size();
+      continue;
+    }
+
+    const std::size_t equals = trimmed.find('=');
+    std::vector<std::string> key_path;
+    std::string old_value;
+    std::string value_error;
+    // Three ways a line can be one gittop does not understand, and all three
+    // keep it verbatim. Load only skipped these; Save must not treat "could not
+    // read it" as "the user deleted it" and drop somebody's line on the floor.
+    if (equals == std::string::npos ||
+        !SplitPath(Trim(trimmed.substr(0, equals)), &key_path) ||
+        !ParseValue(trimmed.substr(equals + 1), &old_value, &value_error)) {
+      out.push_back(line);
+      continue;
+    }
+
+    const std::string full = JoinKey(table, key_path);
+    const auto it = values_.find(full);
+    // Gone from `values_` means Unset removed it, so the line goes too — that
+    // is what makes a sign-out actually take the token out of the file.
+    // Already written means the source named the same key twice, and a second
+    // copy of a line we have just rewritten would win on the next read.
+    if (it == values_.end() || written.count(full) != 0) {
+      continue;
+    }
+    written.insert(full);
+
+    if (it->second == old_value) {
+      out.push_back(line);  // unchanged, so not even the spacing moves
+    } else {
+      // Rebuilt from the original text left of the '=' rather than from the
+      // parsed key, so `hosts."github.com".token` keeps the quoting and the
+      // indentation the user chose for it.
+      const std::size_t raw_equals = line.find('=');
+      const std::size_t comment = CommentAt(line);
+      std::string rebuilt = line.substr(0, raw_equals) + "= " + FormatValue(it->second);
+      if (comment != std::string::npos && comment > raw_equals) {
+        rebuilt += "  " + line.substr(comment);
+      }
+      out.push_back(std::move(rebuilt));
+    }
+    table_end[TableOf(full)] = out.size();
+  }
+
+  // Anything gittop holds that the file never mentioned. Grouped first, then
+  // spliced in back-to-front so that each insertion cannot move the index the
+  // next one was measured against.
+  std::map<std::string, std::vector<std::string>> pending;
+  for (const auto& [key, value] : values_) {
+    if (written.count(key) == 0) {
+      pending[TableOf(key)].push_back(QuoteSegment(LeafOf(key)) + " = " + FormatValue(value));
+    }
+  }
+
+  std::map<std::size_t, std::vector<std::string>, std::greater<>> splices;
+  for (auto it = pending.begin(); it != pending.end();) {
+    const auto anchor = table_end.find(it->first);
+    // A top-level key has to precede every header or it would be read as
+    // belonging to one, so its fallback anchor is the top of the file.
+    if (anchor != table_end.end()) {
+      splices[anchor->second] = std::move(it->second);
+      it = pending.erase(it);
+    } else if (it->first.empty()) {
+      splices[0] = std::move(it->second);
+      it = pending.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto& [at, lines] : splices) {
+    out.insert(out.begin() + static_cast<std::ptrdiff_t>(at), lines.begin(), lines.end());
+  }
+
+  // Whatever is left names a table the file does not have, so it brings its own
+  // header along.
+  for (const auto& [table_name, lines] : pending) {
+    out.emplace_back();
+    out.push_back(TableHeader(table_name));
+    out.insert(out.end(), lines.begin(), lines.end());
+  }
+
+  std::ostringstream joined;
+  for (const std::string& line : out) {
+    joined << line << '\n';
+  }
+  return joined.str();
+}
+
 bool Config::Save(const std::string& path, std::string* error) const {
   const std::filesystem::path target(path);
   const std::filesystem::path parent = target.parent_path();
@@ -515,35 +741,7 @@ bool Config::Save(const std::string& path, std::string* error) const {
     ::chmod(parent.c_str(), S_IRWXU);
   }
 
-  // Grouped by table so the written file reads like one a person would write,
-  // and so re-reading it produces the same key set.
-  std::map<std::string, std::vector<std::pair<std::string, std::string>>> tables;
-  for (const auto& [key, value] : values_) {
-    const std::size_t split = key.rfind('.');
-    const std::string table = split == std::string::npos ? std::string{} : key.substr(0, split);
-    const std::string leaf = split == std::string::npos ? key : key.substr(split + 1);
-    tables[table].emplace_back(leaf, value);
-  }
-
-  std::ostringstream out;
-  out << "# gittop configuration\n";
-  for (const auto& [table, entries] : tables) {
-    if (!table.empty()) {
-      std::vector<std::string> segments;
-      SplitPath(table, &segments);
-      out << "\n[";
-      for (std::size_t i = 0; i < segments.size(); ++i) {
-        out << QuoteSegment(segments[i]);
-        if (i + 1 < segments.size()) {
-          out << '.';
-        }
-      }
-      out << "]\n";
-    }
-    for (const auto& [leaf, value] : entries) {
-      out << QuoteSegment(leaf) << " = " << FormatValue(value) << '\n';
-    }
-  }
+  const std::string body = loaded_ ? Rewrite() : Generate();
 
   std::ofstream file(path, std::ios::trunc);
   if (!file) {
@@ -552,7 +750,7 @@ bool Config::Save(const std::string& path, std::string* error) const {
     }
     return false;
   }
-  file << out.str();
+  file << body;
   file.close();
   if (!file) {
     if (error != nullptr) {

@@ -207,13 +207,20 @@ SettingsGroup ConfigGroup(const SettingsView& view) {
 
   SettingsRow save;
   save.label = "save settings";
-  save.value = view.dirty ? "changed" : "unchanged";
-  // Saving regenerates the file from the keys gittop holds, which is the whole
-  // reason this is a key you press rather than something every toggle does on
-  // its own: a hand-written config loses its comments to it.
-  save.note = view.config_exists ? "rewrites the file; comments are lost" : "creates the file, 0600";
+  // "saved" rather than "unchanged", because the question a settings page is
+  // being asked here is whether the file agrees with the screen, and now it
+  // always does unless a write failed. `dirty` survives as the name for that
+  // failure — it is the only way it is still reachable.
+  save.value = view.dirty ? "not written" : "saved";
+  // Every change writes itself, so this row is a way to write the file again
+  // rather than the only thing that ever writes it. It stays because a config
+  // that could not be written the first time deserves a retry that is not
+  // "toggle something twice".
+  save.note = view.dirty ? "could not write the file — press to retry"
+              : view.config_exists ? "written on every change; comments kept"
+                                   : "written on every change; creates it 0600";
   save.action = SettingsAction::SaveConfig;
-  save.verb = "save";
+  save.verb = "save now";
   group.rows.push_back(std::move(save));
 
   SettingsRow bindings;
@@ -442,7 +449,11 @@ Element SettingsPanel(const SettingsView& view, int width, std::vector<Box>* row
   }
 
   Element list =
-      Panel("SETTINGS", Scrollable(vbox(std::move(lines))), {.note = view.dirty ? "unsaved" : ""}) |
+      // Only ever set when a write failed. A page whose changes all persist has
+      // nothing to say in this corner, and "saved" on every frame would be a
+      // badge for the absence of a problem.
+      Panel("SETTINGS", Scrollable(vbox(std::move(lines))),
+            {.note = view.dirty ? "not written" : ""}) |
       flex;
 
   if (!wide) {

@@ -7,15 +7,19 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "remote/api.hpp"
 #include "remote/client.hpp"
@@ -39,6 +43,98 @@ namespace gittop {
 using namespace ftxui;  // NOLINT: the component DSL reads badly when qualified.
 
 namespace {
+
+// The terminal wraps a paste in these once DECSET 2004 is on. They are the only
+// way an application can tell text that was pasted from text that was typed,
+// which is what a single-line box needs in order to not treat the newline in
+// the middle of somebody's clipboard as "submit".
+constexpr const char* kPasteBegin = "\x1b[200~";
+constexpr const char* kPasteEnd = "\x1b[201~";
+
+// A clipboard that does not fit in a commit summary is a clipboard somebody
+// meant for a different window. Bounded because this is read into memory from
+// something gittop does not control.
+constexpr std::size_t kClipboardLimit = 64 * 1024;
+
+// Reads the system clipboard by running whichever helper the session actually
+// has, in the order it is most likely to be the right one: Wayland first, then
+// the two X11 tools.
+//
+// This exists because a terminal never *sends* the clipboard on ctrl-v — paste
+// is ctrl-shift-v, and plain ctrl-v arrives as byte 0x16 that every input box
+// on earth ignores. Asking the clipboard directly is the only way that keystroke
+// can mean what the person pressing it thinks it means.
+//
+// Fork and exec with an argv, never a shell: the whole point is to end up
+// holding untrusted text, and handing that to /bin/sh is a command injection
+// with extra steps. The same reason remote::OpenInBrowser does it this way.
+std::string ReadClipboard() {
+  static const char* const kTools[][4] = {
+      {"wl-paste", "--no-newline", nullptr, nullptr},
+      {"xclip", "-selection", "clipboard", "-o"},
+      {"xsel", "--clipboard", "--output", nullptr},
+  };
+
+  for (const auto& tool : kTools) {
+    int fds[2] = {-1, -1};
+    if (::pipe(fds) != 0) {
+      continue;
+    }
+
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+      ::close(fds[0]);
+      ::close(fds[1]);
+      continue;
+    }
+
+    if (pid == 0) {
+      ::dup2(fds[1], STDOUT_FILENO);
+      ::close(fds[0]);
+      ::close(fds[1]);
+      // stderr to /dev/null: a missing X display makes xclip complain, and the
+      // complaint would land on the alternate screen gittop is drawing on.
+      const int null = ::open("/dev/null", O_WRONLY);
+      if (null >= 0) {
+        ::dup2(null, STDERR_FILENO);
+        ::close(null);
+      }
+      std::vector<char*> argv;
+      for (const char* arg : tool) {
+        if (arg != nullptr) {
+          argv.push_back(const_cast<char*>(arg));
+        }
+      }
+      argv.push_back(nullptr);
+      ::execvp(argv[0], argv.data());
+      ::_exit(127);  // not installed, which is the ordinary case for two of three
+    }
+
+    ::close(fds[1]);
+    std::string out;
+    char buffer[4096];
+    ssize_t got = 0;
+    while ((got = ::read(fds[0], buffer, sizeof(buffer))) > 0) {
+      out.append(buffer, static_cast<std::size_t>(got));
+      if (out.size() > kClipboardLimit) {
+        out.resize(kClipboardLimit);
+        break;
+      }
+    }
+    ::close(fds[0]);
+
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    const bool ran = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (ran && !out.empty()) {
+      return out;
+    }
+    // A tool that is present but exited non-zero has answered: the clipboard is
+    // empty, or this is the wrong display server. Trying the next one costs a
+    // fork and settles which of those it was.
+  }
+  return {};
+}
 
 // One page. More runs than anyone scrolls in a sitting, and one request rather
 // than the pagination that a second page would need.
@@ -1562,7 +1658,101 @@ void App::CollectPoll() {
   signin_hint_ = result.hint;
 }
 
+std::string* App::ActiveInputText() {
+  if (!overlay_open_) {
+    return nullptr;
+  }
+  switch (overlay_index_) {
+    case kCommit:
+      return &commit_message_;
+    case kFilter:
+      return &filter_;
+    case kPassphrase:
+      return &passphrase_input_;
+    case kSignIn:
+      // Only one of the sign-in stages has anything to type into. The others
+      // are a code to read and a browser to go to.
+      return signin_stage_ == ui::SignInStage::Paste ? &token_input_ : nullptr;
+    default:
+      return nullptr;
+  }
+}
+
+int* App::ActiveInputCursor() {
+  if (!overlay_open_) {
+    return nullptr;
+  }
+  switch (overlay_index_) {
+    case kCommit:
+      return &commit_cursor_;
+    case kFilter:
+      return &filter_cursor_;
+    case kPassphrase:
+      return &passphrase_cursor_;
+    case kSignIn:
+      return signin_stage_ == ui::SignInStage::Paste ? &token_cursor_ : nullptr;
+    default:
+      return nullptr;
+  }
+}
+
+bool App::InsertIntoActiveInput(const std::string& text) {
+  std::string* target = ActiveInputText();
+  int* cursor = ActiveInputCursor();
+  if (target == nullptr || cursor == nullptr || text.empty()) {
+    return false;
+  }
+  // Clamped rather than trusted: FTXUI owns this number the rest of the time
+  // and the buffer can have been cleared out from under it since the last frame.
+  const std::size_t at =
+      std::min(static_cast<std::size_t>(std::max(0, *cursor)), target->size());
+  target->insert(at, text);
+  *cursor = static_cast<int>(at + text.size());
+  // The filter reads its box on every keystroke and nothing has typed one here.
+  if (overlay_index_ == kFilter) {
+    RebuildFilter();
+  }
+  return true;
+}
+
+void App::PasteFromClipboard() {
+  if (ActiveInputText() == nullptr) {
+    Note("nothing here takes typing", false);
+    return;
+  }
+
+  std::string text = ReadClipboard();
+  if (text.empty()) {
+    // Three tools tried and none of them answered. Naming one is the difference
+    // between a user installing it and a user filing this as a gittop bug.
+    Note("clipboard is empty, or needs wl-clipboard / xclip installed", true);
+    return;
+  }
+
+  // Every box here is one line. A pasted newline becomes a space rather than
+  // disappearing, so two joined lines read as two words and not as one.
+  for (char& c : text) {
+    if (c == '\n' || c == '\r' || c == '\t') {
+      c = ' ';
+    }
+  }
+  InsertIntoActiveInput(text);
+}
+
 void App::SubmitPastedToken() {
+  // Trimmed, because this box is reached by pasting and a clipboard that came
+  // from a web page usually carries a newline with it. An untrimmed token fails
+  // authentication with a 401 that reads as "the token is wrong" rather than as
+  // "there is whitespace on the end of it".
+  const std::size_t begin = token_input_.find_first_not_of(" \t\r\n");
+  if (begin == std::string::npos) {
+    token_input_.clear();
+    token_cursor_ = 0;
+    return;
+  }
+  const std::size_t end = token_input_.find_last_not_of(" \t\r\n");
+  token_input_ = token_input_.substr(begin, end - begin + 1);
+
   if (token_input_.empty()) {
     return;
   }
@@ -1774,6 +1964,21 @@ ui::SettingsView App::SettingsViewState() const {
 }
 
 void App::ActivateSetting() {
+  ApplySetting();
+  // One place rather than seven. Every toggle below returns from inside its own
+  // case, so the alternative is a persist call after each Note — and the first
+  // one anybody forgot would be a setting that silently stopped surviving a
+  // restart, which is indistinguishable from the setting not working.
+  //
+  // After ApplySetting, never before: a failed write reports itself, and doing
+  // that first would put the error toast on screen and then let the toggle's
+  // own "icons: nerd" overwrite it.
+  if (settings_dirty_) {
+    PersistSettings(/*announce=*/false);
+  }
+}
+
+void App::ApplySetting() {
   // Resolved through the same builder the panel renders from, so this can never
   // act on a row other than the one under the cursor — the list changes shape
   // with the state it describes, and a second table of indices here would be
@@ -1900,6 +2105,10 @@ void App::ActivateSetting() {
 }
 
 void App::SaveSettings() {
+  PersistSettings(/*announce=*/true);
+}
+
+void App::PersistSettings(bool announce) {
   config_.Set("theme.name", ui::ThemeName());
   config_.Set("theme.border", ui::PanelBorderName(ui::PanelBorderNow()));
   config_.Set("theme.animations", ui::ReducedMotion() ? "false" : "true");
@@ -1921,12 +2130,21 @@ void App::SaveSettings() {
 
   std::string error;
   if (!config_.Save(config_path_, &error)) {
-    Note(error, true);
+    // Left dirty, which is now what that flag means: the file does not agree
+    // with the screen and gittop could not make it.
+    settings_dirty_ = true;
+    if (settings_save_error_ != error) {
+      settings_save_error_ = error;
+      Note(error, true);
+    }
     return;
   }
+  settings_save_error_.clear();
   config_on_disk_ = true;
   settings_dirty_ = false;
-  Note("saved to " + config_path_, false);
+  if (announce) {
+    Note("saved to " + config_path_, false);
+  }
 }
 
 void App::CancelTransfer() {
@@ -2647,6 +2865,9 @@ bool App::Perform(ui::Action action) {
                                    ? "theme: " + label
                                    : "theme: " + label + "  (" + ui::ColorDepthName(depth) + ")";
       Note(note, false);
+      // `t` from anywhere is the same change as the settings row, so it saves
+      // the same way. After the Note for the reason ActivateSetting says.
+      PersistSettings(/*announce=*/false);
       return true;
     }
 
@@ -2936,6 +3157,7 @@ int App::Run() {
   // ---------------------------------------------------------- commit overlay
   InputOption input_option;
   input_option.multiline = false;
+  input_option.cursor_position = &commit_cursor_;
   input_option.on_enter = [this] { PerformCommit(); };
   auto commit_input = Input(&commit_message_, "summary of the change", input_option);
 
@@ -3034,6 +3256,7 @@ int App::Run() {
   // ------------------------------------------------------- passphrase overlay
   InputOption passphrase_option;
   passphrase_option.multiline = false;
+  passphrase_option.cursor_position = &passphrase_cursor_;
   // The reason this overlay can exist at all without breaking the rule that
   // nothing under ui/ handles a secret: FTXUI renders asterisks, so the element
   // handed to PassphrasePane carries no passphrase in it.
@@ -3049,6 +3272,7 @@ int App::Run() {
   // ----------------------------------------------------------- filter overlay
   InputOption filter_option;
   filter_option.multiline = false;
+  filter_option.cursor_position = &filter_cursor_;
   // Live rather than on submit: the count in the pane's corner is the reason
   // this is a box you type into instead of a prompt you answer, and it only
   // means anything if the list behind it is already narrowing.
@@ -3067,6 +3291,7 @@ int App::Run() {
   // ---------------------------------------------------------- sign-in overlay
   InputOption token_option;
   token_option.multiline = false;
+  token_option.cursor_position = &token_cursor_;
   // A pasted token is a secret in exactly the way a passphrase is, so it is
   // collected the same way: FTXUI renders asterisks, and SignInPane is handed
   // the rendered element rather than the string behind it.
@@ -3282,6 +3507,32 @@ int App::Run() {
     // asks whether the interval is up; the answer is usually no.
     if (event == kTick) {
       MaybeAutoRefresh();
+      return true;
+    }
+
+    // Paste handling comes before the splash and before every key, because a
+    // paste is not a keystroke and must not be read as one. The markers arrive
+    // as unrecognised escape sequences, which FTXUI hands over verbatim.
+    if (event.input() == kPasteBegin) {
+      pasting_ = true;
+      return true;
+    }
+    if (event.input() == kPasteEnd) {
+      pasting_ = false;
+      return true;
+    }
+    if (pasting_ && event == Event::Return) {
+      // Every box here is one line, so the alternative to this is a clipboard
+      // with a newline in it submitting the box halfway through arriving —
+      // committing a truncated message, or closing the filter mid-paste. The
+      // newline becomes a space so the two joined lines still read as two words.
+      InsertIntoActiveInput(" ");
+      return true;
+    }
+    if (event == Event::CtrlV) {
+      // Not a rebindable action: this is the terminal's paste gesture rather
+      // than one of gittop's commands, and it means the same thing in every box.
+      PasteFromClipboard();
       return true;
     }
 
@@ -3524,7 +3775,20 @@ int App::Run() {
     return Perform(action);
   });
 
+  // Bracketed paste on. FTXUI does not know about this mode, so gittop asks for
+  // it itself and turns it off again below — leaving a terminal in a mode the
+  // program that set it has exited is how a shell ends up printing `[200~`
+  // in front of everything the user pastes afterwards.
+  //
+  // Written straight to stdout rather than through the dom: it is terminal
+  // state, not something drawn, and it has to outlast every frame.
+  std::fputs("\x1b[?2004h", stdout);
+  std::fflush(stdout);
+
   screen.Loop(root);
+
+  std::fputs("\x1b[?2004l", stdout);
+  std::fflush(stdout);
 
   // Before `screen` goes out of scope, because every notifier captured it by
   // reference. A worker still in a ten-second timeout would otherwise post an
