@@ -497,7 +497,7 @@ bool App::Animating() const {
   // A fetch in flight keeps the spinner turning. It stops the moment the
   // request lands, so this is bounded by the HTTP timeout rather than open.
   if (fetcher_.Running() || pipeline_fetcher_.Running() || job_fetcher_.Running() ||
-      pull_fetcher_.Running()) {
+      pull_fetcher_.Running() || pull_create_fetcher_.Running()) {
     return true;
   }
   // A transfer's progress bar is the one thing here that has to repaint while
@@ -815,6 +815,8 @@ void App::NextRemote() {
   pull_details_open_ = false;
   pipeline_selected_ = 0;
   pull_selected_ = 0;
+  // Whatever was just opened is not in the list this is about to fetch.
+  pull_focus_number_ = -1;
   last_pipeline_fetch_ = {};
 
   const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
@@ -893,6 +895,16 @@ void App::CollectFetch() {
   }
 
   remote_ = std::move(result);
+
+  // The compose form's target defaults to the repository's default branch, and
+  // that is the one thing on it which arrives over the network. Filled in only
+  // while the box is still empty, so a fetch landing a second after somebody
+  // typed a target cannot overwrite what they typed.
+  if (overlay_open_ && overlay_index_ == kPullCreate && pull_draft_.target_branch.empty()) {
+    pull_draft_.target_branch = remote_.info.default_branch;
+    pull_cursors_[ui::kPullTarget] = static_cast<int>(pull_draft_.target_branch.size());
+  }
+
   if (remote_.state == model::FetchState::Failed) {
     Note(remote_.error, true);
   } else if (view_ != ui::View::Remote) {
@@ -1171,6 +1183,22 @@ void App::CollectPulls() {
 
   pulls_ = std::move(result);
   RebuildFilter();
+
+  // The one just opened, if this is the refresh that followed opening it.
+  // Consumed either way: a number that outlived its fetch would select a row on
+  // some later list that happens to share it.
+  const int wanted = pull_focus_number_;
+  pull_focus_number_ = -1;
+  if (wanted >= 0) {
+    const model::PullSnapshot& visible = VisiblePulls();
+    for (std::size_t i = 0; i < visible.pulls.size(); ++i) {
+      if (visible.pulls[i].number == wanted) {
+        pull_selected_ = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+
   pull_selected_ =
       std::clamp(pull_selected_, 0, std::max(0, static_cast<int>(VisiblePulls().pulls.size()) - 1));
   if (pulls_.state == model::FetchState::Failed) {
@@ -1187,6 +1215,213 @@ void App::ToggleDetails() {
   // which is why the cursor may keep moving with it open while the CI view's
   // drill-down closes.
   pull_details_open_ = !pull_details_open_;
+}
+
+// ------------------------------------------------------ opening a pull request
+
+bool App::SourceBranchOnRemote() const {
+  // `upstream_gone` is the case a local read can only see once something has
+  // pruned the tracking ref — see git/transfer.cpp. Until then a deleted
+  // upstream looks healthy here, which is why this is the precondition gittop
+  // can check and not a guarantee: the provider still has the last word.
+  return snapshot_.has_upstream && !snapshot_.upstream_gone;
+}
+
+void App::RequestPullCreate() {
+  DiscoverRemotes();
+  if (!remote_.ref.valid()) {
+    Note("no GitHub or GitLab remote to open one on", false);
+    return;
+  }
+  if (pull_create_fetcher_.Running()) {
+    Note("one is already being opened", false);
+    return;
+  }
+
+  const std::string branch = HeadBranch();
+  if (branch.empty()) {
+    // A detached HEAD has nothing to merge *from*. The provider would refuse a
+    // commit id in the branch field, and rather less clearly than this.
+    Note("no branch checked out — a pull request needs one", true);
+    return;
+  }
+
+  // Checked before the form rather than after the 401, because collecting four
+  // fields and then reporting that none of it could have been sent is worse
+  // than saying so first. The token here is resolved and immediately dropped:
+  // only whether there is one matters at this point.
+  const remote::Token token =
+      remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
+  if (!token.present()) {
+    Note("opening one needs a token — " + keys_.KeyFor(ui::Action::SignIn) + " signs in", true);
+    return;
+  }
+
+  // The default branch comes with the repository fetch, which the pulls view
+  // does not do on its own. Asking here is one request, on the tab the user is
+  // already on, for the one field that cannot be filled locally.
+  EnsureRemote();
+
+  pull_draft_ = model::PullDraft{};
+  pull_draft_.source_branch = branch;
+  pull_draft_.target_branch = remote_.info.default_branch;
+  // A guess, and the best one available without a walk gittop has not done:
+  // the newest commit on this branch. It came back with the status read, so it
+  // costs nothing, and it is visibly a text box rather than a decision.
+  if (!snapshot_.recent.empty()) {
+    pull_draft_.title = snapshot_.recent.front().summary;
+  }
+
+  // Cursors at the end of what was pre-filled, which is where typing continues
+  // from. FTXUI clamps these every frame, so none of them can get ahead of the
+  // string it indexes.
+  pull_cursors_[ui::kPullSource] = static_cast<int>(pull_draft_.source_branch.size());
+  pull_cursors_[ui::kPullTarget] = static_cast<int>(pull_draft_.target_branch.size());
+  pull_cursors_[ui::kPullTitle] = static_cast<int>(pull_draft_.title.size());
+  pull_cursors_[ui::kPullBody] = static_cast<int>(pull_draft_.body.size());
+
+  // The title is where the work is: the two branches are already answered and
+  // the body is optional.
+  pull_field_ = ui::kPullTitle;
+  pull_create_error_.clear();
+  pull_create_hint_.clear();
+  OpenOverlay(kPullCreate);
+}
+
+void App::SubmitPullCreate() {
+  if (pull_create_fetcher_.Running()) {
+    return;
+  }
+  // The one precondition that refuses rather than warns. A branch that is not
+  // on the remote cannot be merged from, and the pane has been saying so.
+  if (!SourceBranchOnRemote()) {
+    Note(pull_draft_.source_branch + " is not on the remote — " +
+             keys_.KeyFor(ui::Action::Push) + " pushes it",
+         true);
+    return;
+  }
+  if (pull_draft_.title.empty()) {
+    Note("a pull request needs a title", true);
+    return;
+  }
+  if (pull_draft_.target_branch.empty()) {
+    Note("say which branch it goes into", true);
+    return;
+  }
+
+  confirm_kind_ = ConfirmKind::PullCreate;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformPullCreate() {
+  // Back to the form rather than away from it: the sending state belongs on the
+  // pane that collected the fields, so a refusal lands with everything still in
+  // the boxes it came out of.
+  OpenOverlay(kPullCreate);
+
+  pull_create_error_.clear();
+  pull_create_hint_.clear();
+
+  const remote::Token token =
+      remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
+  const model::RemoteRef ref = remote_.ref;
+  const model::PullDraft draft = pull_draft_;
+  pull_create_fetcher_.Start([ref, token, draft](const std::atomic<bool>& cancel) {
+    remote::HttpClient client;
+    return remote::CreatePull(ref, token, draft, client, &cancel);
+  });
+}
+
+void App::CancelPullCreate() {
+  if (pull_create_fetcher_.Running()) {
+    pull_create_fetcher_.Cancel();
+    // Honest rather than reassuring. The request is not retried, so there was
+    // exactly one of it — but it may already have reached the server, and
+    // nothing here can tell an abandoned request from a refused one.
+    Note("stopped waiting; it may still have been opened", false);
+    return;
+  }
+  pull_draft_ = model::PullDraft{};
+  pull_create_error_.clear();
+  pull_create_hint_.clear();
+  CloseOverlay();
+}
+
+void App::CollectPullCreate() {
+  model::PullCreated result;
+  if (!pull_create_fetcher_.Consume(&result)) {
+    return;
+  }
+  if (result.error == "cancelled") {
+    // esc, and the message has already been shown. The list is reloaded because
+    // the request may have landed anyway, and a refresh is the only thing that
+    // can settle it.
+    pull_draft_ = model::PullDraft{};
+    if (overlay_open_ && overlay_index_ == kPullCreate) {
+      CloseOverlay();
+    }
+    pulls_ = model::PullSnapshot{};
+    RebuildFilter();
+    if (view_ == ui::View::Pulls) {
+      StartPullFetch();
+    }
+    return;
+  }
+
+  if (result.state == model::FetchState::Failed) {
+    pull_create_error_ = result.error;
+    pull_create_hint_ = result.hint;
+    // Nothing is cleared. Whatever was typed is still in the draft and the pane
+    // comes back with it, which is the whole reason the failure is reported
+    // there instead of in the footer.
+    OpenOverlay(kPullCreate);
+    Note(result.error, true);
+    return;
+  }
+
+  const int number = result.pull.number;
+  pull_draft_ = model::PullDraft{};
+  pull_create_error_.clear();
+  pull_create_hint_.clear();
+  CloseOverlay();
+
+  Note(number >= 0 ? "opened #" + std::to_string(number) + " on " + remote_.ref.full_name()
+                   : "opened it on " + remote_.ref.full_name(),
+       false);
+
+  // Refetched rather than spliced in. The server decides the number, the
+  // ordering and half the fields, and a row assembled here would be a second
+  // account of the same thing that could disagree with the first.
+  pull_focus_number_ = number;
+  pulls_ = model::PullSnapshot{};
+  RebuildFilter();
+  if (view_ == ui::View::Pulls) {
+    StartPullFetch();
+  }
+}
+
+ui::PullComposeView App::PullComposeViewState() const {
+  ui::PullComposeView view;
+  view.provider = remote_.ref.provider;
+  view.full_name = remote_.ref.full_name();
+  view.remote_name = remotes_.empty() ? std::string() : remotes_[remote_index_].name;
+
+  view.branch_on_remote = SourceBranchOnRemote();
+  view.upstream_gone = snapshot_.upstream_gone;
+  view.upstream = snapshot_.upstream;
+  view.ahead = static_cast<int>(snapshot_.ahead);
+
+  // Unknown rather than absent: a repository whose fetch failed and one whose
+  // fetch has not happened both leave this empty, and neither is a default
+  // branch called "".
+  view.default_branch_known = !remote_.info.default_branch.empty();
+
+  view.sending = pull_create_fetcher_.Running();
+  view.error = pull_create_error_;
+  view.hint = pull_create_hint_;
+  view.field = pull_field_;
+  view.push_key = keys_.KeyFor(ui::Action::Push);
+  return view;
 }
 
 int App::RefreshInterval() const {
@@ -1597,6 +1832,24 @@ std::string* App::ActiveInputText() {
       // Only one of the sign-in stages has anything to type into. The others
       // are a code to read and a browser to go to.
       return signin_stage_ == ui::SignInStage::Paste ? &token_input_ : nullptr;
+    case kPullCreate:
+      // Four boxes, so which one is a question — and pull_field_ is the answer,
+      // because it is the same int the vertical container selects with.
+      if (pull_create_fetcher_.Running()) {
+        return nullptr;  // nothing is typeable while it is in flight
+      }
+      switch (pull_field_) {
+        case ui::kPullSource:
+          return &pull_draft_.source_branch;
+        case ui::kPullTarget:
+          return &pull_draft_.target_branch;
+        case ui::kPullTitle:
+          return &pull_draft_.title;
+        case ui::kPullBody:
+          return &pull_draft_.body;
+        default:
+          return nullptr;
+      }
     default:
       return nullptr;
   }
@@ -1615,6 +1868,12 @@ int* App::ActiveInputCursor() {
       return &passphrase_cursor_;
     case kSignIn:
       return signin_stage_ == ui::SignInStage::Paste ? &token_cursor_ : nullptr;
+    case kPullCreate:
+      if (pull_create_fetcher_.Running() || pull_field_ < 0 ||
+          pull_field_ >= ui::kPullFieldCount) {
+        return nullptr;
+      }
+      return &pull_cursors_[static_cast<std::size_t>(pull_field_)];
     default:
       return nullptr;
   }
@@ -1718,6 +1977,8 @@ void App::AdoptToken(std::string token) {
   pull_details_open_ = false;
   pipeline_selected_ = 0;
   pull_selected_ = 0;
+  // Whatever was just opened is not in the list this is about to fetch.
+  pull_focus_number_ = -1;
   last_pipeline_fetch_ = {};
 }
 
@@ -1839,6 +2100,8 @@ void App::SignOut() {
   pull_details_open_ = false;
   pipeline_selected_ = 0;
   pull_selected_ = 0;
+  // Whatever was just opened is not in the list this is about to fetch.
+  pull_focus_number_ = -1;
   last_pipeline_fetch_ = {};
 }
 
@@ -2734,9 +2997,10 @@ ui::Scope App::CurrentScope() const {
       return ui::Scope::Branches;
     case ui::View::Pipelines:
       return ui::Scope::Ci;
+    case ui::View::Pulls:
+      return ui::Scope::Pull;
     case ui::View::History:
     case ui::View::Remote:
-    case ui::View::Pulls:
     // Claims no keys of its own. Everything it does is on `enter`, which is
     // already the global "act on this row", so a scope here would only be a
     // second place for a binding to hide.
@@ -2871,6 +3135,10 @@ bool App::Perform(ui::Action action) {
     case ui::Action::Prune:
       RequestPrune();
       return true;
+    case ui::Action::PullCreate:
+      RequestPullCreate();
+      return true;
+
     case ui::Action::CiRef:
       OpenRefPicker();
       return true;
@@ -3046,6 +3314,7 @@ const Event kRemoteReady = Event::Special("gittop:remote-ready");
 const Event kPipelinesReady = Event::Special("gittop:pipelines-ready");
 const Event kJobsReady = Event::Special("gittop:jobs-ready");
 const Event kPullsReady = Event::Special("gittop:pulls-ready");
+const Event kPullCreated = Event::Special("gittop:pull-created");
 const Event kTransferDone = Event::Special("gittop:transfer-done");
 const Event kDeviceCodeReady = Event::Special("gittop:device-code-ready");
 const Event kPollReady = Event::Special("gittop:poll-ready");
@@ -3071,6 +3340,7 @@ int App::Run() {
   pipeline_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPipelinesReady); });
   job_fetcher_.SetNotifier([&screen] { screen.PostEvent(kJobsReady); });
   pull_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPullsReady); });
+  pull_create_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPullCreated); });
   transfer_fetcher_.SetNotifier([&screen] { screen.PostEvent(kTransferDone); });
   device_fetcher_.SetNotifier([&screen] { screen.PostEvent(kDeviceCodeReady); });
   poll_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPollReady); });
@@ -3148,6 +3418,20 @@ int App::Run() {
             std::string("Abort the ") + model::OperationName(operation_.operation) + "?",
             operation_.detail,
             "Everything the operation has done so far is discarded.", "abort");
+
+      case ConfirmKind::PullCreate: {
+        // Everything about to be sent, on one pane: which host and repository,
+        // which branch goes into which, and the title it will carry. Push is
+        // the only other thing here that other people can see, and it asks the
+        // same question the same way.
+        const std::string noun =
+            remote_.ref.provider == model::Provider::GitLab ? "merge request" : "pull request";
+        return ui::ConfirmPane(
+            "Open a " + noun + " on " + remote_.ref.full_name() + "?",
+            pull_draft_.source_branch + " " + ui::glyphs().arrow_right + " " +
+                pull_draft_.target_branch,
+            /*warning=*/"", "open", pull_draft_.title);
+      }
 
       case ConfirmKind::Prune: {
         const std::string remote_name =
@@ -3230,9 +3514,45 @@ int App::Run() {
     return ui::RefPickerPane(ci_refs_, RefPickerViewState(), screen.dimx(), screen.dimy());
   });
 
+  // ------------------------------------------------------ pull create overlay
+  // The one overlay with more than one box in it, so it is the one place a
+  // container decides focus rather than App. `pull_field_` is that container's
+  // selector, which is what lets ctrl-v ask which box is being typed into —
+  // FTXUI has no way to be asked directly, and everywhere else the answer was
+  // "the only one open".
+  const auto compose_field = [this](std::string* text, int field, const char* placeholder) {
+    InputOption option;
+    option.multiline = false;
+    option.cursor_position = &pull_cursors_[static_cast<std::size_t>(field)];
+    // Enter submits from any of the four, the same as every other box in the
+    // program. Moving between them is tab, which the container below handles
+    // because an Input does not consume it.
+    option.on_enter = [this] { SubmitPullCreate(); };
+    return Input(text, placeholder, option);
+  };
+
+  auto pull_source_input =
+      compose_field(&pull_draft_.source_branch, ui::kPullSource, "branch to merge from");
+  auto pull_target_input =
+      compose_field(&pull_draft_.target_branch, ui::kPullTarget, "branch to merge into");
+  auto pull_title_input = compose_field(&pull_draft_.title, ui::kPullTitle, "what this changes");
+  auto pull_body_input =
+      compose_field(&pull_draft_.body, ui::kPullBody, "why, for whoever reviews it");
+
+  auto pull_create_fields = Container::Vertical(
+      {pull_source_input, pull_target_input, pull_title_input, pull_body_input}, &pull_field_);
+
+  auto pull_create_pane = Renderer(pull_create_fields, [this, pull_source_input,
+                                                        pull_target_input, pull_title_input,
+                                                        pull_body_input] {
+    return ui::PullComposePane(PullComposeViewState(), pull_source_input->Render(),
+                               pull_target_input->Render(), pull_title_input->Render(),
+                               pull_body_input->Render());
+  });
+
   auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane,
                                  passphrase_pane, filter_pane, operation_pane, signin_pane,
-                                 ref_picker_pane},
+                                 ref_picker_pane, pull_create_pane},
                                 &overlay_index_);
 
   // --------------------------------------------------------------- main view
@@ -3408,6 +3728,10 @@ int App::Run() {
       CollectPulls();
       return true;
     }
+    if (event == kPullCreated) {
+      CollectPullCreate();
+      return true;
+    }
     if (event == kTransferDone) {
       CollectTransfer();
       // The worker has reported and been joined by now, so this is the first
@@ -3566,6 +3890,9 @@ int App::Run() {
               case ConfirmKind::Prune:
                 PerformPrune();
                 break;
+              case ConfirmKind::PullCreate:
+                PerformPullCreate();
+                break;
               case ConfirmKind::Discard:
                 PerformDiscard();
                 break;
@@ -3574,7 +3901,16 @@ int App::Run() {
           }
           if (event == Event::Character('n') || event == Event::Character('N') ||
               event == Event::Escape) {
-            CloseOverlay();
+            // Declining a create goes back to the form rather than out of it.
+            // Every other confirm here stands in front of something already
+            // decided, so "no" means "not that"; this one stands in front of
+            // four fields somebody typed, and dropping them would make the
+            // confirm the most expensive key on the pane.
+            if (confirm_kind_ == ConfirmKind::PullCreate) {
+              OpenOverlay(kPullCreate);
+            } else {
+              CloseOverlay();
+            }
             return true;
           }
           // Swallow any other typed key so a stray keystroke cannot answer a
@@ -3627,6 +3963,21 @@ int App::Run() {
           // on a list nobody can see.
           return !event.is_mouse();
         }
+
+        case kPullCreate:
+          if (event == Event::Escape) {
+            CancelPullCreate();
+            return true;
+          }
+          // While the create is in flight nothing here is answerable and the
+          // boxes must not take edits that will never be sent. Swallowed rather
+          // than passed down, for the reason the transfer pane swallows: the
+          // dashboard behind this is dimmed, and a key that acted on it from
+          // here would act on a list nobody can see.
+          if (pull_create_fetcher_.Running()) {
+            return !event.is_mouse();
+          }
+          return false;  // the four Inputs and their container take the rest
 
         case kPassphrase:
           // esc here abandons the transfer that the prompt is standing in front
@@ -3720,6 +4071,7 @@ int App::Run() {
   pipeline_fetcher_.Shutdown();
   job_fetcher_.Shutdown();
   pull_fetcher_.Shutdown();
+  pull_create_fetcher_.Shutdown();
   transfer_fetcher_.Shutdown();
   device_fetcher_.Shutdown();
   poll_fetcher_.Shutdown();

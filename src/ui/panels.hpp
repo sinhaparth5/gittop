@@ -120,8 +120,15 @@ ftxui::Element FilterPane(ftxui::Element input, const std::string& scope, int ma
 
 // `warning` is the line in danger colour under the detail, empty for a question
 // that is merely worth asking. `confirm_label` names what `y` does.
+//
+// `aside` is a second, dimmer line under the detail, for a question whose
+// subject genuinely needs two: opening a pull request has to show the branch
+// pair *and* the title, and running them together into one line is how a long
+// title pushes the branches off the pane. Empty for every other confirm, which
+// is most of them — the default is there so adding it changed no call site.
 ftxui::Element ConfirmPane(const std::string& question, const std::string& detail,
-                           const std::string& warning, const std::string& confirm_label);
+                           const std::string& warning, const std::string& confirm_label,
+                           const std::string& aside = {});
 
 // A transfer in flight, translated out of git::TransferProgress by App so this
 // header stays free of libgit2. `ratio` is -1 while the totals are unknown,

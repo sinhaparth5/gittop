@@ -186,6 +186,14 @@ able to separate green from amber.
 - Mergeable, conflicting and blocked where GitLab says so; GitHub's list endpoint does not report
   mergeability, so that column simply is not drawn rather than guessed at
 - The one for the branch you are standing on is marked and sorted to the top
+- `n` opens one, without leaving. The branch you are on goes into the repository's default branch
+  unless you say otherwise, the title starts as your newest commit, and it asks before it sends —
+  the same confirm push gets, because these are the two things gittop does that other people see
+- It checks first what it already knows: a branch that was never pushed cannot be merged from, so
+  it says so and names the push key instead of relaying a 422 about a field name. A branch that is
+  merely ahead is a warning, not a refusal — it opens, without the commits you have not pushed
+- When a provider does refuse it, you get the provider's own sentence and your draft back in the
+  boxes you typed it into
 
 **Settings.**
 
@@ -374,8 +382,9 @@ the file it came from and nothing else.
 
 Staging a hunk rather than a whole file. Interactive rebase with reword, squash, drop and reorder
 — `B` today is `rebase @{upstream}` and nothing else. Merge, so a pull that is not a fast-forward
-has an option besides rebasing. More than one page of CI and pull request history. Opening a pull
-request, rather than only reading one.
+has an option besides rebasing. More than one page of CI and pull request history. Merging a pull
+request, which is a much larger blast radius than opening one and is argued separately. Picking the
+two branches from a list rather than typing them, which needs remote branches gittop cannot see yet.
 
 [Open issues](https://github.com/sinhaparth5/gittop/issues) track these and are the current list;
 [`CHANGELOG.md`](CHANGELOG.md) is what has landed so far, and [`CLAUDE.md`](CLAUDE.md) has the
@@ -408,6 +417,7 @@ stack decisions and the source layout behind them.
 | `f` `p` `P`       | Fetch / pull / push                                                  |
 | `x`               | Branches view: prune remote-tracking refs, after a confirm           |
 | `b`               | CI view: show runs for another branch, a tag, or every ref           |
+| `n`               | Pulls view: open one, after a confirm                                |
 | `R`               | Switch to the next remote                                            |
 | `L`               | Sign in to GitHub or GitLab                                          |
 | `t`               | Next theme                                                           |

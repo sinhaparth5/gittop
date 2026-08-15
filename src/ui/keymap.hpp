@@ -71,6 +71,7 @@ enum class Action {
 
   Prune,
   CiRef,
+  PullCreate,
 
   Rebase,
   Operation,
@@ -97,6 +98,7 @@ enum class Scope {
   Stash,
   Branches,
   Ci,
+  Pull,
 };
 
 struct Binding {

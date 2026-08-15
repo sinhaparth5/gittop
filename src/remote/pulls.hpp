@@ -24,4 +24,21 @@ model::PullSnapshot FetchPulls(const model::RemoteRef& ref, const Token& token,
                                const std::string& head_branch, int limit, HttpClient& client,
                                const std::atomic<bool>* cancel = nullptr);
 
+// Blocking. Opens one, and is the only write anywhere under remote/.
+//
+// The four fields of the draft go out under whichever names this provider uses
+// and the reply comes back through the same normalization the list uses, so
+// nothing above this line learns that GitHub wants `head` where GitLab wants
+// `source_branch`.
+//
+// This one does *not* retry. Every other request in this codebase is a read and
+// HttpClient's retry loop is safe on it; a create is not idempotent, and a
+// transport failure after the server has already made the pull request would
+// make a second one on the way back. Being told the request failed when it
+// worked is recoverable — the list refreshes and it is there. Two open pull
+// requests for one branch is not.
+model::PullCreated CreatePull(const model::RemoteRef& ref, const Token& token,
+                              const model::PullDraft& draft, HttpClient& client,
+                              const std::atomic<bool>* cancel = nullptr);
+
 }  // namespace gittop::remote

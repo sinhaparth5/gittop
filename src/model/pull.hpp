@@ -91,6 +91,36 @@ struct PullRequest {
   bool from_head = false;
 };
 
+// What opening one takes, and the whole of it. Four fields because four is the
+// entire intersection of what the two providers require: GitHub spells them
+// head, base, title and body, GitLab source_branch, target_branch, title and
+// description, and remote/pulls.cpp is the only file that knows either of those
+// things. Everything else a provider offers on a create — labels, reviewers,
+// draft, milestones, assignees — is asked for differently enough that folding
+// it in would put a provider's vocabulary into this header.
+struct PullDraft {
+  std::string source_branch;
+  std::string target_branch;
+  std::string title;
+  std::string body;
+};
+
+// The answer to a create. `pull` is the provider's echo of what it made, put
+// through the same normalization the list goes through, so the row that turns
+// up in the list and the one reported here cannot describe it differently.
+//
+// Failures carry the provider's own words where it gave any: a create refused
+// for "No commits between master and feature" is a sentence the user can act
+// on, and "unexpected response 422" is not.
+struct PullCreated {
+  FetchState state = FetchState::Idle;
+  PullRequest pull;
+
+  RateLimit rate;
+  std::string error;
+  std::string hint;
+};
+
 // Open pull requests for one repository, on the same terms as every other
 // snapshot here: failures arrive as a state plus a readable error.
 struct PullSnapshot {

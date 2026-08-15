@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `gittop` is a btop-inspired terminal dashboard for Git: local repository state that works with no
 network, plus GitHub and GitLab panels. There are ten views — status, history, branches, graph,
 diff, stashes, remote, CI, pull requests and settings — plus push/pull, stashing, rebase helpers,
-sign-in, a `/` filter, eight themes, rebindable keys, a configurable tab set and the mouse. Under
+opening a pull request, sign-in, a `/` filter, eight themes, rebindable keys, a configurable tab set
+and the mouse. Under
 all of it sit two token layers (colours and glyphs), one `Panel()` every framed panel goes through,
 cell-accurate text measurement, and a motion budget.
 
@@ -228,7 +229,9 @@ property of the action rather than something the config can set, because where a
 is a fact about what it does. Phase 6 added two more scopes: `Diff` takes `s` for switching sides
 and `Stash` takes `a`, `p` and `d`; `Branches` takes `x` for the prune, scoped because a network
 call with a destructive edge should only be reachable from the one screen that shows what it would
-remove, and `Ci` takes `b` for the ref picker, which means nothing anywhere else.
+remove, and `Ci` takes `b` for the ref picker, which means nothing anywhere else. `Pull` takes `n`
+for opening one, scoped for the first reason again: that view is the one screen showing whether one
+is already open for this branch, which is the question worth answering before opening another.
 Two scoped bindings in different views never meet, so the
 diff's `s` and the status view's `s` are not a conflict; a scoped key over a *global* one is
 (the stash view's `p` over `pull`), and the checker only reports that when the config is what
@@ -410,11 +413,11 @@ neither error is expensive. `AskpassServer::served()` is what makes a wrong pass
 from an ordinary failure — and a success where nothing ever asked means the passphrase was not what
 authenticated, so it is dropped rather than held for a session that does not need it.
 
-Pull fast-forwards or refuses, push never forces, and push is the only operation that asks first —
-it is the only one that changes something other people can see. Keep it that way. The rule the
+Pull fast-forwards or refuses, and push never forces. Keep it that way. The rule the
 confirms implement is that an operation asks first when it can destroy something a user cannot get
 back — the working tree in a merge abort's hard reset, a branch in `Prune` — or when it is visible
-to other people, which is push and only push. Anything new that can lose work joins that list.
+to other people. That second list had exactly one member, push, until `n` on the pulls view added
+opening a pull request; both ask, and anything new in either category joins them.
 
 ## Windows
 
@@ -604,6 +607,59 @@ jobs. That asymmetry is the point, not an inconsistency. The CI
 poll loop runs only while its view is on screen, only when authenticated, and stops below a fifth
 of the remaining budget — and says which of those it is doing in the panel header, because a
 dashboard that has silently stopped updating looks exactly like one where nothing is happening.
+
+## Opening a pull request
+
+`remote::CreatePull` in `remote/pulls.cpp` is **the only write anywhere under `remote/`**, and
+everything else in this section follows from that being true for the first time.
+
+**It does not retry, and `HttpClient`'s retry loop is why that has to be said out loud.** Every
+other request here is a read, and `Post` carries a comment saying it retries the same body safely
+*because both endpoints that use it are idempotent by design*. A create is not. A transport failure
+after the server has already made the pull request would make a second one on the way back, so
+`request.max_attempts = 1`. Being told it failed when it worked is recoverable — the list refresh
+that follows shows it — and two open pull requests for one branch is not. The transport-failure
+message says so rather than claiming nothing happened, because nothing here can tell an abandoned
+request from a refused one.
+
+**The provider's own words beat `DescribeStatus`.** That function is written for reads and knows
+401, 403, 404, 429 and 5xx; a create fails at **422** more than at all of those together, and a 422
+is the provider explaining precisely what is wrong with this request. `ProviderComplaint` digs the
+sentence out of three GitLab shapes and two GitHub ones and prints it; `DescribeStatus` is the
+fallback for when the body said nothing. 403 gets its own answer for the same reason — DescribeStatus
+would advise a scope that lets you *read* the list, and a token that lists pull requests perfectly
+well and cannot open one is the ordinary way this fails.
+
+**The preconditions are checked from what gittop already has, before the request.** A branch with no
+upstream is not on the remote and the create will be refused, so `SourceBranchOnRemote()` blocks and
+the pane names the push key. A branch that is merely *ahead* opens fine and quietly leaves the
+unpushed commits out, so that warns and does not block. Both facts come out of the status read that
+already happened. These are two different pieces of news and drawing them the same way would be the
+`PipelineView::all_refs_pinned` mistake again.
+
+**A refusal comes back to the form with everything still in it.** `CollectPullCreate` reopens
+`kPullCreate` rather than closing it, and declining the confirm reopens it too — every other confirm
+stands in front of something already decided, so "no" means "not that", but this one stands in front
+of four fields somebody typed. A 422 that ate a paragraph of description is a 422 nobody forgives.
+
+**It is the second thing gittop does that other people can see, and the second to ask first.** Push
+was the only member of that list; the rule in the transfers section now has two.
+
+`kPullCreate` is also **the only overlay with more than one box in it**, which is the one place a
+container decides focus rather than App. `pull_field_` is that `Container::Vertical`'s selector, and
+`ActiveInputText` reads it to answer which box ctrl-v is pasting into — everywhere else the answer
+was "the only one open". Tab moves between the fields because an `Input` does not consume it;
+`enter` submits from any of the four, like every other box in the program.
+
+The target branch is the one field that cannot be filled locally: it is `RepoInfo::default_branch`,
+which arrives with the remote fetch that the pulls view does not do on its own. `RequestPullCreate`
+calls `EnsureRemote()` and `CollectFetch` fills the box **only while it is still empty**, so a fetch
+landing a second after somebody typed a target cannot overwrite it. Nothing is guessed in the
+meantime — a form pre-filled with `main` on a repository whose default is `master` is worse than an
+empty box, because it looks answered.
+
+Both branches are free text rather than a picker. A picker needs remote branches, which gittop
+cannot list yet; free text is what makes this independent of that.
 
 ## The CI ref filter
 

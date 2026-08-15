@@ -874,6 +874,10 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
   } else if (view == View::Pulls) {
     chips.push_back(Chip(move, "move"));
     chips.push_back(KeyChip(keys, Action::Open, "details"));
+    // The only place it is offered, and the only place the list it adds to is
+    // on screen — which is what makes "is one already open for this branch"
+    // answerable without leaving.
+    chips.push_back(KeyChip(keys, Action::PullCreate, "open one"));
     chips.push_back(KeyChip(keys, Action::Reload, "refresh"));
   } else if (view == View::Diff) {
     chips.push_back(Chip(move, "scroll"));
@@ -1128,6 +1132,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Push, "push this branch, after a confirm"),
       line(Action::Prune, "drop refs for branches the remote lost"),
       line(Action::CiRef, "CI view: show runs for another ref"),
+      line(Action::PullCreate, "pulls view: open one, after a confirm"),
       line(Action::NextRemote, "switch to the next remote"),
       line(Action::SignIn, "sign in to GitHub or GitLab"),
       text(""),
@@ -1234,7 +1239,8 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
 }
 
 Element ConfirmPane(const std::string& question, const std::string& detail,
-                    const std::string& warning, const std::string& confirm_label) {
+                    const std::string& warning, const std::string& confirm_label,
+                    const std::string& aside) {
   const Theme& t = theme();
   // A question that carries no warning is not a destructive one, and colouring
   // its frame red anyway would spend the alarm on something that does not
@@ -1250,8 +1256,11 @@ Element ConfirmPane(const std::string& question, const std::string& detail,
       separator() | color(t.border),
       text(""),
       hbox({text("   "), PathText(detail, true)}),
-      text(""),
   };
+  if (!aside.empty()) {
+    rows.push_back(hbox({text("   "), text(aside) | color(t.text_dim), filler()}));
+  }
+  rows.push_back(text(""));
   if (!warning.empty()) {
     rows.push_back(hbox({text("   "), text(warning) | color(t.danger)}));
     rows.push_back(text(""));
