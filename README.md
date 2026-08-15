@@ -61,6 +61,12 @@ gittop-<version>-windows-x86_64.exe    installer — offers to add gittop to PAT
 gittop-<version>-windows-x86_64.zip    unpack and run, no administrator needed
 ```
 
+The installer's PATH page defaults to **not** adding anything, so pick "for all users" or "for the
+current user" if you want to be able to type `gittop`. Already-open terminals keep the PATH they
+started with; open a new one. If your PATH is already very long the installer will say so and leave
+it alone rather than risk truncating it — add `<install dir>\bin` yourself in that case, and see
+[CHANGELOG.md](CHANGELOG.md) under 2026.08.9 for why.
+
 It is a single self-contained binary: no Visual C++ redistributable, no OpenSSL, nothing to install
 beside it. HTTPS goes through WinHTTP and Schannel, so it trusts the certificates Windows trusts,
 and ssh remotes run the `ssh.exe` that ships with Windows — which means your `~/.ssh/config`, your

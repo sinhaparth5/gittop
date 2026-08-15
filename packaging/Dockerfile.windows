@@ -7,7 +7,15 @@
 # than one that does not compile at all.
 FROM debian:trixie
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# The i386 architecture is here for one reason: makensis emits a 32-bit
+# installer whatever it is packaging, so a 64-bit-only Wine cannot run the
+# artifact this image exists to build. Without wine32 the installer dies with
+# `failed to load L"\\??\\C:\\windows\\syswow64\\ntdll.dll"` before any of its
+# own code runs, which reads like a broken installer rather than a missing
+# runtime — and leaves the add-to-PATH step, the whole reason the installer is
+# shipped, with nothing testing it at all.
+RUN dpkg --add-architecture i386 \
+ && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates \
       cmake \
       file \
@@ -18,6 +26,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       nsis \
       python3 \
       wine \
+      wine32:i386 \
       wine64 \
       xz-utils \
       zip \

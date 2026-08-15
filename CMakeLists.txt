@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.24)
 # GITTOP_VERSION below, so `--version`, the settings page and the splash cannot
 # drift from each other or from the release; the workflow in
 # .github/workflows/release.yml refuses a tag that does not match it.
-project(gittop VERSION 2026.08.8 LANGUAGES C CXX)
+project(gittop VERSION 2026.08.9 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -390,6 +390,36 @@ if(WIN32)
 
   # The whole reason the installer exists — it adds an "add to PATH" page.
   set(CPACK_NSIS_MODIFY_PATH ON)
+
+  # ...and the page's write is not safe on its own. CPack's AddToPath silently
+  # replaces a PATH it could not read, which is any PATH over NSIS's 1024-char
+  # string limit. packaging/gittop-path.nsh has the measurements; it refuses the
+  # unsafe cases and tells the user what to add by hand.
+  #
+  # !include'd rather than inlined. Reading the file into the variable is the
+  # obvious move and does not survive the trip: every CPACK_* setting is written
+  # back out as a CMake string in CPackConfig.cmake, so the script's backslashes
+  # become escape sequences ("Manager\Environment" -> invalid \E) and its
+  # ${HIVE} becomes an empty variable expansion. A path has neither problem.
+  #
+  # Forward slashes deliberately, on both platforms. CMake hands them out that
+  # way, NSIS takes them — the generated script already mixes them, since
+  # INST_DIR is a CMake path and every File command under it uses backslashes —
+  # and a converted path would need escaping in the very string that cannot
+  # carry it.
+  # The tripled backslashes are not a typo either. CPack writes every CPACK_*
+  # value into CPackConfig.cmake verbatim, between quotes it adds itself and
+  # does not escape, so a plain \" arrives as a bare quote that closes the
+  # string early and truncates the setting. Pre-escaping is what survives that
+  # one round trip. The quotes have to be there at all because an installer
+  # built from a checkout under "C:\Users\Some Name" has a space in this path.
+  #
+  # EXTRA_INSTALL_COMMANDS and not CPACK_NSIS_DEFINES, which is the hook that
+  # looks right: it is the only global-scope one in the template, it is
+  # undocumented, and the generator overwrites it. The symptom is that the
+  # setting simply arrives empty.
+  set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
+      "  !include \\\"${CMAKE_CURRENT_SOURCE_DIR}/packaging/gittop-path.nsh\\\"")
 
   # Upgrading over an existing install rather than stacking a second copy beside
   # it, which is what leaves two entries in Programs and Features and a stale

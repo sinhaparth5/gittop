@@ -17,6 +17,50 @@ published.
 
 ---
 
+## 2026.08.9 — 2026-08-15
+
+The Windows installer's "add to PATH" option now adds to PATH.
+
+### Fixed
+
+- **"Add gittop to the system PATH" did nothing, whichever option you picked.** The installer put
+  its files one directory deeper than it told itself it had — `gittop\gittop-<version>-windows-x86_64\bin`
+  rather than `gittop\bin` — and the add-to-PATH step, which is hardcoded to `$INSTDIR\bin` and
+  begins by checking that the directory exists, therefore found nothing and returned without a
+  word. The installer reported success, PATH was untouched, and there was nothing anywhere saying
+  so; the only way through it was to edit the environment variables by hand. The extra directory
+  came from a setting that exists for the tarball, so that `tar xf` unpacks into a folder of its own
+  instead of emptying `bin/` into whatever directory you were standing in. The `.deb` had already
+  had to opt out of it. NSIS now opts out too, and an installer that asks where to put things had no
+  use for it in the first place. The same `$INSTDIR\bin` assumption is what the Programs and
+  Features icon is written against, so that comes back as well. ([#26](https://github.com/sinhaparth5/gittop/issues/26))
+
+- **A long PATH is no longer overwritten by the installer.** This one was underneath the first and
+  could not be reached until it was fixed, which is the only reason it never shipped. NSIS strings
+  stop at 1024 characters and `ReadRegStr` returns *empty* rather than truncating past that, so on a
+  machine whose PATH is longer than that the add-to-PATH step read "nothing is here yet" and wrote
+  its own directory in place of the lot. Measured against a 1439-character system PATH, what
+  survived was 18 characters. CPack does check for this and checks the wrong string — the merged
+  process environment, rather than the one hive it is about to write — so the check passes on a
+  truncated-but-non-empty value while the read that matters comes back empty. gittop now measures
+  the value it is actually going to replace, and both the length it read and the length it would
+  write. When either will not fit it leaves PATH alone and says which directory to add by hand,
+  which is worse than working and much better than silence.
+
+### Changed
+
+- **The Windows installer is tested now, in two places, having been tested in none.** The release
+  workflow installs the `.exe` on the runner and checks the binary lands where the installer points
+  PATH at — the assertion that would have caught this. `scripts/build-windows.sh --package` goes
+  further under Wine, because a throwaway prefix can be handed a hostile PATH and thrown away
+  afterwards: it installs for all users and for the current user, checks the entry arrives and that
+  the existing PATH survives as `REG_EXPAND_SZ` rather than being flattened, plants a
+  1439-character PATH and checks the installer refuses it, and uninstalls and checks the entry is
+  taken back out. The toolchain image gains 32-bit Wine to make that possible; makensis emits a
+  32-bit installer whatever it packages, and a 64-bit-only Wine cannot start one.
+
+---
+
 ## 2026.08.8 — 2026-08-15
 
 You can open a pull request without leaving.
