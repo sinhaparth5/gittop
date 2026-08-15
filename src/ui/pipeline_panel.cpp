@@ -184,7 +184,9 @@ Element Header(const PipelineSnapshot& snapshot, const RemoteRef& ref, const Pip
   const Theme& t = theme();
 
   Elements row{
-      text(" " + ProviderGlyph(ref.provider) + " ") | bold | color(t.accent),
+      // CiGlyph, not ProviderGlyph: the word beside it is "GitHub Actions", and
+      // the octocat that used to sit here is a different brand's mark.
+      text(" " + CiGlyph(ref.provider) + " ") | bold | color(t.accent),
       text(CiName(ref.provider)) | bold | color(t.text),
   };
 

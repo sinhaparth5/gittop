@@ -149,7 +149,7 @@ SettingsGroup AppearanceGroup(const SettingsView& view) {
   // Its own row rather than a consequence of the icons row, because it is the
   // one part of the nerd set worth having on a terminal that wants none of the
   // rest: a hexagon is not the GitHub logo, whereas ✓ is a perfectly good check.
-  logos.note = "GitHub and GitLab marks; needs a patched font";
+  logos.note = "GitHub, GitLab and Actions marks; needs a patched font";
   logos.action = SettingsAction::ToggleLogos;
   logos.verb = "toggle";
   group.rows.push_back(std::move(logos));

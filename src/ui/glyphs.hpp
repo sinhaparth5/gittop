@@ -95,6 +95,17 @@ struct GlyphSet {
   const char* gitlab;
   const char* provider_unknown;
 
+  // Actions is a separately branded product rather than GitHub wearing a
+  // different hat, and the CI header names it in full — so drawing the plain
+  // octocat beside the words "GitHub Actions" was the one place gittop printed
+  // a brand next to another brand's mark. Read through CiGlyph().
+  //
+  // There is no `gitlab_ci` counterpart and that is not an omission: GitLab CI
+  // is branded as GitLab, so the tanuki is the correct mark rather than a
+  // missing one, and inventing a second shape for it would be the only wrong
+  // answer available.
+  const char* github_actions;
+
   // ----------------------------------------------------------------------- CI
   // Separate from the general verdicts because pending and skipped have no
   // general equivalent, and because a set may want a differently-weighted mark
@@ -147,6 +158,12 @@ const GlyphSet& glyphs();
 // front, so the same repository is recognisable at a glance from the remote
 // panel, the CI header, the pull list, the sign-in pane and the settings page.
 std::string ProviderGlyph(model::Provider provider);
+
+// The mark for a provider's *CI system*, which is a different brand from the
+// provider on GitHub and the same one on GitLab. Obeys `theme.logos` exactly as
+// ProviderGlyph does, since it is the same kind of exception for the same
+// reason: an arrangement of geometric shapes is not the Actions mark either.
+std::string CiGlyph(model::Provider provider);
 
 // The GitHub and GitLab marks are the one place the nerd icons are worth having
 // on their own terms, and the reason is that they are *logos*: no arrangement of

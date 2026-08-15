@@ -17,6 +17,34 @@ published.
 
 ---
 
+## 2026.08.5 — 2026-08-15
+
+One thing you can see, and one you could only have hit at the worst possible moment.
+
+### Added
+
+- The CI header draws the GitHub Actions mark rather than the GitHub one. It prints the words
+  "GitHub Actions" and was putting the plain octocat beside them, which made it the only place
+  gittop showed one company's mark next to a different product's name. Actions is separately
+  branded and has a logo of its own, so it gets it. There is no GitLab counterpart on purpose:
+  GitLab CI is branded as GitLab, so the tanuki is already the right mark there and a second
+  invented shape would be the only wrong answer available. This rides the existing `theme.logos`
+  setting — nothing new to turn on, and still ignored under `icons = "ascii"`, where the terminal
+  has said it cannot carry the bytes.
+
+### Fixed
+
+- gittop could hang on quit instead of exiting, after an ssh transfer that had asked for a key
+  passphrase. Shutting the passphrase helper down means waking its listener thread with a single
+  byte down a pipe, and that write was issued without checking whether it landed: a signal arriving
+  at the wrong instant leaves the thread parked waiting for a byte that was never delivered, and the
+  quit path waits on that thread forever. The write is now retried the way every other write in that
+  file already was, and the pipe is closed before the wait rather than after it, so the thread wakes
+  on the hangup even in the case where the write failed anyway. Narrow to reach and total when
+  reached — the only way out was to kill the process.
+
+---
+
 ## 2026.08.4 — 2026-08-14
 
 Both changes are the same complaint from two directions: a panel that was showing you less than it
