@@ -219,6 +219,28 @@ jobs:
         shell: bash
         run: ./scripts/check-includes.py
 
+      # NSIS is not on the windows-latest image. It was once, which is exactly
+      # why this step exists rather than an assumption that it is there — the
+      # runner image is not part of this repository and drops things on its own
+      # schedule, and the failure lands on a tag, where it is most expensive.
+      #
+      # Before the build, not next to the packaging it serves. It depends on
+      # nothing the build produces, and putting it here makes a broken install
+      # cost one minute instead of the sixteen it takes to compile libgit2,
+      # libcurl and FTXUI first — which is what the last tag paid.
+      #
+      # CPack locates makensis through the registry key the installer writes
+      # rather than by searching PATH, so the PATH line is belt to that braces.
+      # The explicit version check turns "not installed" into a failure with an
+      # obvious cause here, instead of three lines of CPack error later.
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          $nsis = "C:\Program Files (x86)\NSIS"
+          echo $nsis >> $env:GITHUB_PATH
+          & "$nsis\makensis.exe" /VERSION
+
       # MSVC's static runtime. The dynamic one would make the binary depend on a
       # Visual C++ redistributable that most machines have and some do not, and
       # the failure when it is missing is a dialog about a missing DLL rather
@@ -247,8 +269,13 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          unzip -q build/gittop-"$VERSION"-windows-x86_64.zip -d unpacked
+          # Expand-Archive rather than unzip: the bash here is Git for Windows',
+          # and it does not ship unzip. PowerShell is the thing guaranteed to be
+          # on this machine.
+          powershell -NoProfile -Command \
+            "Expand-Archive -Path 'build/gittop-$VERSION-windows-x86_64.zip' -DestinationPath 'unpacked' -Force"
           exe=$(find unpacked -name gittop.exe | head -1)
+          [ -n "$exe" ] || { echo "no gittop.exe in the package" >&2; exit 1; }
           echo "testing $exe"
 
           got=$("$exe" --version)
@@ -272,12 +299,17 @@ jobs:
           "$exe" --init-config && { echo "second --init-config should have failed" >&2; exit 1; }
           echo "config written and re-write refused, as expected"
 
+      # No `|| true` on the installer. It was written that way when NSIS was
+      # assumed present, which made a missing installer a silent omission — the
+      # job goes green and the release page simply has one fewer download than
+      # the README promises. Both artifacts are deliverables; a missing one is a
+      # failure.
       - name: Stage the artifacts
         shell: bash
         run: |
           mkdir -p dist
           cp build/*.zip dist/
-          cp build/*.exe dist/ 2>/dev/null || true
+          cp build/*.exe dist/
           ls -1 dist
 
       - uses: actions/upload-artifact@v4
@@ -312,7 +344,7 @@ jobs:
       - name: Check what came back
         run: |
           ls -lR .
-          for pattern in ./*.deb ./*.tar.gz ./*.zip ./release-notes.md; do
+          for pattern in ./*.deb ./*.tar.gz ./*.zip ./*.exe ./release-notes.md; do
             # shellcheck disable=SC2086
             set -- $pattern
             [ -f "$1" ] || { echo "no artifact matching $pattern" >&2; exit 1; }
