@@ -17,6 +17,56 @@ published.
 
 ---
 
+## 2026.08.6 — 2026-08-15
+
+Two ways gittop was losing things you gave it: settings you changed, and text you pasted.
+
+### Changed
+
+- Settings save themselves. Every toggle on the settings page, and `t` from anywhere else, is
+  written to the config the moment it takes effect — there is no save step. The row that used to be
+  the only way to write the file is still there, but it is now the retry for a write that failed
+  rather than the thing standing between a setting and it surviving a restart.
+- Writing the config **edits the file rather than replacing it**. This is what made the above safe,
+  and it is the more important half: the writer used to regenerate the whole file from the settings
+  gittop was holding, so every save flattened a hand-written config into a machine-written one and
+  the comments went with it. Your comments, your ordering and your spacing now all survive, an
+  unchanged value keeps its line byte for byte, and a new setting is written *inside* the table it
+  belongs to rather than appended after the last one. A line gittop cannot parse is left exactly
+  where it is instead of being dropped — it could never read those, which is not the same as you
+  having deleted them.
+
+  Signing in benefits from the same change: writing a token now touches the token's line and
+  nothing else. The note in the starter config warning that a save would eat your comments is gone,
+  because it is no longer true.
+
+### Added
+
+- **ctrl-v pastes into any input box** — the commit message, the sign-in token, the `/` filter and
+  the ssh passphrase. No terminal sends the clipboard on ctrl-v: paste is ctrl-shift-v, and plain
+  ctrl-v arrives as a byte every input box on earth ignores, so for anyone whose habits come from a
+  GUI editor paste simply did nothing and said nothing. gittop now reads the clipboard itself, via
+  `wl-paste`, `xclip` or `xsel` — whichever the session has. Text lands where the cursor is, not on
+  the end. If none of the three is installed, it says so and names them rather than failing quietly.
+
+### Fixed
+
+- **A pasted newline submitted the box it landed in, and in the commit box that meant it committed.**
+  Every input in gittop is a single line, so the newline in the middle of a two-line clipboard
+  reached the box as `enter`. Pasting two lines into the commit message produced a real commit,
+  titled with the two lines run together, from one paste and no confirmation — the worst version of
+  this, because it is the one that writes to the repository. In the `/` filter the same newline
+  closed the box halfway through the paste.
+
+  gittop now asks the terminal to mark pastes and treats what arrives between the marks as text
+  rather than as keystrokes, so a newline inside a paste becomes a space and the box waits for you.
+  Two joined lines still read as two words.
+- A pasted personal access token is trimmed before it is used. Copying one from a web page usually
+  brings a newline along, and an untrimmed token fails with a 401 that reads as "this token is
+  wrong" rather than as "there is whitespace on the end of it".
+
+---
+
 ## 2026.08.5 — 2026-08-15
 
 One thing you can see, and one you could only have hit at the worst possible moment.

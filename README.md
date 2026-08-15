@@ -178,9 +178,9 @@ able to separate green from amber.
 - Switch which remote the network views read, when a repository has more than one
 - A read-only sidecar naming the repository, its remotes with any credentials stripped out of the
   URLs, and where the config file is
-- Changes take effect the moment you make them and are written only when you ask, from the row that
-  says so. Saving regenerates the file, so a hand-written config would otherwise lose its comments
-  to a keystroke you pressed to look at a theme
+- Changes take effect the moment you make them and are saved the moment they take effect — there is
+  no save step. The write edits your config file rather than regenerating it, so the comments,
+  ordering and spacing in a hand-written one all survive it, and only the values that changed move
 - A row that cannot be changed from here says why where its verb would have gone. A token in the
   environment beats everything, so that row names the variable — never the value — and says the
   environment wins

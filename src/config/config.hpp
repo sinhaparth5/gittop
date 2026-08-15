@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace gittop::config {
 
@@ -23,9 +24,19 @@ class Config {
   // `error` alone. Only a file that exists and does not parse sets it.
   static Config Load(const std::string& path, std::string* error);
 
-  // Writes every key currently held, grouped back into tables. Creates parent
-  // directories 0700 and the file 0600, because this is where a token can end
-  // up. Returns false and fills `error` on any failure.
+  // Writes every key currently held. Creates parent directories 0700 and the
+  // file 0600, because this is where a token can end up. Returns false and
+  // fills `error` on any failure.
+  //
+  // A config that was loaded from a file is *edited*, not regenerated: comments,
+  // blank lines, key order and the user's own spacing all survive, and only the
+  // values that actually changed are rewritten. That is what makes it safe to
+  // call this on every keystroke — the settings page now does, and the old
+  // "press save" row existed precisely because a regenerating write ate a
+  // hand-written file's comments the first time somebody pressed `t`.
+  //
+  // A config that was never on disk has no layout to preserve, so it falls back
+  // to generating one grouped by table.
   bool Save(const std::string& path, std::string* error) const;
 
   // Writes a commented starting point with every token line left commented out.
@@ -53,7 +64,21 @@ class Config {
   const std::map<std::string, std::string>& values() const { return values_; }
 
  private:
+  // Regenerates the file from `values_` alone, grouped back into tables. The
+  // shape a config gets when there was nothing on disk to preserve.
+  std::string Generate() const;
+
+  // Replays `source_` and swaps in the values that changed, which is the only
+  // way a comment survives a write.
+  std::string Rewrite() const;
+
   std::map<std::string, std::string> values_;
+
+  // The file exactly as Load read it, one entry per line, so Save can edit it
+  // rather than replace it. Empty for a config that was never on disk — which
+  // is what `loaded_` distinguishes from a file that was there and was empty.
+  std::vector<std::string> source_;
+  bool loaded_ = false;
 };
 
 }  // namespace gittop::config

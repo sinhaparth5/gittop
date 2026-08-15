@@ -260,10 +260,19 @@ struct a second place they could disagree with the thing actually on screen.
 
 Three things about how it behaves:
 
-- **Changes apply now and persist only when asked.** Every toggle takes effect immediately;
-  `SaveSettings` is a row you press. That is not timidity — `Config::Save` regenerates the file from
-  the keys gittop holds, so writing on every keystroke would eat a hand-written config's comments
-  the first time somebody pressed `t` to look at a theme.
+- **Changes apply now and persist now.** Every toggle takes effect and writes itself, and `t` from
+  anywhere else does the same. `ActivateSetting` calls `PersistSettings` once, after `ApplySetting`
+  rather than inside it — the switch returns from inside seven of its cases, so a persist per case
+  is seven chances to add an eighth that silently stops surviving a restart. It is silent on
+  success, because the toggle has already said what it did; the explicit save row passes
+  `announce` to get a toast, and exists now as the retry for a write that failed rather than as the
+  only thing that writes. `settings_dirty_` survives as the name for *that* failure and nothing
+  else, which is the only way it is still reachable.
+
+  This was a row you pressed until 22, and the reason was real: `Config::Save` regenerated the file
+  from the keys gittop held, so writing on every keystroke would have eaten a hand-written config's
+  comments the first time somebody pressed `t` to look at a theme. The fix was to make the write
+  non-destructive rather than to make it rare — see the Config section.
 - **It writes `auto` back whenever the resolved value is what detection would have picked.**
   Pinning the resolved one would freeze *this* terminal's answer into a file that may be read on
   another: a dotfile carried to a 16-colour ssh session would arrive there demanding truecolor, and
@@ -414,6 +423,45 @@ draw connections to somewhere off screen, and a filtered log is a list, not a gr
 cleared on every view switch: it belongs to the list it was typed against, and the box explaining it
 has already closed.
 
+## Paste
+
+**A paste is not a keystroke, and the only thing that can tell you so is the terminal.** gittop sets
+DECSET 2004 around `screen.Loop` and reads the `\e[200~` / `\e[201~` markers off `event.input()` —
+FTXUI does not know the mode exists, so it parses them as unrecognised escape sequences and hands
+them over verbatim, which is all gittop needs. The reset on the way out is not optional: a terminal
+left in the mode by the program that set it prints `[200~` in front of everything the user pastes
+afterwards.
+
+The whole reason for it is that **every input box in gittop is single-line, so a pasted newline
+reached FTXUI's `Input` as `Return` and fired `on_enter`.** In the filter that closed the box
+mid-paste. In the commit box it *made a commit* — a two-line clipboard produced a real commit
+titled with the two lines run together, from one paste and no confirm. While a paste is in flight
+the newline becomes a space instead, so two joined lines still read as two words.
+
+**ctrl-v is handled by gittop and not by the terminal, because the terminal will not handle it.**
+Paste is ctrl-shift-v in every VTE terminal (Ptyxis, GNOME Terminal, GNOME Console); plain ctrl-v
+arrives as byte 0x16, which every input box ignores — so paste "does nothing" for anyone whose
+muscle memory comes from a GUI editor, and that is issue 22's second half. `ReadClipboard` in
+`app.cpp` runs `wl-paste`, then `xclip`, then `xsel`, fork/exec with an argv and never a shell: the
+entire point is to end up holding untrusted text, and handing that to `/bin/sh` is a command
+injection with extra steps. It is deliberately **not** a rebindable `Action` — it is the terminal's
+paste gesture rather than one of gittop's commands, and it means the same thing in every box.
+
+The clipboard is read on the UI thread, which is a fork and a pipe rather than a network round trip.
+Anything slower than that belongs on a worker.
+
+**App owns the four cursors.** `InputOption::cursor_position` is pointed at `commit_cursor_` and its
+three siblings so that a paste can be inserted *where the cursor is* rather than appended; they are
+byte offsets, which is what FTXUI clamps and indexes with. `ActiveInputText` and
+`ActiveInputCursor` resolve the focused box from the open overlay rather than from FTXUI, which will
+not say which component has focus — and gittop already knows, since a box only exists while the
+overlay owning it is open. Both return null for a sign-in that is not on its Paste stage, so ctrl-v
+on a screen showing a device code says so instead of writing into a buffer nobody can see.
+
+`SubmitPastedToken` trims. A clipboard that came from a web page carries a newline, and an
+untrimmed token fails with a 401 that reads as "this token is wrong" rather than as "there is
+whitespace on the end of it".
+
 ## The mouse and hit-testing
 
 FTXUI cannot be asked where a dom node ended up: a node's box is only filled in during layout, and
@@ -499,6 +547,20 @@ than by a list of known names, which is what makes `theme.colors.*` and `keys.*`
 rejection is reported by name — an unknown role, an unparseable colour, an unknown action, a key
 spec gittop cannot read — and since the toast is one line, they are counted and the first is
 shown. Silently ignoring a config line is the one thing not to do here.
+
+**A save edits the file; it does not regenerate it.** `Load` keeps every raw line in `source_`, and
+`Config::Rewrite` replays them, swapping in only the values that actually changed and dropping only
+the keys `Unset` removed. Comments, blank lines, key order and the user's own spacing all survive,
+and an unchanged value keeps its line byte for byte. `Config::Generate` is the old whole-file
+writer and is now only reached when there was no file to preserve. This is what makes it safe to
+call `Save` on a keystroke, which the settings page now does on every one.
+
+Three rules it has to keep. **A line gittop cannot parse is kept verbatim** — `Load` merely skipped
+those, and a writer that treats "could not read it" as "the user deleted it" eats a line somebody
+wrote. **A key the file never mentioned is spliced in under its own table**, not appended at the
+end, or a new `theme.logos` written after the last header would be read back as belonging to that
+header and mean something else. And the splices go in **back to front**, so each insertion cannot
+move the index the next one was measured against.
 
 ## Async
 
@@ -610,8 +672,9 @@ execs with an argv — the URL came off the network, and a server response reach
 command injection with extra steps — with the child's stdio on `/dev/null`, since the opener's
 chatter would otherwise land on the alternate screen.
 
-One accepted cost: `Config::Save` regenerates the file from the keys gittop is holding, so a
-sign-in **drops the comments** out of a hand-written config. The template says so.
+A sign-in writes the token into the config, and that write used to drop the comments out of a
+hand-written one. It no longer does — `Config::Save` edits the file in place, so the only line it
+touches is the token's. Nothing about the flow changed; the writer under it did.
 
 ## FTXUI gotchas already paid for
 
