@@ -208,6 +208,17 @@ jobs:
           fi
           echo "version $declared matches the tag"
 
+      # Before the compiler, because it takes a second and answers the question
+      # that otherwise costs twenty minutes of MSVC to ask. libstdc++ hands over
+      # symbols through headers that MSVC's STL does not, so a missing include
+      # builds everywhere except here — which is how the first tagged Windows
+      # release failed, on `std::back_inserter` without <iterator>.
+      # Quoted: an unquoted value containing ":" followed by a space is a nested
+      # mapping to YAML, and "std:: symbol" is exactly that shape.
+      - name: "Check every std:: symbol has its header"
+        shell: bash
+        run: ./scripts/check-includes.py
+
       # MSVC's static runtime. The dynamic one would make the binary depend on a
       # Visual C++ redistributable that most machines have and some do not, and
       # the failure when it is missing is a dialog about a missing DLL rather

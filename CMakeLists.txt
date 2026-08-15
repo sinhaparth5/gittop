@@ -222,6 +222,19 @@ if(MSVC)
   # glyph in the unicode set — and without it MSVC reads them in the machine's
   # ANSI code page and produces mojibake with no diagnostic.
   target_compile_options(gittop PRIVATE /W4 /utf-8 /permissive-)
+
+  # _CRT_SECURE_NO_WARNINGS silences C4996 on std::getenv, which gittop calls in
+  # seven files to read TERM, COLORTERM, XDG_*, HOME and the token variables.
+  #
+  # This is not waving away a real warning. std::getenv is standard C++ and is
+  # not going anywhere; the deprecation is Microsoft's own, and the suggested
+  # replacement, _dupenv_s, allocates a copy the caller must free and exists on
+  # no other platform — so taking the advice would mean an #ifdef in every one
+  # of those files to avoid a diagnostic that describes no defect here. The
+  # thread-safety concern behind it is real but is about *setting* the
+  # environment while reading it, which gittop does only from the UI thread with
+  # no transfer in flight (see platform::SetEnv).
+  target_compile_definitions(gittop PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
   target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)
 endif()

@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ui/glyphs.hpp"

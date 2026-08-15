@@ -1,5 +1,6 @@
 #include "ui/settings_panel.hpp"
 
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>

@@ -438,7 +438,17 @@ known_hosts exactly as it does elsewhere. `SelectSSH.cmake` puts no platform gua
 container built from `packaging/Dockerfile.windows`. This exists because there is no test target
 and CI only runs on a tag, so without it the only thing that ever discovers a broken port is a
 release. It found two real portability errors the first time it ran (`timegm` and `gmtime_r`, both
-now `platform::` roles) and it is the cheapest place to find the third.
+now `platform::` roles).
+
+**It has one blind spot worth knowing before trusting a green run, and it is not a small one: the
+cross-build uses libstdc++, and MSVC does not.** A standard header may include another, so which
+symbols arrive transitively is a quality-of-implementation matter and the two disagree —
+`std::back_inserter` comes through `<vector>` on libstdc++ and does not on MSVC. A file missing
+`#include <iterator>` therefore compiles perfectly here and fails only on the Windows CI job, which
+is exactly what happened to `git/transfer.cpp` on the first tagged Windows release. Neither
+compiler is wrong. `scripts/check-includes.py` is the answer to that specific gap: it resolves
+project headers transitively and reports any `std::` name whose header the file cannot see, and it
+is worth running before tagging, since a tag is the only thing that starts the MSVC build.
 
 **What that harness can and cannot tell you, because the difference matters.** It proves the build
 compiles, the binary starts, libgit2 opens a repository and reads its status, `%APPDATA%` resolves,

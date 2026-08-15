@@ -1,6 +1,7 @@
 #include "ui/history_panel.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <ctime>
 #include <string>
 #include <utility>

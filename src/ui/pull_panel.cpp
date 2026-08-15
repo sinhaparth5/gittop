@@ -1,9 +1,11 @@
 #include "ui/pull_panel.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ui/glyphs.hpp"

@@ -15,8 +15,10 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <initializer_list>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace gittop::platform {

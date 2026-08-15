@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <ftxui/dom/elements.hpp>
 #include <string>

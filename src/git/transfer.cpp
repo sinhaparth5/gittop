@@ -8,6 +8,11 @@
 
 #include <algorithm>
 #include <cstddef>
+// For back_inserter, which libstdc++ hands over through <vector> and MSVC's STL
+// does not. Neither is wrong — a standard header is allowed to include another —
+// which is why a missing include of this kind builds on one compiler and fails
+// on the next, and why the Windows CI job is the thing that finds them.
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
