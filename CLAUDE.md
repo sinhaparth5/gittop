@@ -133,16 +133,32 @@ that drew blanks, because noticing needs both a patched font and an opt-in nobod
 An escape is ASCII and survives every pipeline a character does not. Look code points up by the
 `nf-*` name beside each entry, in `glyphnames.json` in ryanoasis/nerd-fonts.
 
-**The provider marks are the one glyph decision that can differ from `theme.icons`.** `ui::
+**The brand marks are the one glyph decision that can differ from `theme.icons`.** `ui::
 ProviderGlyph(provider)` is the only way to draw one — the switch used to be copied into five
 panels, which is five places for a third provider to be forgotten — and `theme.logos` makes it read
-the nerd set for those two roles alone, whatever set everything else is using. The exception earns
+the nerd set for those roles alone, whatever set everything else is using. The exception earns
 itself: those marks are *logos*, and no arrangement of geometric shapes is the octocat or the
 tanuki, whereas the unicode `✓` is a perfectly good check. It is still opt-in for the same tofu
 reason `auto` never picks nerd, and it is ignored under `icons = "ascii"`, where the terminal has
 already said it cannot carry the bytes. Everything that names a provider, a host or a remote puts
 the mark in front: the remote header, the CI header, the pull header, the sign-in title, and the
 settings page's remote row and REMOTES card.
+
+**`ui::CiGlyph(provider)` is the second one, because a CI system is its own brand.** The CI header
+prints the words "GitHub Actions" and used to draw the plain octocat beside them, which is the only
+place gittop put one company's mark next to another product's name. Actions has a mark of its own
+(`nf-dev-githubactions`) and now gets it. There is deliberately no `gitlab_ci` role to match:
+GitLab CI is branded as GitLab, so `CiGlyph` delegates to `ProviderGlyph` for everything that is
+not GitHub, and inventing a second tanuki-ish shape would be the only wrong answer available. Both
+functions test `theme.logos` the same way rather than one calling the other's accessor — they can
+appear on adjacent rows, and one drawing a logo while the other drew a hexagon is exactly the kind
+of disagreement the single-source rules here exist to prevent.
+
+**Look every nerd code point up, and check it after.** `glyphnames.json` in ryanoasis/nerd-fonts is
+the authoritative list; the escapes are private-use code points, so a wrong one is invisible without
+a patched font and silent with one. Validating all 34 shipped points against that file takes a
+dozen lines of Python and is the only thing standing between this set and the three releases that
+shipped blank glyphs.
 
 **`model/` types are provider-neutral.** GitHub says `stargazers_count` and GitLab says
 `star_count`; both become `RepoInfo::stars` in `remote/client.cpp`. If a file under `ui/` ever

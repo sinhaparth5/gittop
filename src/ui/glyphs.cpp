@@ -62,6 +62,11 @@ constexpr GlyphSet kAscii{
     .github = "GH",
     .gitlab = "GL",
     .provider_unknown = "??",
+    // Deliberately the provider's own mark rather than a distinct "GA": logos
+    // are ignored in ascii mode, so this set is what a terminal that cannot
+    // carry a logo sees, and initials for a product it already spells out in
+    // full on the same line would be noise.
+    .github_actions = "GH",
 
     .ci_success = "+",
     .ci_failed = "x",
@@ -148,6 +153,12 @@ constexpr GlyphSet kUnicode{
     .github = "⬢",
     .gitlab = "⬡",
     .provider_unknown = "○",
+    // The same hexagon, for the same reason the ascii set repeats its initials:
+    // this set's job is to say "GitHub-ish" without a patched font, and no
+    // geometric shape distinguishes Actions from GitHub any better than it
+    // stands in for GitHub in the first place. The logo is what carries that
+    // distinction, and turning logos on is what fetches it.
+    .github_actions = "⬢",
 
     .ci_success = "✓",
     .ci_failed = "✗",
@@ -259,6 +270,7 @@ constexpr GlyphSet kNerd{
     .github = "\uf09b",            // nf-fa-github
     .gitlab = "\uf296",            // nf-fa-gitlab
     .provider_unknown = "\uf0c2",  // nf-fa-cloud
+    .github_actions = "\ue7e9",    // nf-dev-githubactions
 
     .ci_success = "\uf058",        // nf-fa-check_circle
     .ci_failed = "\uf057",         // nf-fa-times_circle
@@ -389,6 +401,23 @@ std::string ProviderGlyph(model::Provider provider) {
       break;
   }
   return g.provider_unknown;
+}
+
+std::string CiGlyph(model::Provider provider) {
+  // Same test as ProviderGlyph and for the same reason, rather than a call to
+  // ProviderLogos() here and a second reading of the mode there: one of these
+  // drawing a logo while the other drew a hexagon would be visible on the CI
+  // header, which is the one place both marks can appear on adjacent rows.
+  const bool logos = g_provider_logos && GlyphModeNow() != GlyphMode::Ascii;
+  const GlyphSet& g = logos ? kNerd : glyphs();
+  if (provider == model::Provider::GitHub) {
+    return g.github_actions;
+  }
+  // GitLab CI is GitLab's own brand and Unknown has nothing to be branded as,
+  // so both want exactly what the provider mark already says. Delegating rather
+  // than repeating the switch keeps the fallback in one place — the bug the
+  // ProviderGlyph comment above is about.
+  return ProviderGlyph(provider);
 }
 
 std::string GlyphModeName(GlyphMode mode) {
