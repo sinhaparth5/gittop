@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ui/glyphs.hpp"
+#include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -453,6 +454,121 @@ Element PullPanel(const PullSnapshot& snapshot, const RemoteRef& ref, const Pull
     body.back() = std::move(body.back()) | flex;
   }
   return vbox(std::move(body));
+}
+
+Element PullComposePane(const PullComposeView& view, Element source, Element target,
+                        Element title, Element body) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+
+  // One row per box: a label, the caret on the one with focus, and the input.
+  // The caret rather than a highlighted label, because the label is what the
+  // field *is* and the caret is where the typing goes — and on the terminals
+  // that draw the cursor themselves, two markers would disagree.
+  const auto row = [&t, &g, &view](int field, const std::string& label, Element input) {
+    const bool focused = view.field == field && !view.sending;
+    return hbox({
+        text("  "),
+        text(focused ? g.prompt : " ") | bold | color(t.accent),
+        text(" "),
+        text(Fit(label, 7)) | color(focused ? t.text : t.text_faint),
+        std::move(input) | flex,
+        text(" "),
+    });
+  };
+
+  Elements rows{
+      hbox({
+          text(" " + ProviderGlyph(view.provider) + " ") | bold | color(t.accent),
+          text("Open a " + Noun(view.provider, /*plural=*/false)) | bold | color(t.text),
+          filler(),
+          text(view.full_name + " ") | color(t.text_faint),
+      }),
+      separator() | color(t.border),
+      row(kPullSource, "from", std::move(source)),
+      row(kPullTarget, "into", std::move(target)),
+      row(kPullTitle, "title", std::move(title)),
+      row(kPullBody, "body", std::move(body)),
+  };
+
+  // The preconditions, in the order they matter. Each one names the key that
+  // fixes it rather than describing what to go and do elsewhere.
+  Elements notes;
+  const auto note = [&notes](Element glyph, Element line) {
+    notes.push_back(hbox({text("  "), std::move(glyph), text("  "), std::move(line), filler()}));
+  };
+
+  if (!view.branch_on_remote) {
+    const std::string what =
+        view.upstream_gone
+            ? "its upstream " + view.upstream + " is gone from the remote"
+            : "it is not on " + (view.remote_name.empty() ? "the remote" : view.remote_name)
+                  + " yet";
+    note(text(g.gone) | bold | color(t.danger),
+         hbox({
+             text("This branch cannot be merged from: ") | color(t.text),
+             text(what) | color(t.text_dim),
+         }));
+    note(text(" "), hbox({
+                        text("push it first") | color(t.text_dim),
+                        text(view.push_key.empty() ? "" : "  ") ,
+                        view.push_key.empty() ? text("") : Chip(view.push_key, "push"),
+                    }));
+  } else if (view.ahead > 0) {
+    // Not a refusal: the branch is there and the create succeeds. It simply
+    // will not contain these commits, which is the kind of thing found out on
+    // the review page an hour later.
+    note(text(g.ahead) | bold | color(t.warning),
+         hbox({
+             text(std::to_string(view.ahead) +
+                  (view.ahead == 1 ? " commit is not pushed" : " commits are not pushed")) |
+                 color(t.text),
+             text(", so it will open without ") | color(t.text_dim),
+             text(view.ahead == 1 ? "it" : "them") | color(t.text_dim),
+         }));
+  }
+
+  if (!view.default_branch_known) {
+    note(text(g.absent) | color(t.text_dim),
+         text("the default branch is still loading; type a target, or wait") |
+             color(t.text_dim));
+  }
+
+  if (!view.error.empty()) {
+    note(text(g.cross) | bold | color(t.danger), text(view.error) | bold | color(t.text));
+    if (!view.hint.empty()) {
+      note(text(" "), text(view.hint) | color(t.text_dim));
+    }
+  }
+
+  if (!notes.empty()) {
+    rows.push_back(separator() | color(t.border));
+    for (Element& line : notes) {
+      rows.push_back(std::move(line));
+    }
+  }
+
+  rows.push_back(separator() | color(t.border));
+
+  if (view.sending) {
+    rows.push_back(hbox({
+        text("  "),
+        text("opening it on " + view.full_name) | color(t.text_dim),
+        filler(),
+        Chip("esc", "stop waiting"),
+    }));
+  } else {
+    rows.push_back(hbox({
+        text(" "),
+        Chip("enter", view.branch_on_remote ? "open" : "blocked"),
+        text("  "),
+        Chip("tab", "next field"),
+        filler(),
+        Chip("esc", "cancel"),
+    }));
+  }
+
+  return vbox(std::move(rows)) | PaneFrame() | size(WIDTH, GREATER_THAN, 64);
 }
 
 }  // namespace gittop::ui

@@ -175,6 +175,109 @@ std::string PullsEndpoint(const RemoteRef& ref, int limit) {
   return {};
 }
 
+std::string CreateEndpoint(const RemoteRef& ref) {
+  const std::string base = ProjectEndpoint(ref);
+  switch (ref.provider) {
+    case Provider::GitHub:
+      return base + "/pulls";
+    case Provider::GitLab:
+      return base + "/merge_requests";
+    case Provider::Unknown:
+      break;
+  }
+  return {};
+}
+
+// The four fields under the names this provider knows them by. This function
+// and the two Normalize* above it are the whole of what remote/ knows about the
+// difference, in both directions.
+std::string CreateBody(const RemoteRef& ref, const model::PullDraft& draft) {
+  json payload;
+  payload["title"] = draft.title;
+  switch (ref.provider) {
+    case Provider::GitHub:
+      payload["head"] = draft.source_branch;
+      payload["base"] = draft.target_branch;
+      // Sent even when empty, because "no description" is a thing to say. Both
+      // providers take an empty string here and neither invents one.
+      payload["body"] = draft.body;
+      break;
+    case Provider::GitLab:
+      payload["source_branch"] = draft.source_branch;
+      payload["target_branch"] = draft.target_branch;
+      payload["description"] = draft.body;
+      break;
+    case Provider::Unknown:
+      return {};
+  }
+  return payload.dump();
+}
+
+// Joins whatever a body has to say into one line, which is more than
+// DescribeStatus can do: a 422 is the provider explaining precisely what is
+// wrong with the request, and the generic reading of that status code throws
+// the explanation away.
+//
+// The shapes differ and both are ragged. GitHub sends {"message": "Validation
+// Failed", "errors": [...]} where an entry is either an object with its own
+// message or one with a field and a code. GitLab sends {"message": [...]}, or
+// {"message": {"base": [...]}}, or {"error": "..."} — three shapes from one
+// API, which is why this reads defensively rather than indexing.
+void CollectMessages(const json& node, std::vector<std::string>* out) {
+  if (node.is_string()) {
+    std::string text = node.get<std::string>();
+    if (!text.empty()) {
+      out->push_back(std::move(text));
+    }
+    return;
+  }
+  if (node.is_array()) {
+    for (const json& entry : node) {
+      CollectMessages(entry, out);
+    }
+    return;
+  }
+  if (!node.is_object()) {
+    return;
+  }
+  // An object with something readable in it says that; one with only a machine
+  // code left says the code, since "code: invalid on field base" beats silence.
+  if (node.contains("message")) {
+    CollectMessages(node["message"], out);
+    return;
+  }
+  const std::string field = StringField(node, "field");
+  const std::string code = StringField(node, "code");
+  if (!field.empty() && !code.empty()) {
+    out->push_back(code + " on " + field);
+  }
+}
+
+std::string ProviderComplaint(const json& body) {
+  if (!body.is_object()) {
+    return {};
+  }
+  std::vector<std::string> messages;
+  if (body.contains("errors")) {
+    CollectMessages(body["errors"], &messages);
+  }
+  // Only when the specific list gave nothing: GitHub's top-level message on a
+  // 422 is the useless half ("Validation Failed") and its errors array is the
+  // half worth printing, while on GitLab the top-level one is all there is.
+  if (messages.empty() && body.contains("message")) {
+    CollectMessages(body["message"], &messages);
+  }
+  if (messages.empty() && body.contains("error")) {
+    CollectMessages(body["error"], &messages);
+  }
+
+  std::string joined;
+  for (std::string& message : messages) {
+    joined += joined.empty() ? std::move(message) : "; " + std::move(message);
+  }
+  return joined;
+}
+
 }  // namespace
 
 PullSnapshot FetchPulls(const RemoteRef& ref, const Token& token, const std::string& head_branch,
@@ -266,6 +369,110 @@ PullSnapshot FetchPulls(const RemoteRef& ref, const Token& token, const std::str
 
   snapshot.state = FetchState::Ready;
   return snapshot;
+}
+
+model::PullCreated CreatePull(const RemoteRef& ref, const Token& token,
+                              const model::PullDraft& draft, HttpClient& client,
+                              const std::atomic<bool>* cancel) {
+  model::PullCreated created;
+
+  const auto fail = [&created](std::string error, std::string hint) {
+    created.state = FetchState::Failed;
+    created.error = std::move(error);
+    created.hint = std::move(hint);
+    return created;
+  };
+
+  if (!ref.valid()) {
+    return fail("no supported remote",
+                "gittop opens pull requests on GitHub and GitLab");
+  }
+  // Checked here rather than left to the provider, because both answer a
+  // missing branch with a 422 whose wording is about a field name.
+  if (draft.source_branch.empty() || draft.target_branch.empty()) {
+    return fail("both branches have to be named", "say which branch goes into which");
+  }
+  if (draft.title.empty()) {
+    return fail("a pull request needs a title", "nothing else about it is required");
+  }
+  if (draft.source_branch == draft.target_branch) {
+    return fail("a branch cannot be merged into itself",
+                "pick a different target, usually the default branch");
+  }
+
+  HttpRequest request;
+  request.url = CreateEndpoint(ref);
+  request.headers = HeadersFor(ref, token);
+  request.headers.emplace_back("Content-Type: application/json");
+  request.body = CreateBody(ref, draft);
+  // See the header: this is the one request here that must not be repeated.
+  request.max_attempts = 1;
+
+  const HttpResponse response = client.Post(request, cancel);
+
+  if (!response.transport_ok) {
+    if (response.error == "cancelled") {
+      return fail("cancelled", {});
+    }
+    // Deliberately not "it failed": with no retry and no reply, the server may
+    // have made it anyway, and a message that rules that out would be a
+    // message that is sometimes wrong about something the user cannot undo.
+    return fail(response.error.empty() ? "the request never got an answer" : response.error,
+                "refresh the list before trying again — it may have been opened");
+  }
+
+  created.rate = ReadRateLimit(response, ref.provider);
+
+  const json body = json::parse(response.body, nullptr, false);
+
+  if (!response.success()) {
+    const char* subject = ref.provider == Provider::GitHub ? "pull requests" : "merge requests";
+
+    // What the server said, wherever it said anything. This is the whole
+    // difference between a create that explains itself and one that reports a
+    // status code: 422 is by far the most likely failure here and it is always
+    // a sentence about this specific request.
+    const std::string complaint = body.is_discarded() ? std::string() : ProviderComplaint(body);
+    if (!complaint.empty()) {
+      std::string hint = "check the branches and the title";
+      if (response.status == 403 || response.status == 401) {
+        hint = "the token needs write access to the repository";
+      } else if (response.status == 422 || response.status == 409) {
+        hint = "the branch may not be pushed yet, or one may already be open for it";
+      }
+      return fail(complaint, std::move(hint));
+    }
+
+    // 403 gets its own answer rather than DescribeStatus's, which is written
+    // for reads and would advise a scope that lets you *see* the list. A token
+    // that lists pull requests perfectly well and cannot open one is the
+    // ordinary way this fails, and saying "read" there sends the user looking
+    // in the wrong place.
+    if (response.status == 403) {
+      return fail("not allowed to open one here",
+                  token.present()
+                      ? "the token needs write access (repo, or write_repository)"
+                      : "opening one needs a token; sign in first");
+    }
+
+    std::string error;
+    std::string hint;
+    DescribeStatus(response.status, token, created.rate, ref.provider, subject, &error, &hint);
+    return fail(std::move(error), std::move(hint));
+  }
+
+  if (body.is_discarded() || !body.is_object()) {
+    // The create landed — this is a 2xx — so this is not a failure to report as
+    // one. It is only the echo that could not be read, and the list refresh
+    // that follows will show what was actually made.
+    created.state = FetchState::Ready;
+    return created;
+  }
+
+  created.pull = ref.provider == Provider::GitHub ? NormalizeGitHubPull(body)
+                                                  : NormalizeGitLabMr(body);
+  created.state = FetchState::Ready;
+  return created;
 }
 
 }  // namespace gittop::remote

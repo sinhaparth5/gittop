@@ -17,6 +17,49 @@ published.
 
 ---
 
+## 2026.08.8 — 2026-08-15
+
+You can open a pull request without leaving.
+
+### Added
+
+- **`n` on the pull requests view opens one.** Listing them but not being able to make one meant
+  leaving for a browser or the provider's CLI at exactly the moment the work was finished, which is
+  the one step that broke the premise. The form has four fields, which is the whole of what the two
+  providers agree on: the branch it comes from, the branch it goes into, a title and a description.
+
+  The branch you are on and the repository's default branch are already filled in, and the title
+  starts as your newest commit. `tab` moves between the boxes, `enter` opens it, `esc` leaves.
+  Both branches are free text — picking them from a list needs remote branches gittop cannot see
+  yet, and waiting for that would have been waiting for a different feature.
+
+- **It asks first, the way push does.** Opening a pull request and pushing are the two things gittop
+  does that other people can see, and that is the whole rule the confirms implement. The pane shows
+  which host and repository, which branch goes into which, and the title, before anything is sent.
+
+- **It checks what it already knows before spending a request on being refused.** A branch that was
+  never pushed cannot be merged from: gittop says so, names the push key, and does not send. A
+  branch that is merely ahead of its upstream is a different piece of news and gets a different
+  answer — it warns that the unpushed commits will not be in it, and opens anyway, because they are
+  not the same problem and refusing the second would be wrong.
+
+  Both facts come out of the status read that has already happened, so neither costs anything.
+
+- **A refusal gives you the provider's own sentence and your draft back.** "No commits between
+  master and feature" is something to act on; "unexpected response 422" is not. GitHub and GitLab
+  bury that sentence in five different shapes between them and gittop digs it out of all of them.
+  Nothing you typed is lost — the form comes back with every field still in it, which is also true
+  of answering `n` to the confirm.
+
+- Signing in already asked for write access, because the same token authenticates an https push, so
+  nobody has to re-authorize for this.
+
+### Fixed
+
+- Nothing. This release is the feature above.
+
+---
+
 ## 2026.08.7 — 2026-08-15
 
 gittop runs on Windows.

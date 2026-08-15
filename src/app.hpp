@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <ftxui/dom/elements.hpp>
@@ -54,6 +55,7 @@ class App {
     kOperation = 6,
     kSignIn = 7,
     kRefPicker = 8,
+    kPullCreate = 9,
   };
 
   // Where the CI view's ref filter comes from. `Branch` follows the checked-out
@@ -78,6 +80,9 @@ class App {
     OperationContinue,
     OperationAbort,
     Prune,
+    // The second thing gittop does that other people can see, and the second
+    // one to ask first. Push was the only member of that list until now.
+    PullCreate,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -199,6 +204,26 @@ class App {
   void StartPullFetch();
   void CollectPulls();
   void ToggleDetails();
+
+  // Opening one. The only write remote/ makes, and the second operation in the
+  // program that other people can see, so it goes through the same confirm push
+  // does — and, unlike push, it collects four fields first.
+  //
+  // Three steps rather than one: RequestPullCreate fills the draft and opens the
+  // form, SubmitPullCreate takes what was typed to the confirm, PerformPullCreate
+  // sends it. A failure comes back to the form with everything still in it,
+  // because a 422 that ate a paragraph of description is a 422 nobody forgives.
+  void RequestPullCreate();
+  void SubmitPullCreate();
+  void PerformPullCreate();
+  void CancelPullCreate();
+  void CollectPullCreate();
+  ui::PullComposeView PullComposeViewState() const;
+
+  // Whether the checked-out branch is on the remote at all. False is the one
+  // precondition that blocks: the provider would refuse it, and it can be said
+  // here from the status read rather than relayed from the refusal.
+  bool SourceBranchOnRemote() const;
 
   // How long until the next automatic refresh, and whether there should be one
   // at all. Anonymous GitHub gets sixty requests an hour, so polling on a timer
@@ -407,6 +432,21 @@ class App {
   remote::Fetcher<model::PullSnapshot> pull_fetcher_;
   int pull_selected_ = 0;
   bool pull_details_open_ = false;
+
+  // The compose form. The draft holds the four strings the Inputs are bound to,
+  // `pull_field_` is the vertical container's selector — which is also how
+  // ctrl-v resolves which box it is pasting into, since FTXUI will not say —
+  // and there is one cursor per box for the same reason the other four exist.
+  model::PullDraft pull_draft_;
+  int pull_field_ = ui::kPullTitle;
+  std::array<int, ui::kPullFieldCount> pull_cursors_{};
+  remote::Fetcher<model::PullCreated> pull_create_fetcher_;
+  std::string pull_create_error_;
+  std::string pull_create_hint_;
+  // Set when a create lands, consumed by the refresh that follows it, so the
+  // cursor ends up on the thing that was just opened rather than back at the
+  // top of a list that grew by one.
+  int pull_focus_number_ = -1;
 
   // The same one-task worker the network fetches use. A transfer is not an HTTP
   // request, but the contract it needs is identical, and a second copy of a

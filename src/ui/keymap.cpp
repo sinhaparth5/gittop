@@ -93,6 +93,7 @@ const NamedAction kActionNames[] = {
     {"stash_drop", Action::StashDrop},
     {"prune", Action::Prune},
     {"ci_ref", Action::CiRef},
+    {"pull_create", Action::PullCreate},
 
     {"rebase", Action::Rebase},
     {"operation", Action::Operation},
@@ -120,6 +121,8 @@ std::string ScopeName(Scope scope) {
       return "branches";
     case Scope::Ci:
       return "ci";
+    case Scope::Pull:
+      return "pulls";
     case Scope::Global:
       break;
   }
@@ -286,6 +289,12 @@ Keymap::Keymap() {
   // means anything beside a run list, and `b` is a letter worth leaving free
   // everywhere else.
   Bind(Action::CiRef, Scope::Ci, "b");
+
+  // Scoped to the view that lists them, for the third time and the same reason:
+  // this is the one screen that shows whether one is already open for the
+  // branch, which is the question worth having answered before opening another.
+  // `n` is unbound everywhere else, so nothing is shadowed by it.
+  Bind(Action::PullCreate, Scope::Pull, "n");
 
   // The graph pans along a timeline instead of selecting rows, so it takes the
   // horizontal keys and reuses g/G for the ends of time rather than the ends of
