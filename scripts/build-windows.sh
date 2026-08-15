@@ -75,6 +75,28 @@ if strays:
     sys.exit(1)
 print("\nclean")
 '
+
+  # And the zip's own top-level directory, which is the other half of the same
+  # setting. It is what keeps `unzip` from emptying bin/ into whatever directory
+  # the user was standing in, and NSIS is the generator that must *not* have it
+  # — see packaging/CPackProjectConfig.cmake. One of the two is always wrong if
+  # that file is edited carelessly, so both are checked.
+  docker run --rm -v "$PWD:/src" -w "/src/$build_dir" "$image" python3 -c '
+import glob, sys, zipfile
+names = zipfile.ZipFile(sorted(glob.glob("*.zip"))[0]).namelist()
+roots = {n.split("/")[0] for n in names}
+if len(roots) != 1 or not roots.pop().startswith("gittop-"):
+    print("the zip does not unpack into a single gittop-* directory", file=sys.stderr)
+    sys.exit(1)
+print("zip unpacks into one top-level directory")
+'
+
+  # The installer is the artifact nothing checked until issue 26, which is how a
+  # release shipped with its add-to-PATH option quietly doing nothing. Running it
+  # is the only way to find that out; see scripts/check-installer.sh.
+  echo "==> installing the .exe under wine and checking it reaches PATH"
+  docker run --rm -v "$PWD:/src" -w /src -e WINEDEBUG=-all "$image" \
+    bash /src/scripts/check-installer.sh "$build_dir"
 fi
 
 if [ "$run_it" = 1 ]; then

@@ -482,6 +482,55 @@ zip built without component install carried the whole of `include/git2/**` at ne
 `scripts/build-windows.sh --package` now fails on any `include/`, `.a`, `.lib` or `.pc` in the
 archive, because that failure is otherwise silent — the package installs perfectly.
 
+**The top-level directory is the other half of that setting, and NSIS must not have one.**
+`CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY` is what makes the tarball unpack into a folder of its
+own instead of emptying `bin/` into whatever directory you were standing in; it is also global, so
+`packaging/CPackProjectConfig.cmake` turns it off per generator. The `.deb` was the first to need
+that and the reason is easy to see — dpkg reads archive paths as absolute, so a top-level directory
+puts everything under `/gittop-<version>-linux-x86_64/usr/`. NSIS needs it for a reason that is not
+visible at all, which is why it shipped: CPack's template hardcodes `Push $INSTDIR\bin` for
+add-to-PATH and `AddToPath` opens with `IfFileExists "$0\*.*" "" AddToPath_done`, so an extra
+directory level means `$INSTDIR\bin` does not exist and the function returns **without a word**.
+Installer exits 0, "add to PATH for all users" ticked, PATH untouched. `DisplayIcon` is written
+against the same path, so Programs and Features loses its icon by the same stroke. That was issue
+26.
+
+**Under that sat a second one, and it is worth knowing before touching `packaging/gittop-path.nsh`.**
+NSIS strings stop at `${NSIS_MAX_STRLEN}`, 1024 in every stock build, and `ReadRegStr` returns the
+**empty string** past that rather than a truncated one — so `AddToPath` reads "there is no PATH yet"
+and writes its own directory in place of the whole value. Against a planted 1439-character system
+PATH, what survived was 18 characters. CPack guards this and guards the wrong string: it measures
+`ReadEnvStr PATH`, the merged process environment, and then writes based on `ReadRegStr` of one
+hive. The first can come back truncated-but-non-empty and pass while the second comes back empty.
+This was unreachable until the fix above made `$INSTDIR\bin` exist, so the fix and the guard had to
+land together. `gittop-path.nsh` measures the value it is actually about to replace, checks that the
+*result* fits as well (`StrCpy "$1;$0"` truncates at the same limit, one step later), and on either
+failure sets `$DO_NOT_ADD_TO_PATH` so CPack's section skips, then says which directory to add by
+hand. **It deliberately does not write PATH itself** — one implementation of the append, rather than
+a second that could drift from the uninstaller's.
+
+Two mechanical traps in wiring that file in, both of which cost a build to find. It is
+`!include`d through `CPACK_NSIS_EXTRA_INSTALL_COMMANDS` and **not** through `CPACK_NSIS_DEFINES`,
+which is the only global-scope hook in the template, is undocumented, and is overwritten by the
+generator — the symptom is a setting that arrives empty. That means the include lands inside a
+`Section`, so the file holds instructions and `!macro`s and cannot declare a `Function`. And the
+path is quoted with **tripled** backslashes, because CPack writes every `CPACK_*` value into
+`CPackConfig.cmake` verbatim between quotes it adds itself and does not escape. For the same reason
+`file(READ)`ing the script into the variable does not work at all: its backslashes become CMake
+escape sequences (`Manager\Environment` → invalid `\E`) and its `${HIVE}` becomes an empty
+expansion.
+
+**Both of those are now tested, having been tested nowhere.** The release workflow installs the
+`.exe` on the runner and asserts the binary lands at `$INSTDIR\bin` — real Windows, and the one
+assertion that would have caught issue 26. `scripts/check-installer.sh` goes further under Wine,
+where a throwaway prefix can be handed a hostile PATH and discarded: all-users and current-user
+installs, the entry arriving, the existing PATH surviving as `REG_EXPAND_SZ` rather than flattened
+to `REG_SZ`, a 1439-character PATH being refused intact, and the uninstall taking the entry back
+out. It rebuilds the CPack-generated `project.nsi` verbatim with the radio button's *default* moved
+to all-users, because the shipped default is "do not add" and a silent install takes the defaults —
+the script under test is the one that ships. The toolchain image carries 32-bit Wine for it, since
+makensis emits a 32-bit installer whatever it packages and a 64-bit-only Wine cannot start one.
+
 `assets/gittop.ico` is checked in rather than generated at build time, so a Windows build needs no
 image tooling. It is the seven `assets/icons/gittop-*.png` in one file and is regenerated with
 `magick assets/icons/gittop-16.png ... assets/icons/gittop-256.png assets/gittop.ico` if those

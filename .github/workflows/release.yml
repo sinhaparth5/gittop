@@ -299,6 +299,36 @@ jobs:
           "$exe" --init-config && { echo "second --init-config should have failed" >&2; exit 1; }
           echo "config written and re-write refused, as expected"
 
+      # The installer, on real Windows. Everything above tests the zip, and the
+      # zip cannot go wrong in the way the installer did: CPack's NSIS template
+      # hardcodes $INSTDIR\bin for both the add-to-PATH step and DisplayIcon, so
+      # a packaging change that moves the binary anywhere else turns the PATH
+      # option into a silent no-op — installer exits 0, "add to PATH" ticked,
+      # nothing added, no error to find. That shipped as issue 26 and nothing
+      # here would have caught it, because nothing here ever ran the .exe.
+      #
+      # This installs to a scratch directory and asserts the layout only. The
+      # PATH write itself is covered by scripts/check-installer.sh under Wine,
+      # which can plant a hostile PATH and roll the machine back afterwards; a
+      # runner is the wrong place to rewrite the system environment, and the
+      # shipped installer defaults to not touching PATH anyway, so a silent
+      # install exercises the layout and not the write. The layout is the part
+      # that broke.
+      - name: Smoke-test the installer
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem build/gittop-*-windows-x86_64.exe | Select-Object -First 1
+          $dest = "$env:RUNNER_TEMP\gittop-install"
+          # /S must come first and /D last, unquoted, or NSIS reads neither.
+          Start-Process -FilePath $exe.FullName -ArgumentList "/S", "/D=$dest" -Wait
+          if (-not (Test-Path "$dest\bin\gittop.exe")) {
+            Write-Error "gittop.exe is not at `$INSTDIR\bin, which is where the installer points PATH and DisplayIcon"
+            Get-ChildItem -Recurse $dest | ForEach-Object { Write-Host "  $($_.FullName)" }
+            exit 1
+          }
+          Write-Host "installed: $(& "$dest\bin\gittop.exe" --version)"
+          Start-Process -FilePath "$dest\Uninstall.exe" -ArgumentList "/S" -Wait
+
       # No `|| true` on the installer. It was written that way when NSIS was
       # assumed present, which made a missing installer a silent omission — the
       # job goes green and the release page simply has one fewer download than
