@@ -231,7 +231,11 @@ struct AskpassServer::Impl {
         }
         return;
       }
-      if ((fds[1].revents & POLLIN) != 0) {
+      // POLLHUP as well as POLLIN: the destructor closes the write end, and a
+      // byte that never arrived leaves the hangup as the only signal there is.
+      // Checking POLLIN alone would spin here instead — poll returns
+      // immediately on a hungup pipe, every time, forever.
+      if ((fds[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
         return;  // the transfer ended
       }
       if ((fds[0].revents & POLLIN) == 0) {
@@ -293,9 +297,22 @@ AskpassServer::AskpassServer(std::string passphrase) : impl_(std::make_unique<Im
 }
 
 AskpassServer::~AskpassServer() {
+  // This byte is the only thing that ends Serve's poll, and the join() below
+  // waits on that thread forever — so a write that does not land hangs the quit
+  // path rather than losing a notification nobody reads. A bare ::write can fail
+  // with EINTR, which is why this goes through WriteAll and its retry like every
+  // other write in this file; the `(void)::write` it replaces both ignored that
+  // and did not silence the warning, since GCC drops the cast for
+  // warn_unused_result.
+  //
+  // Closing the write end here rather than with the other fds after the join is
+  // the belt to that braces: an empty pipe with no writer left polls POLLHUP, so
+  // the thread wakes even in the case where the write failed anyway.
   if (impl_->stop_pipe[1] >= 0) {
     const char byte = 0;
-    (void)::write(impl_->stop_pipe[1], &byte, 1);
+    (void)WriteAll(impl_->stop_pipe[1], &byte, 1);
+    ::close(impl_->stop_pipe[1]);
+    impl_->stop_pipe[1] = -1;
   }
   if (impl_->thread.joinable()) {
     impl_->thread.join();

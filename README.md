@@ -356,8 +356,8 @@ has an option besides rebasing. More than one page of CI and pull request histor
 request, rather than only reading one.
 
 [Open issues](https://github.com/sinhaparth5/gittop/issues) track these and are the current list;
-[`progress.md`](progress.md) has the stack decisions, the source layout and the work log behind
-them.
+[`CHANGELOG.md`](CHANGELOG.md) is what has landed so far, and [`CLAUDE.md`](CLAUDE.md) has the
+stack decisions and the source layout behind them.
 
 ## Keys
 

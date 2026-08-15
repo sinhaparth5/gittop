@@ -22,3 +22,7 @@ build
 # The repository demo.tape records against, built by scripts/demo-repo.sh.
 demo-repo/
 demo-repo.git/
+
+# A local code index with a running daemon and its socket in it. Per-machine and
+# rebuildable from the source it indexes, so it is nobody else's to check out.
+.codegraph/

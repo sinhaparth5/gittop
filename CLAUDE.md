@@ -2,21 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Read `progress.md` first.** It holds the locked stack decisions, the phased roadmap with
-per-task checkboxes, known risks, and a work log. It is the source of truth for project state;
-this file describes the architecture only.
-
 ## What this is
 
 `gittop` is a btop-inspired terminal dashboard for Git: local repository state that works with no
-network, plus GitHub and GitLab panels. Phases 0 through 7 are done, so there are ten views —
-status, history, branches, graph, diff, stashes, remote, CI, pull requests and settings — plus
-push/pull, stashing, rebase helpers, sign-in, a `/` filter, eight themes, rebindable keys, a
-configurable tab set and the mouse. Phase 7 added the second token layer (glyphs), one `Panel()` every frame goes through,
+network, plus GitHub and GitLab panels. There are ten views — status, history, branches, graph,
+diff, stashes, remote, CI, pull requests and settings — plus push/pull, stashing, rebase helpers,
+sign-in, a `/` filter, eight themes, rebindable keys, a configurable tab set and the mouse. Under
+all of it sit two token layers (colours and glyphs), one `Panel()` every framed panel goes through,
 cell-accurate text measurement, and a motion budget.
 
-Trust `progress.md` for phase state, not the git log: the commit messages are off by one and
-misspell "phase", so `phrase 4 finished` is the commit that landed Phase 3.
+This file is the architecture. `CHANGELOG.md` is what shipped and when — it is written per release
+and is the only running account of the project's state, so a question about *when* something
+arrived is answered there and not from the git log, whose early commit messages number their phases
+off by one and misspell "phase" (`phrase 4 finished` landed Phase 3). Those phase numbers survive
+below only as shorthand for when a rule was introduced.
 
 ## Build and run
 
@@ -42,7 +41,10 @@ Beyond `[path]`, the binary takes `--config <file>`, `--config-path`, `--init-co
 `--version`, and `-h`. The first three exit before any TUI or libgit2 work, which makes
 `--config-path` and `--init-config` the cheapest way to exercise the config layer.
 
-There is no test target yet; verification so far has
+**There is no test target and CI runs no tests.** `CMakeLists.txt` calls neither `enable_testing()`
+nor `add_test()`, and `.github/workflows/release.yml` fires on a tag and only builds, packages and
+smoke-tests the `.deb` — so nothing anywhere checks a behavioural change for you, and a claim that
+something works has to come from having driven it. Verification so far has
 been done by driving the TUI under `script -qec "stty rows N cols M; timeout -s KILL 20 ./build/gittop"`
 with piped keystrokes, then stripping ANSI with `sed -r 's/\x1B\[[0-9;?]*[A-Za-z]//g'`. Note that
 those captures are binary as far as grep is concerned, so `grep -a` is needed on them. Sleep
@@ -90,8 +92,16 @@ src/
 ├── config/         a hand-written strict-TOML-subset reader and writer (no parser dependency)
 ├── remote/         provider detection, tokens, HTTP, the shared api.cpp, one file per endpoint
 │                   family (client = repo, pipelines = CI), plus the worker and the ticker
-└── ui/             one file per panel group, plus theme.cpp and widgets.cpp
+└── ui/             one file per panel group, plus the four files that are not panels at all:
+                    theme.cpp (colour tokens), glyphs.cpp (character tokens), keymap.cpp (the
+                    binding table) and widgets.cpp (`Panel`, `Truncate`). panels.cpp additionally
+                    owns `AllViews()` and the tab bar, so it is where a new view starts
 ```
+
+`app.cpp` is 3.5k lines and holds every piece of state and every key; `panels.cpp` and
+`repository.cpp` are the next largest. Nothing here is worth opening blind — the four rules below
+name the file that owns each decision, and this repository carries a CodeGraph index, so
+`codegraph explore "<symbol>"` gets to the definition and its callers in one step.
 
 ## Four rules that keep this codebase working
 
@@ -340,8 +350,10 @@ from an ordinary failure — and a success where nothing ever asked means the pa
 authenticated, so it is dropped rather than held for a session that does not need it.
 
 Pull fast-forwards or refuses, push never forces, and push is the only operation that asks first —
-it is the only one that changes something other people can see. Keep it that way; the
-destructive-operations rule in `progress.md` is what these implement.
+it is the only one that changes something other people can see. Keep it that way. The rule the
+confirms implement is that an operation asks first when it can destroy something a user cannot get
+back — the working tree in a merge abort's hard reset, a branch in `Prune` — or when it is visible
+to other people, which is push and only push. Anything new that can lose work joins that list.
 
 ## Diffs, stashes and interrupted operations
 
@@ -608,6 +620,44 @@ broken key rather than a subtle change. That is why `DetectColorDepth` now recog
 (Windows Terminal, and therefore most WSL shells, which set no `COLORTERM`) and treats a `-direct`
 terminfo entry as 24-bit rather than as 256, and why the `t` toast names the depth whenever it is
 below truecolor. Guessing low is not free.
+
+## Releases
+
+Versions are CalVer, `YYYY.MM.PATCH`, and live in exactly one place: `project(gittop VERSION ...)`
+in `CMakeLists.txt`. Everything else reads it from there — `--version`, CPack's package name, and
+the tag check.
+
+Cutting one is four steps, and the workflow only starts at the last:
+
+```bash
+# 1. bump project(gittop VERSION ...) in CMakeLists.txt
+# 2. add a "## <version> — <date>" section to CHANGELOG.md
+scripts/changelog-section.sh 2026.08.5      # 3. prove the section extracts non-empty
+git tag v2026.08.5 && git push origin v2026.08.5
+```
+
+Step 3 is the one worth not skipping. `.github/workflows/release.yml` uses that script's output as
+the release description, and an extractor that returns nothing publishes an empty release — the
+script exits non-zero on an empty section precisely so the failure happens before the tag exists.
+The workflow separately refuses a tag whose version does not match `CMakeLists.txt`, so a forgotten
+bump is caught rather than shipped.
+
+Two things CI enforces that a local Debug build will not tell you about:
+
+- **A glibc floor of 2.35** (Debian 12 / Ubuntu 22.04). The job reads the highest `GLIBC_*` symbol
+  out of `objdump -T` and fails above it, so a dependency or a newer libc function can break the
+  release from a change that built and ran perfectly here.
+- **The package has to install and run.** It is installed with `apt` rather than `dpkg -i`, which
+  proves the `Depends` field is satisfiable; `dpkg` would unpack it regardless and leave an install
+  that still runs on the build machine and nowhere else.
+
+The release build is `-DCMAKE_BUILD_TYPE=Release` and packages with `cpack -G DEB` and `-G TGZ`
+from the build directory. `packaging/gittop.desktop` goes through `desktop-file-validate`.
+
+The README's GIF is reproducible and both halves are checked in: `scripts/demo-repo.sh` builds the
+throwaway repository (gittop's own history makes a bad demo — the heatmap is one cluster at the
+right edge), and `demo.tape` is recorded against it. Neither touches the network, and the demo
+repository is gitignored.
 
 ## Conventions
 
