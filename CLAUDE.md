@@ -509,7 +509,7 @@ failure sets `$DO_NOT_ADD_TO_PATH` so CPack's section skips, then says which dir
 hand. **It deliberately does not write PATH itself** — one implementation of the append, rather than
 a second that could drift from the uninstaller's.
 
-Two mechanical traps in wiring that file in, both of which cost a build to find. It is
+Three mechanical traps in wiring that file in, each of which cost a build to find. It is
 `!include`d through `CPACK_NSIS_EXTRA_INSTALL_COMMANDS` and **not** through `CPACK_NSIS_DEFINES`,
 which is the only global-scope hook in the template, is undocumented, and is overwritten by the
 generator — the symptom is a setting that arrives empty. That means the include lands inside a
@@ -519,6 +519,20 @@ path is quoted with **tripled** backslashes, because CPack writes every `CPACK_*
 `file(READ)`ing the script into the variable does not work at all: its backslashes become CMake
 escape sequences (`Manager\Environment` → invalid `\E`) and its `${HIVE}` becomes an empty
 expansion.
+
+The third is the path separator, and it is the one the cross-build cannot see. **NSIS resolves
+`!include` itself and will not take forward slashes**, so the path goes through
+`file(TO_NATIVE_PATH)` — which converts for the machine running `makensis`, the *host*, and is
+therefore correctly a no-op on the Linux cross-build. Debian's makensis normalises the separator and
+the real one does not, so a forward-slash path packages cleanly here and fails only on the tagged
+MSVC job, with CPack reporting `Problem running NSIS command` and the actual complaint
+(`!include: could not find: "D:/a/..."`) sitting in an `NSISOutput.log` on a runner that is about to
+be destroyed. The release workflow now prints that log on failure, because one blind tag per
+makensis error is the whole cost of not doing so. Note that the native path then needs its
+backslashes **doubled** on top of the tripled quotes, for the `CPackConfig.cmake` reason above —
+`D:\a\gittop` is otherwise a hard CMake error on `\a`. That this is confirmable at all comes from
+running the genuine Windows `makensis.exe` under Wine against the generated `project.nsi`, which is
+worth remembering the next time the two builds are assumed to agree.
 
 **Both of those are now tested, having been tested nowhere.** The release workflow installs the
 `.exe` on the runner and asserts the binary lands at `$INSTDIR\bin` — real Windows, and the one

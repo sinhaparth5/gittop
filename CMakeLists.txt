@@ -402,24 +402,41 @@ if(WIN32)
   # become escape sequences ("Manager\Environment" -> invalid \E) and its
   # ${HIVE} becomes an empty variable expansion. A path has neither problem.
   #
-  # Forward slashes deliberately, on both platforms. CMake hands them out that
-  # way, NSIS takes them — the generated script already mixes them, since
-  # INST_DIR is a CMake path and every File command under it uses backslashes —
-  # and a converted path would need escaping in the very string that cannot
-  # carry it.
-  # The tripled backslashes are not a typo either. CPack writes every CPACK_*
-  # value into CPackConfig.cmake verbatim, between quotes it adds itself and
-  # does not escape, so a plain \" arrives as a bare quote that closes the
-  # string early and truncates the setting. Pre-escaping is what survives that
-  # one round trip. The quotes have to be there at all because an installer
-  # built from a checkout under "C:\Users\Some Name" has a space in this path.
+  # The path has to be native, and that is not a stylistic preference. NSIS on
+  # Windows resolves !include itself rather than handing the string to the CRT,
+  # and it does not accept forward slashes: makensis answers
+  # `!include: could not find: "D:/a/gittop/gittop/packaging/gittop-path.nsh"`
+  # and CPack reports only "Problem running NSIS command". The Linux makensis
+  # normalises the separator, so a cross-build packages perfectly and the
+  # failure lands on a tag — which is where it landed. Every other path in the
+  # generated script keeps its forward slashes and works, because OutFile,
+  # File and the icons all go through the file system rather than the
+  # preprocessor; !include is the one that is strict.
+  #
+  # TO_NATIVE_PATH is therefore what decides, and it is a no-op on Linux, where
+  # the string stays exactly as it was.
+  file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/packaging/gittop-path.nsh"
+       gittop_path_nsh)
+
+  # Which brings back the escaping this comment block used to say was avoidable.
+  # CPack writes every CPACK_* value into CPackConfig.cmake verbatim, between
+  # quotes it adds itself and does not escape, and cpack then parses that file
+  # as CMake. So each backslash has to arrive there doubled or it is read as an
+  # escape sequence — "D:\a\gittop" is a hard error on \a, the same way a
+  # file(READ) of the script itself dies on "Manager\Environment".
+  string(REPLACE "\\" "\\\\" gittop_path_nsh "${gittop_path_nsh}")
+
+  # The tripled backslashes on the quotes are the same round trip: a plain \"
+  # arrives as a bare quote that closes the string early and truncates the
+  # setting. The quotes have to be there at all because an installer built from
+  # a checkout under "C:\Users\Some Name" has a space in this path.
   #
   # EXTRA_INSTALL_COMMANDS and not CPACK_NSIS_DEFINES, which is the hook that
   # looks right: it is the only global-scope one in the template, it is
   # undocumented, and the generator overwrites it. The symptom is that the
   # setting simply arrives empty.
   set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
-      "  !include \\\"${CMAKE_CURRENT_SOURCE_DIR}/packaging/gittop-path.nsh\\\"")
+      "  !include \\\"${gittop_path_nsh}\\\"")
 
   # Upgrading over an existing install rather than stacking a second copy beside
   # it, which is what leaves two entries in Programs and Features and a stale

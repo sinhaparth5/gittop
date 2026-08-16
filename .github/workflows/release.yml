@@ -257,7 +257,17 @@ jobs:
         working-directory: build
         run: |
           cpack -G ZIP -C Release
-          cpack -G NSIS -C Release
+
+          # CPack says "Problem running NSIS command" and nothing else. What
+          # makensis actually complained about goes to NSISOutput.log, inside a
+          # build directory that is thrown away with the runner — so a script
+          # error is a failed release that costs another tag to diagnose, and
+          # then another to fix. That is what the forward-slash !include cost.
+          cpack -G NSIS -C Release || {
+            echo "--- NSISOutput.log ---" >&2
+            cat _CPack_Packages/*/NSIS/NSISOutput.log >&2 || echo "(no log)" >&2
+            exit 1
+          }
           ls -lh ./*.zip ./*.exe
 
       # The Windows counterpart of the .deb smoke test, and it catches the same
