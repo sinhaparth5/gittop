@@ -341,7 +341,9 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # number. Any view left out is simply not there — a good way to lose the three
 # network tabs on a repository that has no remote worth watching.
 # One or more of: status history branches graph diff stashes remote ci pulls
-#                 settings
+#                 settings workspace
+# Workspace is left out by default, since ten views use up the ten digits; `W`
+# reaches it from anywhere.
 # views = "status history branches graph diff stashes remote ci pulls settings"
 
 # The view to open on. Has to be one of the views above, or it is ignored:

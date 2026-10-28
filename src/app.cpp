@@ -34,6 +34,7 @@
 #include "ui/remote_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
+#include "ui/workspace_panel.hpp"
 
 namespace gittop {
 
@@ -559,6 +560,8 @@ int& App::ActiveSelection() {
       return stash_selected_;
     case ui::View::Settings:
       return settings_selected_;
+    case ui::View::Workspace:
+      return workspace_selected_;
     case ui::View::Graph:
     case ui::View::Remote:
     case ui::View::Status:
@@ -589,6 +592,8 @@ int App::ActiveCount() const {
     // of the same function and cannot disagree about how many rows there are.
     case ui::View::Settings:
       return ui::SettingsRowCount(SettingsViewState());
+    case ui::View::Workspace:
+      return static_cast<int>(workspace_.rows());
     case ui::View::Graph:
       return 0;  // the graph pans instead of selecting
     case ui::View::Remote:
@@ -738,6 +743,7 @@ int App::FilterTotal() const {
     // headings that group them, and hiding the headings is what a filter would
     // do. `/` says there is nothing to filter here rather than emptying it.
     case ui::View::Settings:
+    case ui::View::Workspace:
       return 0;
     case ui::View::Status:
       break;
@@ -868,6 +874,7 @@ void App::NextRemote() {
     case ui::View::Diff:
     case ui::View::Stashes:
     case ui::View::Blame:
+    case ui::View::Workspace:
     // Reads the new remote out of App on the next frame, so there is nothing
     // to kick off here.
     case ui::View::Settings:
@@ -1530,7 +1537,9 @@ void App::StartTransfer(TransferKind kind) {
     Note("a transfer is already running", false);
     return;
   }
-  if (remotes_.empty()) {
+  // A submodule names its own URL and needs no remote of the repository's.
+  const bool submodule = kind == TransferKind::Submodule;
+  if (remotes_.empty() && !submodule) {
     Note("this repository has no remote", true);
     return;
   }
@@ -1538,8 +1547,18 @@ void App::StartTransfer(TransferKind kind) {
   // The remote to talk to is the active one by name, not by parsed provider: a
   // remote gittop cannot classify still pushes and pulls perfectly well, and
   // refusing one because its host is not GitHub or GitLab would be absurd.
-  const std::string remote_name = remotes_[remote_index_].name;
-  const std::string remote_url = remotes_[remote_index_].url;
+  std::string remote_name;
+  std::string remote_url;
+  if (submodule) {
+    for (const model::Submodule& module : workspace_.submodules) {
+      if (module.name == ref_target_) {
+        remote_url = module.url;
+      }
+    }
+  } else {
+    remote_name = remotes_[remote_index_].name;
+    remote_url = remotes_[remote_index_].url;
+  }
 
   // An encrypted ssh key has to be answered before the worker starts, not
   // during it: ssh asks its question from inside the transfer, at a point where
@@ -1554,7 +1573,7 @@ void App::StartTransfer(TransferKind kind) {
   // HTTP fetches do. It is never stored on App and never reaches ui/.
   const remote::Token token = remote::ResolveToken(remote_.ref, config_, config_path_, &session_token_);
   git::Credentials credentials;
-  if (token.present()) {
+  if (token.present() && !submodule) {
     credentials.username = UsernameFor(remote_.ref.provider);
     credentials.password = token.value;
   }
@@ -1618,6 +1637,13 @@ void App::StartTransfer(TransferKind kind) {
         return git::Prune(path, remote_name, credentials, sink, &cancel);
       });
       break;
+    case TransferKind::Submodule: {
+      const std::string name = ref_target_;
+      transfer_fetcher_.Start([path, name, sink](const std::atomic<bool>& cancel) {
+        return git::UpdateSubmodule(path, name, sink, &cancel);
+      });
+      break;
+    }
     case TransferKind::None:
       break;
   }
@@ -2058,6 +2084,7 @@ void App::CancelSignIn() {
       case ui::View::Diff:
       case ui::View::Stashes:
       case ui::View::Blame:
+      case ui::View::Workspace:
       // Where the sign-in was very likely started from. It reads the new token
       // source out of App on the next frame and costs no request to do it.
       case ui::View::Settings:
@@ -2443,7 +2470,10 @@ void App::CollectTransfer() {
   // the repository stale.
   Refresh();
   history_loaded_ = false;
-  if (view_ != ui::View::Status) {
+  workspace_loaded_ = false;
+  if (view_ == ui::View::Workspace) {
+    EnsureWorkspace();
+  } else if (view_ != ui::View::Status) {
     EnsureHistory();
   }
   // A fetch only moves tracking refs, so ahead/behind changes but the remote's
@@ -2470,6 +2500,9 @@ ui::TransferView App::TransferViewState() const {
       break;
     case TransferKind::Prune:
       view.title = "Pruning " + (remotes_.empty() ? "" : remotes_[remote_index_].name);
+      break;
+    case TransferKind::Submodule:
+      view.title = "Updating " + ref_target_;
       break;
     case TransferKind::None:
       view.title = "Working";
@@ -2854,6 +2887,121 @@ void App::CheckoutSelectedBranch() {
   }
 }
 
+void App::EnsureWorkspace() {
+  if (workspace_loaded_) {
+    return;
+  }
+  workspace_ = repo_.ReadWorkspace();
+  workspace_loaded_ = true;
+  workspace_selected_ =
+      std::clamp(workspace_selected_, 0, std::max(0, static_cast<int>(workspace_.rows()) - 1));
+}
+
+const model::Worktree* App::SelectedWorktree() const {
+  if (workspace_selected_ < 0 ||
+      workspace_selected_ >= static_cast<int>(workspace_.worktrees.size())) {
+    return nullptr;
+  }
+  return &workspace_.worktrees[static_cast<std::size_t>(workspace_selected_)];
+}
+
+const model::Submodule* App::SelectedSubmodule() const {
+  const int at = workspace_selected_ - static_cast<int>(workspace_.worktrees.size());
+  if (at < 0 || at >= static_cast<int>(workspace_.submodules.size())) {
+    return nullptr;
+  }
+  return &workspace_.submodules[static_cast<std::size_t>(at)];
+}
+
+void App::RequestAddWorktree() {
+  OpenNameBox(CommitMode::Worktree, "", "New worktree", "");
+}
+
+void App::RequestRemoveWorktree() {
+  const model::Worktree* tree = SelectedWorktree();
+  if (tree == nullptr) {
+    Note("only a worktree can be removed", false);
+    return;
+  }
+  if (tree->main) {
+    Note("the main worktree is the repository itself", true);
+    return;
+  }
+  if (tree->current) {
+    Note("gittop has that worktree open — switch to another first", true);
+    return;
+  }
+  ref_target_ = tree->name;
+  confirm_kind_ = ConfirmKind::RemoveWorktree;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformRemoveWorktree() {
+  CloseOverlay();
+  const git::OpResult result = repo_.RemoveWorktree(ref_target_);
+  workspace_loaded_ = false;
+  Apply(result);
+  EnsureWorkspace();
+}
+
+void App::UpdateSelectedSubmodule() {
+  const model::Submodule* module = SelectedSubmodule();
+  if (module == nullptr) {
+    Note("only a submodule can be updated", false);
+    return;
+  }
+  ref_target_ = module->name;
+  StartTransfer(TransferKind::Submodule);
+}
+
+void App::SwitchWorktree() {
+  const model::Worktree* tree = SelectedWorktree();
+  if (tree == nullptr) {
+    Note(keys_.KeyFor(ui::Action::UpdateSubmodule) + " updates a submodule", false);
+    return;
+  }
+  if (tree->current) {
+    Note("already in " + tree->path, false);
+    return;
+  }
+  if (tree->missing) {
+    Note("its directory is gone — " + keys_.KeyFor(ui::Action::RemoveWorktree) + " prunes it",
+         true);
+    return;
+  }
+  // A transfer's worker was handed the old path, and what it reports when it
+  // lands would be read against the new one.
+  if (transfer_fetcher_.Running()) {
+    Note("wait for the transfer to finish", false);
+    return;
+  }
+  std::string error;
+  std::optional<git::Repository> next = git::Repository::Discover(tree->path, &error);
+  if (!next) {
+    Note(error, true);
+    return;
+  }
+  const std::string where = tree->path;
+  repo_ = std::move(*next);
+  // Every read came from the other tree. The remotes do not: worktrees share
+  // one config, so the network views stay as they are.
+  history_loaded_ = false;
+  diff_loaded_ = false;
+  diff_request_ = git::DiffRequest{};
+  stashes_loaded_ = false;
+  workspace_loaded_ = false;
+  ci_refs_loaded_ = false;
+  selected_ = 0;
+  branch_selected_ = 0;
+  commit_selected_ = 0;
+  Refresh();
+  EnsureWorkspace();
+  if (start_watcher_) {
+    start_watcher_();
+  }
+  Note("switched to " + where, false);
+}
+
 void App::OpenOperation() {
   // Read again rather than trusting the cached one: this is the pane whose
   // whole job is to be right about what is happening on disk.
@@ -2921,6 +3069,9 @@ void App::SetView(ui::View view) {
       return;
     case ui::View::Stashes:
       EnsureStashes();
+      return;
+    case ui::View::Workspace:
+      EnsureWorkspace();
       return;
     // Nothing to fetch, but the account row is a fact about the remote and the
     // sidecar lists them, so the discovery that every network view pays for on
@@ -2997,12 +3148,16 @@ void App::ReloadRepository() {
   history_loaded_ = false;
   diff_loaded_ = false;
   stashes_loaded_ = false;
+  workspace_loaded_ = false;
   switch (view_) {
     case ui::View::Diff:
       EnsureDiff();
       break;
     case ui::View::Stashes:
       EnsureStashes();
+      break;
+    case ui::View::Workspace:
+      EnsureWorkspace();
       break;
     case ui::View::Blame:
       StartBlame(blame_.path);
@@ -3244,6 +3399,10 @@ void App::OpenNameBox(CommitMode mode, std::string target, std::string title, st
       box_verb_ = "rename";
       box_placeholder_ = "new name";
       break;
+    case CommitMode::Worktree:
+      box_verb_ = "add";
+      box_placeholder_ = "branch to check out — a new one starts at HEAD";
+      break;
     case CommitMode::Tag:
       box_verb_ = "tag";
       box_placeholder_ = "v1.2.3 — add a message after it for an annotated tag";
@@ -3286,6 +3445,19 @@ void App::SubmitNameBox() {
       break;
     case CommitMode::RenameBranch:
       result = repo_.RenameBranch(ref_target_, commit_message_);
+      break;
+    case CommitMode::Worktree:
+      result = repo_.AddWorktree(commit_message_);
+      if (result.ok) {
+        // Possibly a new branch too, which the history views have not seen.
+        commit_message_.clear();
+        CloseOverlay();
+        history_loaded_ = false;
+        workspace_loaded_ = false;
+        Apply(result);
+        EnsureWorkspace();
+        return;
+      }
       break;
     case CommitMode::Tag: {
       // A tag name cannot hold a space, so the first word is the name and
@@ -3578,6 +3750,8 @@ ui::Scope App::CurrentScope() const {
       return ui::Scope::Pull;
     case ui::View::History:
       return ui::Scope::History;
+    case ui::View::Workspace:
+      return ui::Scope::Workspace;
     case ui::View::Remote:
     case ui::View::Blame:
     // Claims no keys of its own. Everything it does is on `enter`, which is
@@ -3699,6 +3873,10 @@ bool App::Perform(ui::Action action) {
       }
       if (view_ == ui::View::Branches) {
         CheckoutSelectedBranch();
+        return true;
+      }
+      if (view_ == ui::View::Workspace) {
+        SwitchWorktree();
         return true;
       }
       // Everywhere else, opening a row means looking at what changed in it.
@@ -3837,6 +4015,18 @@ bool App::Perform(ui::Action action) {
     case ui::Action::Reflog:
       OpenReflog();
       return true;
+    case ui::Action::Workspace:
+      SetView(ui::View::Workspace);
+      return true;
+    case ui::Action::AddWorktree:
+      RequestAddWorktree();
+      return true;
+    case ui::Action::RemoveWorktree:
+      RequestRemoveWorktree();
+      return true;
+    case ui::Action::UpdateSubmodule:
+      UpdateSelectedSubmodule();
+      return true;
     case ui::Action::Squash:
       RequestRewrite(git::Rewrite::Squash);
       return true;
@@ -3890,6 +4080,7 @@ std::vector<Box>* App::ActiveRowBoxes() {
     case ui::View::Pulls:
     case ui::View::Stashes:
     case ui::View::Settings:
+    case ui::View::Workspace:
       return &row_boxes_;
     case ui::View::Graph:
     case ui::View::Remote:
@@ -4115,6 +4306,17 @@ int App::Run() {
             "Reset " + (snapshot_.branch.empty() ? std::string("HEAD") : snapshot_.branch) +
                 " to " + reset_target_.substr(0, 7) + "?",
             reset_what_, "Commits after it leave the branch; the reflog keeps them.", "reset");
+
+      case ConfirmKind::RemoveWorktree: {
+        const model::Worktree* tree = SelectedWorktree();
+        const bool missing = tree != nullptr && tree->missing;
+        return ui::ConfirmPane(
+            std::string(missing ? "Prune" : "Remove") + " the worktree " + ref_target_ + "?",
+            tree == nullptr ? "" : tree->path,
+            missing ? "Its directory is already gone; git forgets it."
+                    : "The directory is deleted. Its branch stays.",
+            missing ? "prune" : "remove");
+      }
 
       case ConfirmKind::Amend:
         return ui::ConfirmPane("Amend a commit that is already pushed?", commit_message_,
@@ -4368,6 +4570,11 @@ int App::Run() {
 
       case ui::View::Stashes:
         panel = ui::StashList(VisibleStashes(), stash_selected_, &row_boxes_);
+        break;
+
+      case ui::View::Workspace:
+        panel = ui::WorkspacePanel(workspace_, workspace_selected_, width,
+                                   keys_.KeyFor(ui::Action::AddWorktree), &row_boxes_);
         break;
 
       case ui::View::Blame:
@@ -4660,6 +4867,9 @@ int App::Run() {
               case ConfirmKind::Reset:
                 PerformReset();
                 break;
+              case ConfirmKind::RemoveWorktree:
+                PerformRemoveWorktree();
+                break;
               case ConfirmKind::DeleteRemoteBranch:
               case ConfirmKind::PushTag:
                 CloseOverlay();
@@ -4887,7 +5097,12 @@ int App::Run() {
 
   // The watcher's filter asks libgit2 about ignore rules from the watcher's
   // thread, so it gets a repository of its own rather than borrowing repo_.
-  if (config_.GetBool("general.auto_refresh", true)) {
+  // A function rather than a block, because switching worktrees moves it.
+  start_watcher_ = [this, &screen] {
+    watcher_.reset();
+    if (!config_.GetBool("general.auto_refresh", true)) {
+      return;
+    }
     std::string error;
     std::optional<git::Repository> own = git::Repository::Discover(repo_.WorkdirPath(), &error);
     if (own) {
@@ -4897,10 +5112,12 @@ int App::Run() {
           [filter](const std::string& rel) { return filter->IsWatchNoise(rel); },
           [&screen] { screen.PostEvent(kWatched); });
     }
-  }
+  };
+  start_watcher_();
 
   screen.Loop(root);
   suspend_ = nullptr;  // it holds the screen by reference
+  start_watcher_ = nullptr;
 
   std::fputs("\x1b[?2004l", stdout);
   std::fflush(stdout);

@@ -139,6 +139,13 @@ TransferResult PushRef(const std::string& repo_path, const std::string& remote_n
                        const Credentials& credentials, std::shared_ptr<ProgressSink> sink,
                        const std::atomic<bool>* cancel);
 
+// Clones the submodule `name` if it has never been, fetches if the commit HEAD
+// records is not in it yet, and checks that commit out — `git submodule update
+// --init` for one submodule, not recursive. Anonymous over https.
+TransferResult UpdateSubmodule(const std::string& repo_path, const std::string& name,
+                               std::shared_ptr<ProgressSink> sink,
+                               const std::atomic<bool>* cancel);
+
 // True when the binary was built with a transport that can reach this URL.
 // Checked before a transfer rather than after, so an ssh remote on a build
 // without ssh support says so instead of failing deep inside libgit2.
