@@ -246,6 +246,16 @@ endif()
 
 target_compile_definitions(gittop_core PUBLIC GITTOP_VERSION="${PROJECT_VERSION}")
 
+# The device-flow client ids for github.com and gitlab.com. Public by design —
+# there is no secret in a device flow — but they bind the build to one OAuth
+# application, so they are a packaging input rather than a source literal.
+# Empty means every sign-in takes the personal access token route, which is a
+# working path and the only one a self-hosted instance ever has.
+set(GITTOP_GITHUB_CLIENT_ID "" CACHE STRING "GitHub OAuth app client id for the device flow")
+set(GITTOP_GITLAB_CLIENT_ID "" CACHE STRING "GitLab OAuth app client id for the device flow")
+set_source_files_properties(src/remote/oauth.cpp PROPERTIES COMPILE_DEFINITIONS
+  "GITTOP_GITHUB_CLIENT_ID=\"${GITTOP_GITHUB_CLIENT_ID}\";GITTOP_GITLAB_CLIENT_ID=\"${GITTOP_GITLAB_CLIENT_ID}\"")
+
 if(WIN32)
   # WIN32_LEAN_AND_MEAN and NOMINMAX are set on the target rather than at the top
   # of windows.cpp so that every translation unit which pulls windows.h in

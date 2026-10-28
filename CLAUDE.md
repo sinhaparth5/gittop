@@ -869,10 +869,12 @@ server listening for a redirect — a port, a firewall prompt, and a race with w
 that port — to do what two POSTs already do. It is also the only one that works over ssh, which is
 a normal way to reach a machine you want a dashboard on.
 
-**`remote/oauth.cpp` ships no client_id, and that is deliberate.** A device-flow id is public by
+**The source tree carries no client_id, and that is deliberate.** A device-flow id is public by
 design — there is no client secret, which is what makes it safe in a distributed binary — but it
-binds the build to one registered application, so filling `kGitHubClientId` in is a packaging
-decision. Until somebody does, every host takes the token route, which is why that route is a
+binds the build to one registered application, so it is a packaging input: the
+`GITTOP_GITHUB_CLIENT_ID` and `GITTOP_GITLAB_CLIENT_ID` cache variables, which the release
+workflow fills from the repository variables of the same names. A build without them, including
+any distribution rebuild, takes the token route on every host, which is why that route is a
 first-class path and not an error state. `hosts."<host>".client_id` is the only way a self-hosted
 instance can ever have one.
 
