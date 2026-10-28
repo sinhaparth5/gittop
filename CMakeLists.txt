@@ -170,6 +170,7 @@ add_library(gittop_core STATIC
   src/git/blame.cpp
   src/git/message.cpp
   src/git/pick.cpp
+  src/git/reflog.cpp
   src/git/refs.cpp
   src/git/diff.cpp
   src/git/graph.cpp

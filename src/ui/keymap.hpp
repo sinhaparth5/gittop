@@ -86,6 +86,8 @@ enum class Action {
 
   Rebase,
   Operation,
+  Undo,
+  Reflog,
 
   Squash,
   Fixup,

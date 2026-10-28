@@ -9,6 +9,7 @@
 
 #include "git/graph.hpp"
 #include "ui/glyphs.hpp"
+#include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -378,6 +379,56 @@ Element BranchList(const model::HistorySnapshot& history, int selected, int widt
   }
 
   return Scrollable(vbox(std::move(rows)));
+}
+
+Element ReflogPane(const std::vector<model::ReflogEntry>& entries, int selected, int width,
+                   int height) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+  // Cut here rather than by the frame, as the ref picker's names are: the pane
+  // is sized by its longest row and must not outgrow the terminal.
+  const int message_cells = std::clamp(width - 30, 16, 72);
+
+  Elements rows;
+  rows.reserve(entries.size());
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    const model::ReflogEntry& entry = entries[i];
+    const bool on = static_cast<int>(i) == selected;
+    Element row = hbox({
+        text(on ? g.cursor : " ") | color(t.accent),
+        text(" "),
+        text(Fit("@{" + std::to_string(i) + "}", 6)) | color(t.text_faint),
+        text(entry.short_id) | color(t.warning),
+        text("  "),
+        text(Truncate(entry.message, message_cells)) | color(on ? t.text : t.text_dim) |
+            (on ? bold : nothing),
+        filler(),
+    });
+    if (on) {
+      row = std::move(row) | bgcolor(t.surface_alt) | focus;
+    }
+    rows.push_back(std::move(row));
+  }
+
+  return vbox({
+             hbox({
+                 text(" Reflog ") | bold | color(t.accent),
+                 text("where HEAD has been, newest first") | color(t.text_faint),
+                 filler(),
+             }),
+             separator() | color(t.border),
+             Scrollable(vbox(std::move(rows))) | size(HEIGHT, LESS_THAN, std::clamp(height - 8, 4, 18)),
+             separator() | color(t.border),
+             hbox({
+                 text(" "),
+                 Chip("j/k", "move"),
+                 Chip("enter", "reset to here"),
+                 Chip("n", "branch here"),
+                 filler(),
+                 Chip("esc", "close"),
+             }),
+         }) |
+         PaneFrame() | size(WIDTH, GREATER_THAN, 52);
 }
 
 }  // namespace gittop::ui

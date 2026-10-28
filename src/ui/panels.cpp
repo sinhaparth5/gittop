@@ -1185,6 +1185,8 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       pair(Action::Reword, Action::DropCommit, "history: reword / drop the commit"),
       pair(Action::MoveDown, Action::MoveUp, "history: move the commit down / up"),
       line(Action::Operation, "continue or abort what is in progress"),
+      line(Action::Undo, "undo the last change to HEAD, after a confirm"),
+      line(Action::Reflog, "reflog: reset or branch from where HEAD was"),
       text(""),
       heading("THE REMOTE"),
       line(Action::Fetch, "fetch from the active remote"),

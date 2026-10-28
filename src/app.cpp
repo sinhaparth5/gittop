@@ -3413,6 +3413,56 @@ void App::RevertSelectedCommit() {
   EnsureHistory();
 }
 
+// Far enough back to reach past a long rebase; the list is a recovery tool,
+// not an archive, and `git reflog` still has the rest.
+constexpr std::size_t kReflogEntries = 200;
+
+void App::Undo() {
+  const std::vector<model::ReflogEntry> log = repo_.ReadReflog(kReflogEntries);
+  const std::size_t steps = git::UndoSteps(log);
+  if (steps == 0) {
+    Note("nothing to undo — the reflog is empty", false);
+    return;
+  }
+  // Resetting would move the branch you are on to the commit the other one
+  // was at, which is not what undoing a checkout means.
+  if (log[0].message.rfind("checkout:", 0) == 0) {
+    Note("the last move was a checkout — switch back from the branches view", true);
+    return;
+  }
+  const std::string& target = log[steps - 1].old_id;
+  if (target.find_first_not_of('0') == std::string::npos) {
+    Note("nothing before that to go back to", false);
+    return;
+  }
+  RequestReset(target, "undoes " + log[0].message);
+}
+
+void App::OpenReflog() {
+  reflog_ = repo_.ReadReflog(kReflogEntries);
+  if (reflog_.empty()) {
+    Note("the reflog is empty", false);
+    return;
+  }
+  reflog_selected_ = 0;
+  OpenOverlay(kReflog);
+}
+
+void App::RequestReset(const std::string& id, const std::string& what) {
+  reset_target_ = id;
+  reset_what_ = what;
+  confirm_kind_ = ConfirmKind::Reset;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformReset() {
+  CloseOverlay();
+  const git::OpResult result = repo_.ResetTo(reset_target_);
+  history_loaded_ = false;
+  Apply(result);
+  EnsureHistory();
+}
+
 void App::TagSelectedCommit() {
   const std::vector<model::Commit>& commits = VisibleHistory().commits;
   if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(commits.size())) {
@@ -3762,6 +3812,12 @@ bool App::Perform(ui::Action action) {
     case ui::Action::Operation:
       OpenOperation();
       return true;
+    case ui::Action::Undo:
+      Undo();
+      return true;
+    case ui::Action::Reflog:
+      OpenReflog();
+      return true;
     case ui::Action::Squash:
       RequestRewrite(git::Rewrite::Squash);
       return true;
@@ -4034,6 +4090,12 @@ int App::Run() {
             push_refspec_.substr(0, push_refspec_.find(':')).substr(10),
             /*warning=*/"", "push");
 
+      case ConfirmKind::Reset:
+        return ui::ConfirmPane(
+            "Reset " + (snapshot_.branch.empty() ? std::string("HEAD") : snapshot_.branch) +
+                " to " + reset_target_.substr(0, 7) + "?",
+            reset_what_, "Commits after it leave the branch; the reflog keeps them.", "reset");
+
       case ConfirmKind::Amend:
         return ui::ConfirmPane("Amend a commit that is already pushed?", commit_message_,
                                "The upstream keeps the old one — others may have it.", "amend");
@@ -4190,9 +4252,13 @@ int App::Run() {
                                pull_body_input->Render());
   });
 
+  auto reflog_pane = Renderer([this, &screen] {
+    return ui::ReflogPane(reflog_, reflog_selected_, screen.dimx(), screen.dimy());
+  });
+
   auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane,
                                  passphrase_pane, filter_pane, operation_pane, signin_pane,
-                                 ref_picker_pane, pull_create_pane},
+                                 ref_picker_pane, pull_create_pane, reflog_pane},
                                 &overlay_index_);
 
   // --------------------------------------------------------------- main view
@@ -4565,6 +4631,9 @@ int App::Run() {
               case ConfirmKind::DeleteBranch:
                 PerformDeleteBranch();
                 break;
+              case ConfirmKind::Reset:
+                PerformReset();
+                break;
               case ConfirmKind::DeleteRemoteBranch:
               case ConfirmKind::PushTag:
                 CloseOverlay();
@@ -4642,6 +4711,57 @@ int App::Run() {
           // Anything else is swallowed rather than passed down: the dashboard
           // behind this is dimmed and a key that acts on it from here would act
           // on a list nobody can see.
+          return !event.is_mouse();
+        }
+
+        case kReflog: {
+          if (event == Event::Escape) {
+            CloseOverlay();
+            return true;
+          }
+          if (reflog_selected_ < 0 || reflog_selected_ >= static_cast<int>(reflog_.size())) {
+            return !event.is_mouse();
+          }
+          const model::ReflogEntry& entry = reflog_[static_cast<std::size_t>(reflog_selected_)];
+          if (event == Event::Return) {
+            RequestReset(entry.id, "HEAD@{" + std::to_string(reflog_selected_) + "}: " +
+                                       entry.message);
+            return true;
+          }
+          if (event == Event::Character('n')) {
+            OpenNameBox(CommitMode::NewBranch, entry.id, "New branch at " + entry.short_id, "");
+            return true;
+          }
+          // The same movement as the ref picker, and through the keymap for
+          // the same reason.
+          const int last = static_cast<int>(reflog_.size()) - 1;
+          int step = 0;
+          switch (keys_.Lookup(ui::Scope::Global, event)) {
+            case ui::Action::Down:
+              step = 1;
+              break;
+            case ui::Action::Up:
+              step = -1;
+              break;
+            case ui::Action::PageDown:
+              step = 10;
+              break;
+            case ui::Action::PageUp:
+              step = -10;
+              break;
+            case ui::Action::First:
+              reflog_selected_ = 0;
+              return true;
+            case ui::Action::Last:
+              reflog_selected_ = last;
+              return true;
+            default:
+              break;
+          }
+          if (step != 0) {
+            reflog_selected_ = std::clamp(reflog_selected_ + step, 0, last);
+            return true;
+          }
           return !event.is_mouse();
         }
 

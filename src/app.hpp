@@ -58,6 +58,7 @@ class App {
     kSignIn = 7,
     kRefPicker = 8,
     kPullCreate = 9,
+    kReflog = 10,
   };
 
   // Where the CI view's ref filter comes from. `Branch` follows the checked-out
@@ -96,6 +97,8 @@ class App {
     // Separate from the local delete because it is the one other people see.
     DeleteRemoteBranch,
     PushTag,
+    // A reset along the reflog, from `z` or from the reflog list.
+    Reset,
   };
 
   // What the commit box is writing. One box for all three, because each is a
@@ -371,6 +374,13 @@ class App {
   void PasteMarkedCommits();
   void RevertSelectedCommit();
 
+  // `z` resets HEAD to before the last action in the reflog, and `Z` lists the
+  // reflog to reset or branch from any entry. Both go through one confirm.
+  void Undo();
+  void OpenReflog();
+  void RequestReset(const std::string& id, const std::string& what);
+  void PerformReset();
+
   void OpenOverlay(Overlay which);
   void CloseOverlay();
 
@@ -610,6 +620,13 @@ class App {
   // Commit ids marked for a cherry-pick, in the order they were marked. Kept
   // across reloads by id, because a list index means nothing after HEAD moves.
   std::vector<std::string> marked_commits_;
+
+  // Read on every `Z` rather than cached: every commit, checkout and reset
+  // adds an entry, and a stale list would reset to the wrong one.
+  std::vector<model::ReflogEntry> reflog_;
+  int reflog_selected_ = 0;
+  std::string reset_target_;  // full id the Reset confirm moves HEAD to
+  std::string reset_what_;    // the confirm's detail line
   std::string push_what_;
   // Hands the terminal to `fn` and takes it back. Set in Run, where the screen
   // lives, so the editor key can reach it without App owning the screen.

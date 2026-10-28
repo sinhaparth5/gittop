@@ -166,6 +166,12 @@ class Repository {
   OpResult CherryPick(const std::vector<std::string>& ids, std::size_t* applied);
   OpResult Revert(const std::string& id);
 
+  // In git/reflog.cpp. `ResetTo` moves HEAD and its branch to `id`, refusing
+  // on a dirty tree or an operation in progress, and refusing rather than
+  // overwriting an untracked file the target has.
+  std::vector<model::ReflogEntry> ReadReflog(std::size_t limit) const;
+  OpResult ResetTo(const std::string& id);
+
   // In git/refs.cpp. `from` is anything rev-parse takes. Nothing here is
   // forced: a name that is taken is refused rather than overwritten.
   OpResult CreateBranch(const std::string& name, const std::string& from);
@@ -217,5 +223,10 @@ class Repository {
   };
   std::unique_ptr<git_repository, Deleter> repo_;
 };
+
+// How many of the newest reflog entries one undo takes back: one, except that
+// a rebase writes an entry per commit and is still one action, so its whole
+// run back to where it started counts. Zero for an empty log.
+std::size_t UndoSteps(const std::vector<model::ReflogEntry>& log);
 
 }  // namespace gittop::git
