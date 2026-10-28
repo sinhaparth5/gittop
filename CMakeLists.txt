@@ -171,6 +171,7 @@ add_library(gittop_core STATIC
   src/git/message.cpp
   src/git/pick.cpp
   src/git/reflog.cpp
+  src/git/workspace.cpp
   src/git/refs.cpp
   src/git/diff.cpp
   src/git/graph.cpp
@@ -199,6 +200,7 @@ add_library(gittop_core STATIC
   src/ui/settings_panel.cpp
   src/ui/signin_panel.cpp
   src/ui/stash_panel.cpp
+  src/ui/workspace_panel.cpp
   src/ui/theme.cpp
   src/ui/widgets.cpp
 )

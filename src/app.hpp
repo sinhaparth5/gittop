@@ -100,6 +100,9 @@ class App {
     PushTag,
     // A reset along the reflog, from `z` or from the reflog list.
     Reset,
+    // Deletes a linked worktree's directory, or prunes git's record of a
+    // missing one: ref_target_ names it.
+    RemoveWorktree,
   };
 
   // What the commit box is writing. One box for all three, because each is a
@@ -111,6 +114,7 @@ class App {
     NewBranch,
     RenameBranch,
     Tag,
+    Worktree,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -122,6 +126,7 @@ class App {
     Push,
     Prune,
     PushRef,  // a tag, or a branch deleted on the remote: push_refspec_
+    Submodule,  // `git submodule update --init` of ref_target_
   };
 
   // Reads the config into the theme and the keymap. Runs before the first frame
@@ -382,6 +387,18 @@ class App {
   // reflog to reset or branch from any entry. Both go through one confirm.
   void Undo();
   void OpenReflog();
+
+  // The workspace view: worktrees, then submodules, under one cursor.
+  void EnsureWorkspace();
+  const model::Worktree* SelectedWorktree() const;
+  const model::Submodule* SelectedSubmodule() const;
+  void RequestAddWorktree();
+  void RequestRemoveWorktree();
+  void PerformRemoveWorktree();
+  void UpdateSelectedSubmodule();
+  // Re-points gittop at another worktree of the same repository: a new
+  // repository handle, every cached read dropped, and the watcher moved.
+  void SwitchWorktree();
   void RequestReset(const std::string& id, const std::string& what);
   void PerformReset();
 
@@ -444,6 +461,10 @@ class App {
   model::StashList stashes_;
   bool stashes_loaded_ = false;
   int stash_selected_ = 0;
+
+  model::Workspace workspace_;
+  bool workspace_loaded_ = false;
+  int workspace_selected_ = 0;
 
   // The live search, and the mirrors it produces. Rebuilt eagerly by
   // RebuildFilter whenever the query or any source changes, rather than lazily
@@ -640,6 +661,9 @@ class App {
   // Hands the terminal to `fn` and takes it back. Set in Run, where the screen
   // lives, so the editor key can reach it without App owning the screen.
   std::function<void(std::function<void()>)> suspend_;
+  // (Re)starts watcher_ on repo_'s working tree. Set in Run and cleared with
+  // suspend_, for the same reason: it posts into the screen by reference.
+  std::function<void()> start_watcher_;
   git::Rewrite rewrite_kind_ = git::Rewrite::Squash;
   std::string rewrite_id_;
   std::string rewrite_subject_;

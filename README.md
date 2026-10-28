@@ -141,6 +141,19 @@ able to separate green from amber.
 - Apply and pop stop rather than write over an uncommitted edit, naming the file in the way, and
   pop keeps the entry when it cannot apply cleanly
 
+**Worktrees and submodules.**
+
+- `W` opens the workspace view: every worktree with its branch and how many files have changed,
+  then every submodule with the commit HEAD records and the one checked out
+- `enter` on a worktree switches gittop to it. `n` checks a branch out in a new worktree beside the
+  main one, creating the branch at HEAD if it does not exist yet
+- `D` deletes a worktree's directory, behind a confirm. It refuses one with changes, and a worktree
+  whose directory is already gone is pruned instead
+- `u` clones or updates the submodule under the cursor and checks out the commit HEAD records. It
+  is not recursive, and over https it goes anonymously, since a submodule can live on any host
+- The view has no tab by default, because ten views already use the ten digit keys. Add
+  `workspace` to `[layout] views` to give it one
+
 **Rebase and interrupted work.**
 
 - `B` rebases the current branch onto its upstream, behind a confirm. It refuses on a dirty tree
@@ -449,6 +462,9 @@ stack decisions and the source layout behind them.
 | `x`               | Branches view: prune remote-tracking refs, after a confirm           |
 | `b`               | CI view: show runs for another branch, a tag, or every ref           |
 | `n`               | Pulls view: open one, after a confirm                                |
+| `W`               | Worktrees and submodules; `enter` there switches worktree            |
+| `n` `D`           | Workspace view: add a worktree / remove one, after a confirm         |
+| `u`               | Workspace view: clone or update the submodule                        |
 | `R`               | Switch to the next remote                                            |
 | `L`               | Sign in to GitHub or GitLab                                          |
 | `t`               | Next theme                                                           |

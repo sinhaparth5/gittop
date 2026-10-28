@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "git/repository.hpp"
+#include "git/transfer.hpp"
 #include "scratch_dir.hpp"
 
 using gittop::git::Repository;
@@ -19,13 +20,13 @@ namespace {
 // A repository with one commit on `main`, an `origin` remote, and a
 // remote-tracking branch `origin/feature` that no local branch tracks — the row
 // the branches view used not to show at all.
-std::optional<Repository> Fixture(const ScratchDir& dir) {
+std::optional<Repository> Fixture(const std::filesystem::path& root) {
   git_repository* raw = nullptr;
   git_repository_init_options init;
   git_repository_init_options_init(&init, GIT_REPOSITORY_INIT_OPTIONS_VERSION);
   init.initial_head = "main";
   init.flags |= GIT_REPOSITORY_INIT_MKPATH;
-  REQUIRE(git_repository_init_ext(&raw, dir.path().string().c_str(), &init) == 0);
+  REQUIRE(git_repository_init_ext(&raw, root.string().c_str(), &init) == 0);
 
   git_config* config = nullptr;
   REQUIRE(git_repository_config(&config, raw) == 0);
@@ -38,14 +39,14 @@ std::optional<Repository> Fixture(const ScratchDir& dir) {
   git_remote_free(remote);
   git_repository_free(raw);
 
-  std::ofstream(dir.path() / "README") << "hello\n";
+  std::ofstream(root / "README") << "hello\n";
   std::string error;
-  std::optional<Repository> repo = Repository::Discover(dir.path().string(), &error);
+  std::optional<Repository> repo = Repository::Discover(root.string(), &error);
   REQUIRE(repo.has_value());
   REQUIRE(repo->StageAll().ok);
   REQUIRE(repo->Commit("first").ok);
 
-  REQUIRE(git_repository_open(&raw, dir.path().string().c_str()) == 0);
+  REQUIRE(git_repository_open(&raw, root.string().c_str()) == 0);
   git_reference* head = nullptr;
   REQUIRE(git_repository_head(&head, raw) == 0);
   git_reference* feature = nullptr;
@@ -55,6 +56,10 @@ std::optional<Repository> Fixture(const ScratchDir& dir) {
   git_reference_free(head);
   git_repository_free(raw);
   return repo;
+}
+
+std::optional<Repository> Fixture(const ScratchDir& dir) {
+  return Fixture(dir.path());
 }
 
 }  // namespace
@@ -467,4 +472,100 @@ TEST_CASE("an undo outside a rebase is one entry") {
   CHECK(gittop::git::UndoSteps(log({"rebase (finish): returning", "rebase (pick): b",
                                     "rebase (start): checkout main",
                                     "rebase (finish): an older one"})) == 3);
+}
+
+// Built in a subdirectory, because a worktree goes beside the main tree and
+// beside the scratch directory itself would outlive the test.
+TEST_CASE("a worktree is added beside the main tree, listed, and removed") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir.path() / "proj");
+  const std::filesystem::path linked_path = dir.path() / "proj-topic";
+
+  REQUIRE(repo->AddWorktree("topic").ok);
+  CHECK(std::filesystem::exists(linked_path / "README"));
+  CHECK_FALSE(repo->AddWorktree("topic").ok);
+
+  const gittop::model::Workspace workspace = repo->ReadWorkspace();
+  REQUIRE(workspace.worktrees.size() == 2);
+  CHECK(workspace.worktrees[0].main);
+  CHECK(workspace.worktrees[0].current);
+  CHECK(workspace.worktrees[0].branch == "main");
+  CHECK(workspace.worktrees[1].name == "topic");
+  CHECK(workspace.worktrees[1].branch == "topic");
+  CHECK(workspace.worktrees[1].changes == 0);
+
+  // From inside the linked one, the main tree is still first and not current.
+  std::string error;
+  std::optional<Repository> linked = Repository::Discover(linked_path.string(), &error);
+  REQUIRE(linked.has_value());
+  const gittop::model::Workspace seen = linked->ReadWorkspace();
+  REQUIRE(seen.worktrees.size() == 2);
+  CHECK(seen.worktrees[0].main);
+  CHECK_FALSE(seen.worktrees[0].current);
+  CHECK(seen.worktrees[1].current);
+
+  std::ofstream(linked_path / "x.txt") << "x\n";
+  CHECK_FALSE(repo->RemoveWorktree("topic").ok);
+  std::filesystem::remove(linked_path / "x.txt");
+  REQUIRE(repo->RemoveWorktree("topic").ok);
+  CHECK_FALSE(std::filesystem::exists(linked_path));
+  CHECK(repo->ReadWorkspace().worktrees.size() == 1);
+}
+
+TEST_CASE("a worktree whose directory is gone is listed as missing, and removing it prunes") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir.path() / "proj");
+  REQUIRE(repo->AddWorktree("gone").ok);
+  std::filesystem::remove_all(dir.path() / "proj-gone");
+
+  const gittop::model::Workspace workspace = repo->ReadWorkspace();
+  REQUIRE(workspace.worktrees.size() == 2);
+  CHECK(workspace.worktrees[1].missing);
+  CHECK(repo->RemoveWorktree("gone").ok);
+  CHECK(repo->ReadWorkspace().worktrees.size() == 1);
+}
+
+TEST_CASE("a submodule is listed, and an update clones it at the recorded commit") {
+  ScratchDir dir;
+  std::optional<Repository> lib = Fixture(dir.path() / "lib");
+  std::optional<Repository> proj = Fixture(dir.path() / "proj");
+
+  git_repository* raw = nullptr;
+  REQUIRE(git_repository_open(&raw, (dir.path() / "proj").string().c_str()) == 0);
+  git_submodule* module = nullptr;
+  REQUIRE(git_submodule_add_setup(&module, raw, (dir.path() / "lib").string().c_str(),
+                                  "vendor/lib", 1) == 0);
+  REQUIRE(git_submodule_clone(nullptr, module, nullptr) == 0);
+  REQUIRE(git_submodule_add_finalize(module) == 0);
+  git_submodule_free(module);
+  git_repository_free(raw);
+  // The status read is what picks up an index another handle wrote, as App's
+  // refresh does.
+  proj->ReadStatus();
+  REQUIRE(proj->Commit("add lib").ok);
+
+  gittop::model::Workspace workspace = proj->ReadWorkspace();
+  REQUIRE(workspace.submodules.size() == 1);
+  CHECK(workspace.submodules[0].path == "vendor/lib");
+  CHECK(workspace.submodules[0].cloned);
+  CHECK(workspace.submodules[0].recorded == workspace.submodules[0].checked_out);
+
+  // A clone of the superproject has the submodule recorded and nothing in it.
+  git_repository* clone = nullptr;
+  const std::filesystem::path copy = dir.path() / "copy";
+  REQUIRE(git_clone(&clone, (dir.path() / "proj").string().c_str(), copy.string().c_str(),
+                    nullptr) == 0);
+  git_repository_free(clone);
+  std::string error;
+  std::optional<Repository> copied = Repository::Discover(copy.string(), &error);
+  REQUIRE(copied.has_value());
+  CHECK_FALSE(copied->ReadWorkspace().submodules.at(0).cloned);
+
+  const gittop::git::TransferResult result =
+      gittop::git::UpdateSubmodule(copy.string(), "vendor/lib", nullptr, nullptr);
+  CHECK_MESSAGE(result.ok, result.detail);
+  CHECK(std::filesystem::exists(copy / "vendor/lib/README"));
+  workspace = copied->ReadWorkspace();
+  CHECK(workspace.submodules.at(0).cloned);
+  CHECK(workspace.submodules.at(0).checked_out == workspace.submodules.at(0).recorded);
 }

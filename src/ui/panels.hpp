@@ -32,6 +32,10 @@ enum class View {
   Pipelines,
   Pulls,
   Settings,
+  // Worktrees and submodules. Off the tab bar by default, because ten views
+  // fill the ten digit keys, and reached with `W` instead; `[layout] views`
+  // can still give it a tab of its own.
+  Workspace,
   // Reached from a file with `b`, never from the tab bar: it is a question
   // about one file, and a tab would have nothing to show until one is asked.
   Blame,

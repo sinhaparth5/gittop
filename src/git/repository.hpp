@@ -13,6 +13,7 @@
 #include "model/operation.hpp"
 #include "model/stash.hpp"
 #include "model/status.hpp"
+#include "model/workspace.hpp"
 
 struct git_repository;
 
@@ -207,6 +208,16 @@ class Repository {
   // commits from a rebase without a word.
   RewriteScope PreviewRewrite(const std::string& id, Rewrite kind) const;
   OpResult RewriteHistory(const std::string& id, Rewrite kind, const std::string& summary);
+
+  // In git/workspace.cpp. `ReadWorkspace` is every worktree, main one first,
+  // and every submodule; a status read per worktree, so it is read on the way
+  // into its view rather than at startup. `AddWorktree` checks `branch` out
+  // beside the main tree, making the branch at HEAD if it does not exist.
+  // `RemoveWorktree` deletes a linked worktree's directory and git's record of
+  // it, refusing one that is locked or has changes; a missing one is pruned.
+  model::Workspace ReadWorkspace() const;
+  OpResult AddWorktree(const std::string& branch);
+  OpResult RemoveWorktree(const std::string& name);
 
   std::string WorkdirPath() const;
 

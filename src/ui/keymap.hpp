@@ -89,6 +89,11 @@ enum class Action {
   Undo,
   Reflog,
 
+  Workspace,
+  AddWorktree,
+  RemoveWorktree,
+  UpdateSubmodule,
+
   Squash,
   Fixup,
   DropCommit,
@@ -120,6 +125,7 @@ enum class Scope {
   History,
   Ci,
   Pull,
+  Workspace,
 };
 
 struct Binding {

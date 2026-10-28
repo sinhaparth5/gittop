@@ -89,6 +89,8 @@ std::string TabLabel(View view) {
       return "PULLS";
     case View::Settings:
       return "SETTINGS";
+    case View::Workspace:
+      return "WORKSPACE";
     case View::Blame:
       return "BLAME";
   }
@@ -104,7 +106,7 @@ const struct {
     {"status", View::Status},   {"history", View::History},     {"branches", View::Branches},
     {"graph", View::Graph},     {"diff", View::Diff},           {"stashes", View::Stashes},
     {"remote", View::Remote},   {"ci", View::Pipelines},        {"pulls", View::Pulls},
-    {"settings", View::Settings},
+    {"settings", View::Settings}, {"workspace", View::Workspace},
 };
 
 // A chip whose key comes from the live binding. Empty when the action has been
@@ -956,6 +958,11 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(KeyChip(keys, Action::StashApply, "apply"));
     chips.push_back(KeyChip(keys, Action::StashPop, "pop"));
     chips.push_back(KeyChip(keys, Action::StashDrop, "drop"));
+  } else if (view == View::Workspace) {
+    chips.push_back(KeyChip(keys, Action::Open, "switch"));
+    chips.push_back(KeyChip(keys, Action::AddWorktree, "add"));
+    chips.push_back(KeyChip(keys, Action::RemoveWorktree, "remove"));
+    chips.push_back(KeyChip(keys, Action::UpdateSubmodule, "update"));
   } else {
     chips.push_back(Chip(move, "move"));
     chips.push_back(KeyChip(keys, Action::NextView, "switch view"));
@@ -1164,6 +1171,11 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Commit, "write a commit"),
       line(Action::CommitEditor, "write one in your editor, with a body"),
       line(Action::Amend, "amend the last commit with what is staged"),
+      text(""),
+      heading("WORKSPACE"),
+      line(Action::Workspace, "worktrees, submodules; enter switches"),
+      pair(Action::AddWorktree, Action::RemoveWorktree, "workspace: add / remove a worktree"),
+      line(Action::UpdateSubmodule, "workspace: init and update the submodule"),
   };
 
   Elements right{

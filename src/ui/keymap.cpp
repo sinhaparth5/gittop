@@ -110,6 +110,10 @@ const NamedAction kActionNames[] = {
     {"operation", Action::Operation},
     {"undo", Action::Undo},
     {"reflog", Action::Reflog},
+    {"workspace", Action::Workspace},
+    {"add_worktree", Action::AddWorktree},
+    {"remove_worktree", Action::RemoveWorktree},
+    {"update_submodule", Action::UpdateSubmodule},
 
     {"squash", Action::Squash},
     {"fixup", Action::Fixup},
@@ -145,6 +149,8 @@ std::string ScopeName(Scope scope) {
       return "ci";
     case Scope::Pull:
       return "pulls";
+    case Scope::Workspace:
+      return "workspace";
     case Scope::Global:
       break;
   }
@@ -351,6 +357,14 @@ Keymap::Keymap() {
   // branch, which is the question worth having answered before opening another.
   // `n` is unbound everywhere else, so nothing is shadowed by it.
   Bind(Action::PullCreate, Scope::Pull, "n");
+
+  // Global so it is reachable at all: the view has no tab by default. The
+  // three below act on the row under the cursor, so they are scoped to it; `D`
+  // is capital for the branch delete's reason, and `u` shadows nothing here.
+  Bind(Action::Workspace, Scope::Global, "W");
+  Bind(Action::AddWorktree, Scope::Workspace, "n");
+  Bind(Action::RemoveWorktree, Scope::Workspace, "D");
+  Bind(Action::UpdateSubmodule, Scope::Workspace, "u");
 
   // The graph pans along a timeline instead of selecting rows, so it takes the
   // horizontal keys and reuses g/G for the ends of time rather than the ends of

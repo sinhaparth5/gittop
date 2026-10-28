@@ -8,12 +8,15 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 // For back_inserter, which libstdc++ hands over through <vector> and MSVC's STL
 // does not. Neither is wrong — a standard header is allowed to include another —
 // which is why a missing include of this kind builds on one compiler and fails
 // on the next, and why the Windows CI job is the thing that finds them.
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -61,6 +64,7 @@ using RemoteHandle = Owned<git_remote, git_remote_free>;
 using RefHandle = Owned<git_reference, git_reference_free>;
 using ObjectHandle = Owned<git_object, git_object_free>;
 using AnnotatedHandle = Owned<git_annotated_commit, git_annotated_commit_free>;
+using SubmoduleHandle = Owned<git_submodule, git_submodule_free>;
 
 // Everything the libgit2 callbacks need. One struct behind the void* payload,
 // because a C callback gets exactly one pointer and there are five of them.
@@ -377,6 +381,33 @@ TransferResult RunFetch(git_repository* repo, git_remote* remote, Context* ctx, 
   return result;
 }
 
+// `git submodule deinit` empties the submodule's directory but keeps its clone
+// under .git/modules, and libgit2's update refuses to clone over that. Joining
+// the two again is what git does in the same place; afterwards the update finds
+// a repository to check out. True when it did, since the directory it filled
+// was empty and the checkout can then be forced without losing anything.
+bool Reconnect(git_repository* repo, git_submodule* module) {
+  namespace fs = std::filesystem;
+  const fs::path gitdir =
+      fs::path(git_repository_path(repo)) / "modules" / git_submodule_name(module);
+  const fs::path workdir = fs::path(git_repository_workdir(repo)) / git_submodule_path(module);
+  std::error_code ec;
+  if (!fs::is_directory(gitdir, ec) || (fs::exists(workdir, ec) && !fs::is_empty(workdir, ec))) {
+    return false;
+  }
+  fs::create_directories(workdir, ec);
+  std::ofstream(workdir / ".git") << "gitdir: " << fs::relative(gitdir, workdir, ec).generic_string()
+                                  << "\n";
+  git_config* config = nullptr;
+  if (git_config_open_ondisk(&config, (gitdir / "config").string().c_str()) == 0) {
+    git_config_set_string(config, "core.worktree",
+                          fs::relative(workdir, gitdir, ec).generic_string().c_str());
+    git_config_free(config);
+  }
+  git_submodule_reload(module, /*force=*/1);
+  return true;
+}
+
 }  // namespace
 
 void ProgressSink::Publish(const TransferProgress& progress) {
@@ -453,6 +484,56 @@ TransferResult Fetch(const std::string& repo_path, const std::string& remote_nam
   ctx.credentials = &credentials;
 
   TransferResult result = RunFetch(repo.get(), remote.get(), &ctx, /*prune=*/false);
+  ctx.progress.phase = result.ok ? TransferPhase::Done : TransferPhase::Failed;
+  Publish(&ctx);
+  return result;
+}
+
+TransferResult UpdateSubmodule(const std::string& repo_path, const std::string& name,
+                               std::shared_ptr<ProgressSink> sink,
+                               const std::atomic<bool>* cancel) {
+  RepoHandle repo;
+  TransferResult failure;
+  if (!Open(repo_path, &repo, &failure)) {
+    return failure;
+  }
+  SubmoduleHandle module;
+  if (git_submodule_lookup(module.put(), repo.get(), name.c_str()) != 0) {
+    return Failure("no submodule " + name, LastError());
+  }
+
+  // Anonymous: the remote's token belongs to the remote's host, and a
+  // submodule's URL can name any host at all. Over ssh the system ssh
+  // authenticates as it does for everything else.
+  const Credentials anonymous;
+  Context ctx;
+  ctx.sink = sink.get();
+  ctx.cancel = cancel;
+  ctx.credentials = &anonymous;
+
+  git_submodule_update_options options;
+  git_submodule_update_options_init(&options, GIT_SUBMODULE_UPDATE_OPTIONS_VERSION);
+  InstallCallbacks(&options.fetch_opts.callbacks, &ctx);
+  if (Reconnect(repo.get(), module.get())) {
+    options.checkout_opts.checkout_strategy = GIT_CHECKOUT_FORCE;
+  }
+  ctx.progress.phase = TransferPhase::Connecting;
+  Publish(&ctx);
+
+  TransferResult result;
+  if (git_submodule_update(module.get(), /*init=*/1, &options) != 0) {
+    result = Failure(Cancelled(&ctx) ? "cancelled" : "could not update " + name,
+                     Cancelled(&ctx) ? "" : LastError());
+  } else {
+    result.ok = true;
+    result.summary = "updated " + name;
+    git_submodule_reload(module.get(), /*force=*/1);
+    if (const git_oid* id = git_submodule_wd_id(module.get()); id != nullptr) {
+      char hex[8] = {};
+      git_oid_tostr(hex, sizeof(hex), id);
+      result.detail = std::string("at ") + hex;
+    }
+  }
   ctx.progress.phase = result.ok ? TransferPhase::Done : TransferPhase::Failed;
   Publish(&ctx);
   return result;
