@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,6 +37,27 @@ struct HunkPick {
   std::size_t hunk = 0;
   std::string header;
   int line = -1;  // the n-th +/-/context line of the hunk; -1 takes all of it
+};
+
+// One edit to the history under HEAD, as the history view asks for it. Squash
+// and fixup fold the commit into its parent; the moves swap it with its parent
+// (down) or its child (up), because the history list draws newest first.
+enum class Rewrite {
+  Squash,
+  Fixup,
+  Drop,
+  Reword,
+  MoveDown,
+  MoveUp,
+};
+
+// What a rewrite would touch, for the confirm to say before it happens.
+// `pushed` counts the rewritten commits already reachable from the upstream,
+// which is the part other people may have built on.
+struct RewriteScope {
+  std::size_t commits = 0;
+  std::size_t pushed = 0;
+  std::string error;  // why it cannot be done; empty when it can
 };
 
 // Outcome of a mutating operation. Failures carry a message the UI shows in the
@@ -143,6 +165,14 @@ class Repository {
   OpResult RebaseOntoUpstream();
   OpResult RebaseContinue();
   OpResult RebaseAbort();
+
+  // An interactive rebase of one edit, in git/rebase.cpp. It runs through the
+  // same on-disk rebase as the above, so a conflict lands in the operation pane
+  // and `RebaseContinue` and `RebaseAbort` finish it. Only the first-parent
+  // line of HEAD can be edited, and never across a merge: libgit2 drops merge
+  // commits from a rebase without a word.
+  RewriteScope PreviewRewrite(const std::string& id, Rewrite kind) const;
+  OpResult RewriteHistory(const std::string& id, Rewrite kind, const std::string& summary);
 
   std::string WorkdirPath() const;
 

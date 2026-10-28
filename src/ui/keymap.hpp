@@ -78,6 +78,13 @@ enum class Action {
   Rebase,
   Operation,
 
+  Squash,
+  Fixup,
+  DropCommit,
+  Reword,
+  MoveDown,
+  MoveUp,
+
   PanLeft,
   PanRight,
   BucketDay,
@@ -99,6 +106,7 @@ enum class Scope {
   Diff,
   Stash,
   Branches,
+  History,
   Ci,
   Pull,
 };

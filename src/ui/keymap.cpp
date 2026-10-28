@@ -100,6 +100,13 @@ const NamedAction kActionNames[] = {
     {"rebase", Action::Rebase},
     {"operation", Action::Operation},
 
+    {"squash", Action::Squash},
+    {"fixup", Action::Fixup},
+    {"drop_commit", Action::DropCommit},
+    {"reword", Action::Reword},
+    {"move_down", Action::MoveDown},
+    {"move_up", Action::MoveUp},
+
     {"pan_left", Action::PanLeft},
     {"pan_right", Action::PanRight},
     {"bucket_day", Action::BucketDay},
@@ -121,6 +128,8 @@ std::string ScopeName(Scope scope) {
       return "stash";
     case Scope::Branches:
       return "branches";
+    case Scope::History:
+      return "history";
     case Scope::Ci:
       return "ci";
     case Scope::Pull:
@@ -291,6 +300,18 @@ Keymap::Keymap() {
   // key would be a network call with a destructive edge available from every
   // screen, including several that have nothing to do with branches.
   Bind(Action::Prune, Scope::Branches, "x");
+
+  // Scoped to the commit list, which is the one place the commit they rewrite
+  // is under the cursor. `f` there shadows fetch, as the stash view's `p`
+  // shadows pull. Reword is `w` rather than lazygit's `r`, which would cost the
+  // view its reload; and the moves are J and K rather than ctrl-j, which a
+  // terminal sends as the same byte as enter.
+  Bind(Action::Squash, Scope::History, "s");
+  Bind(Action::Fixup, Scope::History, "f");
+  Bind(Action::DropCommit, Scope::History, "d");
+  Bind(Action::Reword, Scope::History, "w");
+  Bind(Action::MoveDown, Scope::History, "J");
+  Bind(Action::MoveUp, Scope::History, "K");
 
   // Scoped for the same reason, from the other direction: the ref picker only
   // means anything beside a run list, and `b` is a letter worth leaving free
