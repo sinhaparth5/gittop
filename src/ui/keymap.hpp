@@ -59,6 +59,8 @@ enum class Action {
   StageAll,
   Discard,
   Commit,
+  Amend,
+  CommitEditor,
 
   DiffSwitch,
   DiffStage,

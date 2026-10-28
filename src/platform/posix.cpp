@@ -148,6 +148,30 @@ int RunQuiet(const std::vector<std::string>& args) {
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+int RunInTerminal(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    return -1;
+  }
+  std::vector<char*> argv = BuildArgv(args);
+
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    ::execvp(argv[0], argv.data());
+    _exit(127);
+  }
+
+  int status = 0;
+  while (::waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) {
+      return -1;
+    }
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 std::string RunCapture(const std::vector<std::string>& args, std::size_t limit,
                        bool* exited_ok) {
   if (exited_ok != nullptr) {

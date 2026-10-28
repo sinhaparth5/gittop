@@ -34,6 +34,12 @@ namespace gittop::platform {
 // exactly right forever.
 int RunQuiet(const std::vector<std::string>& argv);
 
+// Runs `argv` on this terminal — its standard streams are this process's — and
+// waits for it, returning its exit status or -1 if it could not be run. For an
+// editor, which is the one child that has to own the screen while it runs;
+// the caller is the one giving the terminal up. Never a shell, as above.
+int RunInTerminal(const std::vector<std::string>& argv);
+
 // Runs `argv` and returns what it wrote to stdout, truncated to `limit` bytes.
 // stderr is discarded — a tool complaining about a missing display would
 // otherwise land on the alternate screen this program is drawing on.

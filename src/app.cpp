@@ -2799,7 +2799,7 @@ void App::RequestRewrite(git::Rewrite kind) {
   rewrite_id_ = commit.id;
   rewrite_subject_ = commit.short_id + " " + commit.summary;
   if (kind == git::Rewrite::Reword) {
-    rewording_ = true;
+    commit_mode_ = CommitMode::Reword;
     commit_message_ = commit.summary;
     commit_cursor_ = static_cast<int>(commit_message_.size());
     OpenOverlay(kCommit);
@@ -2814,7 +2814,7 @@ void App::PerformRewrite() {
   const git::OpResult result = repo_.RewriteHistory(
       rewrite_id_, rewrite_kind_, rewrite_kind_ == git::Rewrite::Reword ? commit_message_ : "");
   if (rewrite_kind_ == git::Rewrite::Reword) {
-    rewording_ = false;
+    commit_mode_ = CommitMode::Commit;
     commit_message_.clear();
   }
   history_loaded_ = false;
@@ -3174,9 +3174,65 @@ void App::OpenCommit() {
     Note("nothing staged to commit", true);
     return;
   }
-  rewording_ = false;
+  commit_mode_ = CommitMode::Commit;
   commit_message_.clear();
   OpenOverlay(kCommit);
+}
+
+void App::OpenAmend() {
+  bool pushed = false;
+  const std::string summary = repo_.HeadSummary(&pushed);
+  if (summary.empty()) {
+    Note("there is no commit to amend yet", true);
+    return;
+  }
+  commit_mode_ = CommitMode::Amend;
+  commit_message_ = summary;
+  commit_cursor_ = static_cast<int>(commit_message_.size());
+  OpenOverlay(kCommit);
+}
+
+void App::PerformAmend() {
+  const git::OpResult result = repo_.Amend(commit_message_);
+  if (result.ok) {
+    commit_mode_ = CommitMode::Commit;
+    commit_message_.clear();
+    CloseOverlay();
+    history_loaded_ = false;
+  }
+  Apply(result);
+}
+
+void App::CommitInEditor() {
+  if (snapshot_.staged == 0) {
+    Note("nothing staged to commit", true);
+    return;
+  }
+  std::vector<std::string> argv = repo_.EditorCommand();
+  argv.push_back(repo_.PrepareCommitMessage());
+  int code = -1;
+  suspend_([&argv, &code] {
+    // gittop's bracketed paste is its own, set outside FTXUI, so it is handed
+    // back too: an editor started inside it would see paste markers it never
+    // asked for.
+    std::fputs("\x1b[?2004l", stdout);
+    std::fflush(stdout);
+    code = platform::RunInTerminal(argv);
+    std::fputs("\x1b[?2004h", stdout);
+    std::fflush(stdout);
+  });
+  if (code != 0) {
+    Note(code < 0 ? "could not start " + argv.front() + " — set GIT_EDITOR or EDITOR"
+                  : argv.front() + " exited with an error — commit aborted",
+         true);
+    return;
+  }
+  const git::OpResult result = repo_.CommitEditedMessage();
+  if (result.ok) {
+    history_loaded_ = false;
+    commit_selected_ = 0;
+  }
+  Apply(result);
 }
 
 void App::PerformCommit() {
@@ -3397,6 +3453,12 @@ bool App::Perform(ui::Action action) {
     case ui::Action::Commit:
       OpenCommit();
       return true;
+    case ui::Action::Amend:
+      OpenAmend();
+      return true;
+    case ui::Action::CommitEditor:
+      CommitInEditor();
+      return true;
 
     case ui::Action::DiffSwitch:
       SwitchDiffSource();
@@ -3586,6 +3648,7 @@ int App::Run() {
   }
 
   auto screen = ScreenInteractive::Fullscreen();
+  suspend_ = [&screen](std::function<void()> fn) { screen.WithRestoredIO(std::move(fn))(); };
 
   // Every one of these captures the screen by reference, which is why all of
   // them are shut down before it goes out of scope at the end of this function.
@@ -3605,20 +3668,28 @@ int App::Run() {
   input_option.multiline = false;
   input_option.cursor_position = &commit_cursor_;
   input_option.on_enter = [this] {
-    if (!rewording_) {
+    bool pushed = false;
+    if (commit_mode_ == CommitMode::Commit) {
       PerformCommit();
     } else if (commit_message_.empty()) {
       Note("commit message is empty", true);
-    } else {
+    } else if (commit_mode_ == CommitMode::Reword) {
       confirm_kind_ = ConfirmKind::Rewrite;
       OpenOverlay(kConfirm);
+    } else if (repo_.HeadSummary(&pushed); pushed) {
+      confirm_kind_ = ConfirmKind::Amend;
+      OpenOverlay(kConfirm);
+    } else {
+      PerformAmend();
     }
   };
   auto commit_input = Input(&commit_message_, "summary of the change", input_option);
 
   auto commit_pane = Renderer(commit_input, [this, commit_input] {
     return vbox({
-               text(rewording_ ? " Reword " + rewrite_subject_ : " Commit") | bold |
+               text(commit_mode_ == CommitMode::Reword  ? " Reword " + rewrite_subject_
+                    : commit_mode_ == CommitMode::Amend ? " Amend the last commit"
+                                                        : " Commit") | bold |
                    color(ui::theme().accent),
                separator() | color(ui::theme().border),
                hbox({
@@ -3629,7 +3700,9 @@ int App::Run() {
                separator() | color(ui::theme().border),
                hbox({
                    text(" "),
-                   ui::Chip("enter", rewording_ ? "reword" : "commit"),
+                   ui::Chip("enter", commit_mode_ == CommitMode::Reword  ? "reword"
+                                    : commit_mode_ == CommitMode::Amend ? "amend"
+                                                                        : "commit"),
                    filler(),
                    ui::Chip("esc", "cancel"),
                }),
@@ -3696,6 +3769,10 @@ int App::Run() {
                 pull_draft_.target_branch,
             /*warning=*/"", "open", pull_draft_.title);
       }
+
+      case ConfirmKind::Amend:
+        return ui::ConfirmPane("Amend a commit that is already pushed?", commit_message_,
+                               "The upstream keeps the old one — others may have it.", "amend");
 
       case ConfirmKind::Rewrite: {
         const std::size_t n = rewrite_scope_.commits;
@@ -4217,6 +4294,10 @@ int App::Run() {
               case ConfirmKind::Rewrite:
                 PerformRewrite();
                 break;
+              case ConfirmKind::Amend:
+                CloseOverlay();
+                PerformAmend();
+                break;
               case ConfirmKind::Discard:
                 PerformDiscard();
                 break;
@@ -4232,7 +4313,9 @@ int App::Run() {
             // confirm the most expensive key on the pane.
             if (confirm_kind_ == ConfirmKind::PullCreate) {
               OpenOverlay(kPullCreate);
-            } else if (confirm_kind_ == ConfirmKind::Rewrite && rewording_) {
+            } else if ((confirm_kind_ == ConfirmKind::Rewrite &&
+                        commit_mode_ == CommitMode::Reword) ||
+                       confirm_kind_ == ConfirmKind::Amend) {
               OpenOverlay(kCommit);  // the same reason, for the summary just typed
             } else {
               CloseOverlay();
@@ -4385,6 +4468,7 @@ int App::Run() {
   std::fflush(stdout);
 
   screen.Loop(root);
+  suspend_ = nullptr;  // it holds the screen by reference
 
   std::fputs("\x1b[?2004l", stdout);
   std::fflush(stdout);

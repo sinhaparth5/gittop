@@ -136,6 +136,17 @@ class Repository {
   OpResult Discard(const model::StatusEntry& entry);
   OpResult Commit(const std::string& message);
 
+  // In git/message.cpp. `EditorCommand` is git's choice of editor as an argv;
+  // `PrepareCommitMessage` writes COMMIT_EDITMSG and returns its path, and
+  // `CommitEditedMessage` commits what the editor left there — or refuses an
+  // empty message, which is how an editor says "never mind". `Amend` replaces
+  // HEAD's summary, keeps its body and author, and takes in whatever is staged.
+  std::vector<std::string> EditorCommand() const;
+  std::string PrepareCommitMessage() const;
+  OpResult CommitEditedMessage();
+  std::string HeadSummary(bool* pushed) const;  // empty with no commits yet
+  OpResult Amend(const std::string& summary);
+
   // Stages a hunk or a line of the working-tree diff, or unstages one of the
   // staged diff, by applying a patch built from it to the index. In
   // git/diff.cpp. Only a modified file: a new, deleted or renamed one stages

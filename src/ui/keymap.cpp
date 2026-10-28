@@ -82,6 +82,8 @@ const NamedAction kActionNames[] = {
     {"stage_all", Action::StageAll},
     {"discard", Action::Discard},
     {"commit", Action::Commit},
+    {"amend", Action::Amend},
+    {"commit_editor", Action::CommitEditor},
 
     {"diff_switch", Action::DiffSwitch},
     {"diff_stage", Action::DiffStage},
@@ -282,6 +284,8 @@ Keymap::Keymap() {
   Bind(Action::StageAll, Scope::Status, "a");
   Bind(Action::Discard, Scope::Status, "d");
   Bind(Action::Commit, Scope::Status, "c");
+  Bind(Action::Amend, Scope::Status, "A");
+  Bind(Action::CommitEditor, Scope::Status, "C");
 
   // `s` switches sides on the diff view and stages on the status view: two
   // scoped bindings that never meet, so neither shadows the other.

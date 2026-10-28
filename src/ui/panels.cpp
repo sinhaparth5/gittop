@@ -1160,6 +1160,8 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::StageAll, "stage everything"),
       line(Action::Discard, "discard the selection, after a confirm"),
       line(Action::Commit, "write a commit"),
+      line(Action::CommitEditor, "write one in your editor, with a body"),
+      line(Action::Amend, "amend the last commit with what is staged"),
   };
 
   Elements right{
