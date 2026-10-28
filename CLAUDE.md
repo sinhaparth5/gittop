@@ -763,8 +763,14 @@ that is the path a detached HEAD already took.
 Keys are flat dotted paths with quotes stripped, so `hosts."gitlab.internal".token` is looked up as
 `hosts.gitlab.internal.token` and reached through `HostValue(host, field)`. Per-host settings are
 table keys rather than code, which is what lets a self-hosted instance be configured without a
-patch. The reader accepts comments, table headers, and `key = value` for strings, ints, and bools —
-that is the entire language. It is a strict subset rather than a lookalike, so a real TOML parser
+patch. The reader accepts comments, table headers, and `key = value` for strings, ints, and bools,
+plus the two things `[[commands]]` needed: `[[name]]` arrays of tables, whose elements read back as
+`name.0.key`, `name.1.key` so everything else still sees flat keys, and one-line arrays of strings
+behind `GetList`. That is the entire language. Arrays are read and never written, so `Rewrite`
+keeps their lines verbatim; it numbers `[[...]]` headers through the same `ParseHeader` Load uses,
+or a save would drop every key under them. A real parser was weighed for this and not taken: it
+would have to round-trip comments to keep the in-place save, and that is the hard part, not the
+parsing. It is a strict subset rather than a lookalike, so a real TOML parser
 can be dropped in later without migrating anyone's file.
 
 `[layout]`, `[theme]`, `[theme.colors]` and `[keys]` are read in `App::ApplyConfig`, which runs in

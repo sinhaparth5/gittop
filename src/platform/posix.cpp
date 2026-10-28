@@ -99,7 +99,9 @@ bool WriteAll(int fd, const char* data, std::size_t size) {
 std::string ReadAll(int fd, std::size_t limit) {
   std::string out;
   char buffer[4096];
-  while (out.size() < limit) {
+  // Drained to the end rather than abandoned at the limit: closing the pipe on
+  // a child with more to say kills it with SIGPIPE, which reads as a failure.
+  while (true) {
     const ssize_t n = ::read(fd, buffer, sizeof(buffer));
     if (n < 0 && errno == EINTR) {
       continue;
@@ -107,7 +109,9 @@ std::string ReadAll(int fd, std::size_t limit) {
     if (n <= 0) {
       break;
     }
-    out.append(buffer, static_cast<std::size_t>(n));
+    if (out.size() < limit) {
+      out.append(buffer, static_cast<std::size_t>(n));
+    }
   }
   if (out.size() > limit) {
     out.resize(limit);
@@ -223,6 +227,57 @@ std::string RunCapture(const std::vector<std::string>& args, std::size_t limit,
   if (exited_ok != nullptr) {
     *exited_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
   }
+  return out;
+}
+
+std::string RunCommand(const std::vector<std::string>& args, const std::string& cwd,
+                       std::size_t limit, int* status) {
+  *status = -1;
+  if (args.empty()) {
+    return {};
+  }
+  int fds[2] = {-1, -1};
+  if (::pipe(fds) != 0) {
+    return {};
+  }
+
+  std::vector<char*> argv = BuildArgv(args);
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    ::close(fds[0]);
+    ::close(fds[1]);
+    return {};
+  }
+
+  if (pid == 0) {
+    // A session of its own has no controlling terminal, so ssh cannot open
+    // /dev/tty to ask for a passphrase; GIT_TERMINAL_PROMPT stops git asking
+    // for an https password the same way.
+    ::setsid();
+    ::setenv("GIT_TERMINAL_PROMPT", "0", 1);
+    ::dup2(fds[1], STDOUT_FILENO);
+    ::dup2(fds[1], STDERR_FILENO);
+    ::close(fds[0]);
+    ::close(fds[1]);
+    RedirectToNull(O_RDONLY, {STDIN_FILENO});
+    if (::chdir(cwd.c_str()) != 0) {
+      _exit(127);
+    }
+    ::execvp(argv[0], argv.data());
+    _exit(127);
+  }
+
+  ::close(fds[1]);
+  std::string out = ReadAll(fds[0], limit);
+  ::close(fds[0]);
+
+  int wait_status = 0;
+  while (::waitpid(pid, &wait_status, 0) < 0) {
+    if (errno != EINTR) {
+      return out;
+    }
+  }
+  *status = WIFEXITED(wait_status) ? WEXITSTATUS(wait_status) : -1;
   return out;
 }
 

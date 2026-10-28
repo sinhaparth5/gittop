@@ -125,6 +125,73 @@ bool ParseValue(const std::string& raw, std::string* out, std::string* error) {
   return true;
 }
 
+// A one-line array of quoted strings, which is all `[[commands]] run` needs:
+// `["git", "fetch", "{remote}"]`. Each element goes through ParseValue so the
+// escapes are the same ones a scalar string has.
+bool ParseList(const std::string& raw, std::vector<std::string>* out, std::string* error) {
+  const std::string in = Trim(raw);
+  if (in.size() < 2 || in.front() != '[' || in.back() != ']') {
+    *error = "unterminated array";
+    return false;
+  }
+  std::size_t i = 1;
+  const std::size_t end = in.size() - 1;
+  while (true) {
+    while (i < end && (std::isspace(static_cast<unsigned char>(in[i])) != 0 || in[i] == ',')) {
+      ++i;
+    }
+    if (i >= end) {
+      return true;
+    }
+    if (in[i] != '"') {
+      *error = "an array may only hold quoted strings";
+      return false;
+    }
+    std::size_t close = i + 1;
+    while (close < end && in[close] != '"') {
+      close += in[close] == '\\' ? 2 : 1;
+    }
+    if (close >= end) {
+      *error = "unterminated string";
+      return false;
+    }
+    std::string item;
+    if (!ParseValue(in.substr(i, close - i + 1), &item, error)) {
+      return false;
+    }
+    out->push_back(std::move(item));
+    i = close + 1;
+  }
+}
+
+// `[a.b]`, or `[[a.b]]` for an array of tables. Each `[[commands]]` opens the
+// next element, numbered from zero, so its keys read back as `commands.0.key`
+// and every other part of the reader keeps seeing flat dotted keys. `counts`
+// is how many elements each array has so far; Load and Rewrite each keep one,
+// so the two number the same file the same way.
+bool ParseHeader(const std::string& trimmed, std::map<std::string, std::size_t>* counts,
+                 std::vector<std::string>* table) {
+  const bool array = trimmed.rfind("[[", 0) == 0;
+  const std::size_t brackets = array ? 2 : 1;
+  if (trimmed.size() < 2 * brackets ||
+      trimmed.compare(trimmed.size() - brackets, brackets, std::string(brackets, ']')) != 0) {
+    return false;
+  }
+  std::vector<std::string> parsed;
+  if (!SplitPath(Trim(trimmed.substr(brackets, trimmed.size() - 2 * brackets)), &parsed)) {
+    return false;
+  }
+  if (array) {
+    std::string name;
+    for (const std::string& segment : parsed) {
+      name += (name.empty() ? "" : ".") + segment;
+    }
+    parsed.push_back(std::to_string((*counts)[name]++));
+  }
+  *table = std::move(parsed);
+  return true;
+}
+
 // Comments run to end of line, except inside a quoted string where a '#' is
 // just a character. Tokens contain '#' often enough for this to matter.
 std::string StripComment(const std::string& line) {
@@ -487,6 +554,21 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # bucket_month = "m"
 # graph_oldest = "g"
 # graph_newest = "G"
+
+# Commands of your own, one [[commands]] table each. `run` is an argv and never
+# goes through a shell; {branch}, {commit}, {file} and {remote} are filled from
+# what is selected — the branch on the branches view and the commit on the
+# history view, the checked-out branch and HEAD anywhere else. It runs in the
+# repository's top directory, its last line of output is shown, and every view
+# is re-read afterwards. `scope` limits it to one view (a name from [layout]
+# views); `confirm` asks first, showing the argv in full. A command's key wins
+# over a built-in one.
+#
+# [[commands]]
+# key = "ctrl-f"
+# scope = "branches"
+# run = ["git", "fetch", "{remote}", "{branch}"]
+# confirm = true
 )";
 
 }  // namespace
@@ -544,16 +626,9 @@ Config Config::Load(const std::string& path, std::string* error) {
     };
 
     if (trimmed.front() == '[') {
-      if (trimmed.back() != ']') {
-        fail("unterminated table header");
-        continue;
-      }
-      std::vector<std::string> parsed;
-      if (!SplitPath(Trim(trimmed.substr(1, trimmed.size() - 2)), &parsed)) {
+      if (!ParseHeader(trimmed, &config.arrays_, &table)) {
         fail("malformed table header");
-        continue;
       }
-      table = std::move(parsed);
       continue;
     }
 
@@ -569,25 +644,24 @@ Config Config::Load(const std::string& path, std::string* error) {
       continue;
     }
 
-    std::string value;
+    const std::string raw = Trim(trimmed.substr(equals + 1));
     std::string value_error;
-    if (!ParseValue(trimmed.substr(equals + 1), &value, &value_error)) {
-      fail(value_error);
+    if (!raw.empty() && raw.front() == '[') {
+      std::vector<std::string> list;
+      if (!ParseList(raw, &list, &value_error)) {
+        fail(value_error);
+        continue;
+      }
+      config.lists_[JoinKey(table, key_path)] = std::move(list);
       continue;
     }
 
-    std::string full;
-    for (const std::string& segment : table) {
-      full += segment;
-      full.push_back('.');
+    std::string value;
+    if (!ParseValue(raw, &value, &value_error)) {
+      fail(value_error);
+      continue;
     }
-    for (std::size_t i = 0; i < key_path.size(); ++i) {
-      full += key_path[i];
-      if (i + 1 < key_path.size()) {
-        full.push_back('.');
-      }
-    }
-    config.values_[full] = std::move(value);
+    config.values_[JoinKey(table, key_path)] = std::move(value);
   }
 
   return config;
@@ -626,6 +700,7 @@ std::string Config::Rewrite() const {
   // something else entirely the next time the file was read.
   std::map<std::string, std::size_t> table_end;
   std::vector<std::string> table;
+  std::map<std::string, std::size_t> arrays;
 
   for (const std::string& line : source_) {
     const std::string trimmed = Trim(StripComment(line));
@@ -636,12 +711,7 @@ std::string Config::Rewrite() const {
     }
 
     if (trimmed.front() == '[') {
-      if (trimmed.back() == ']') {
-        std::vector<std::string> parsed;
-        if (SplitPath(Trim(trimmed.substr(1, trimmed.size() - 2)), &parsed)) {
-          table = std::move(parsed);
-        }
-      }
+      ParseHeader(trimmed, &arrays, &table);
       out.push_back(line);
       // Anchored even when the table has no keys yet, so the first setting
       // saved under an empty `[theme]` goes inside it rather than after it.
@@ -816,6 +886,16 @@ bool Config::WriteTemplate(const std::string& path, std::string* error) {
 
   platform::RestrictToOwner(path);
   return true;
+}
+
+std::vector<std::string> Config::GetList(const std::string& key) const {
+  const auto it = lists_.find(key);
+  return it == lists_.end() ? std::vector<std::string>{} : it->second;
+}
+
+std::size_t Config::TableCount(const std::string& name) const {
+  const auto it = arrays_.find(name);
+  return it == arrays_.end() ? 0 : it->second;
 }
 
 bool Config::Has(const std::string& key) const {

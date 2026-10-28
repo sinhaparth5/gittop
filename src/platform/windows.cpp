@@ -165,8 +165,11 @@ HANDLE OpenNullDevice(DWORD access) {
 // a pipe read back into `out` or also NUL. Returns the exit code, or -1 if the
 // process could not be started at all — which is the ordinary answer for a tool
 // that is not installed, and the difference the callers care about.
+//
+// `cwd` empty inherits this process's; `merge_stderr` sends stderr down the
+// same pipe as stdout.
 int RunProcess(const std::vector<std::string>& args, bool capture, std::size_t limit,
-               std::string* out) {
+               std::string* out, const std::string& cwd = {}, bool merge_stderr = false) {
   if (args.empty()) {
     return -1;
   }
@@ -195,7 +198,7 @@ int RunProcess(const std::vector<std::string>& args, bool capture, std::size_t l
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdInput = null_in;
   si.hStdOutput = capture ? write_end : null_out;
-  si.hStdError = null_out;
+  si.hStdError = capture && merge_stderr ? write_end : null_out;
 
   PROCESS_INFORMATION pi{};
   std::wstring command = BuildCommandLine(args);
@@ -207,9 +210,10 @@ int RunProcess(const std::vector<std::string>& args, bool capture, std::size_t l
   // lpApplicationName is null so the executable is looked up on PATH and .exe
   // is appended when it has no extension, which is what execvp does and what
   // every caller here assumes.
+  const std::wstring wide_cwd = Widen(cwd);
   const BOOL started =
       ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
-                       nullptr, nullptr, &si, &pi);
+                       nullptr, cwd.empty() ? nullptr : wide_cwd.c_str(), &si, &pi);
 
   if (write_end != nullptr) {
     ::CloseHandle(write_end);  // before the read, or EOF never arrives
@@ -231,9 +235,12 @@ int RunProcess(const std::vector<std::string>& args, bool capture, std::size_t l
   if (capture && out != nullptr) {
     char buffer[4096];
     DWORD got = 0;
-    while (out->size() < limit &&
-           ::ReadFile(read_end, buffer, sizeof(buffer), &got, nullptr) != 0 && got > 0) {
-      out->append(buffer, got);
+    // Drained to the end rather than abandoned at the limit, or a child with
+    // more to say blocks on a full pipe and the wait below never returns.
+    while (::ReadFile(read_end, buffer, sizeof(buffer), &got, nullptr) != 0 && got > 0) {
+      if (out->size() < limit) {
+        out->append(buffer, got);
+      }
     }
     if (out->size() > limit) {
       out->resize(limit);
@@ -334,6 +341,16 @@ std::string RunCapture(const std::vector<std::string>& args, std::size_t limit,
   if (exited_ok != nullptr) {
     *exited_ok = code == 0;
   }
+  return out;
+}
+
+std::string RunCommand(const std::vector<std::string>& args, const std::string& cwd,
+                       std::size_t limit, int* status) {
+  // CREATE_NO_WINDOW already leaves the child without a console to prompt on,
+  // which is the POSIX side's setsid; this is its GIT_TERMINAL_PROMPT.
+  platform::SetEnv("GIT_TERMINAL_PROMPT", "0");
+  std::string out;
+  *status = RunProcess(args, /*capture=*/true, limit, &out, cwd, /*merge_stderr=*/true);
   return out;
 }
 

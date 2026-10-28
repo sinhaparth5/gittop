@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "config/config.hpp"
 #include "scratch_dir.hpp"
@@ -74,4 +75,34 @@ TEST_CASE("a missing file is an empty config, not an error") {
   const Config config = Config::Load((dir.path() / "absent.toml").string(), &error);
   CHECK(error.empty());
   CHECK(config.empty());
+}
+
+TEST_CASE("arrays of tables number their elements, and a save keeps them") {
+  ScratchDir dir;
+  const auto file = dir.path() / "config.toml";
+  const std::string original =
+      "[theme]\nname = \"nord\"\n\n"
+      "[[commands]]\nkey = \"ctrl-f\"\nrun = [\"git\", \"fetch\", \"{remote}\"]  # note\n\n"
+      "[[commands]]\nkey = \"F\"\nrun = [ \"echo\", \"a \\\"b\\\", c\", ]\nconfirm = true\n";
+  std::ofstream(file) << original;
+
+  std::string error;
+  Config config = Config::Load(file.string(), &error);
+  CHECK(error.empty());
+  CHECK(config.TableCount("commands") == 2);
+  CHECK(config.Get("commands.0.key") == "ctrl-f");
+  CHECK(config.GetList("commands.0.run") ==
+        std::vector<std::string>{"git", "fetch", "{remote}"});
+  CHECK(config.GetList("commands.1.run") == std::vector<std::string>{"echo", "a \"b\", c"});
+  CHECK(config.GetBool("commands.1.confirm", false));
+
+  config.Set("theme.name", "dracula");
+  REQUIRE(config.Save(file.string(), &error));
+  std::string expected = original;
+  expected.replace(expected.find("nord"), 4, "dracula");
+  CHECK(Slurp(file) == expected);
+
+  std::ofstream(file) << "[x]\nrun = [\"git\", 3]\n";
+  Config::Load(file.string(), &error);
+  CHECK(error.find("quoted strings") != std::string::npos);
 }
