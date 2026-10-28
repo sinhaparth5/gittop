@@ -23,12 +23,41 @@ constexpr Rgb C(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
 //
 // The first entry is the default, and the order here is the order `t` cycles.
 const Palette kPalettes[] = {
+    // A mainframe console: white on true black, one ink in a few weights, and
+    // the accent is white itself, so focus is shown by inverting a bar rather
+    // than by tinting it. Red is the only hue, kept for conflicts and danger,
+    // because the one thing a monochrome screen must still do is raise an alarm.
+    //
+    // The four statuses step down in lightness (white, light, mid grey, red),
+    // and that is what separates them: worst-case ΔE 20.8 across normal vision,
+    // deuteranopia, protanopia and tritanopia, where the classic palette is 0.8.
+    // text_faint is 4.9:1 on black, which is the floor for words.
+    {
+        .name = "mainframe",
+        .label = "Mainframe",
+        .light = false,
+        .bg = C(0x00, 0x00, 0x00),
+        .surface = C(0x00, 0x00, 0x00),
+        .surface_alt = C(0x1f, 0x1f, 0x1f),
+        .surface_raised = C(0x2e, 0x2e, 0x2e),
+        .border = C(0x5c, 0x5c, 0x5c),
+        .text = C(0xf2, 0xf2, 0xf2),
+        .text_dim = C(0xb4, 0xb4, 0xb4),
+        .text_faint = C(0x7a, 0x7a, 0x7a),
+        .accent = C(0xff, 0xff, 0xff),
+        .green = C(0xff, 0xff, 0xff),   // staged, success, added lines
+        .yellow = C(0xc4, 0xc4, 0xc4),  // unstaged, warning
+        .blue = C(0x7c, 0x7c, 0x7c),    // untracked
+        .red = C(0xff, 0x5f, 0x56),     // conflicted, danger, removed lines
+        .purple = C(0x9e, 0x9e, 0x9e),
+        .cyan = C(0xd8, 0xd8, 0xd8),
+    },
     // Deep, slightly blue ground with three surface steps above it. Three steps
     // is enough to separate panel from selection from chip without any of them
     // reading as a different color.
     {
         .name = "default",
-        .label = "gittop",
+        .label = "gittop classic",
         .light = false,
         .bg = C(0x0b, 0x0f, 0x16),
         .surface = C(0x13, 0x19, 0x24),

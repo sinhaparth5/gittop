@@ -352,9 +352,11 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # written back the moment you change it — there is no save step. The write edits
 # this file in place, so these comments stay where you put them.
 #
-# One of: default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight.
+# One of: mainframe, default, catppuccin, gruvbox, nord, tokyo-night, dracula,
+# daylight, accessible. mainframe is white on black with red kept for alarms;
+# default is the original blue-grey palette.
 # `t` cycles them at run time, which is the quickest way to see them all.
-# name = "default"
+# name = "mainframe"
 
 # How much colour the terminal can show. "auto" reads NO_COLOR, then TERM and
 # COLORTERM, and is nearly always right; the rest are for when it is not.
@@ -377,7 +379,7 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # Panel borders. One of: rounded, light, heavy, double.
 # heavy falls back to light under icons = "ascii", where its characters are the
 # one part of the line-drawing set a non-UTF-8 terminal tends not to have.
-# border = "rounded"
+# border = "light"
 
 # Motion: the eased bars, the spinners, the toast fade and the splash. Off makes
 # each of them snap to its final state rather than removing it, so nothing on

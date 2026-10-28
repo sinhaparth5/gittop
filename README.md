@@ -278,9 +278,13 @@ all apply, and a remote that works from the shell works here with nothing else t
 
 ## Themes
 
-Eight built in: `default`, `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`, `daylight`
-— a light theme designed as one rather than a dark theme inverted — and `accessible`. `t` cycles
-them, and the settings page picks one from a list and keeps it.
+Nine built in. The default is `mainframe`: white on true black in the manner of a mainframe
+console, with the focused panel's title and the active tab drawn as inverted bars, square frames,
+and red kept for the one thing a monochrome screen still has to do, which is raise an alarm. The
+splash carries a striped GITTOP wordmark to match. The rest are `default` (the original blue-grey
+palette, now labelled gittop classic), `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`,
+`daylight` — a light theme designed as one rather than a dark theme inverted — and `accessible`.
+`t` cycles them, and the settings page picks one from a list and keeps it.
 
 A theme of your own is still a file, because there is no sensible way to type sixteen colours into
 a terminal row. Palettes are written in sixteen roles, so yours is those same roles under
@@ -299,7 +303,8 @@ Catppuccin's and Gruvbox's real published colours and retuning them would make t
 themes, and gittop stays readable regardless because of the glyph-and-letter rule above. But if you
 would rather the colour worked than merely be redundant, `accessible` moves the four states off the
 red/green axis onto blue and amber: worst case 36.6 ΔE across normal vision, deuteranopia,
-protanopia and tritanopia.
+protanopia and tritanopia. `mainframe` separates them by lightness instead — white, light grey,
+mid grey and red — at a worst case of 20.8 ΔE across the same four.
 
 ## Glyphs, borders and motion
 
@@ -311,7 +316,7 @@ reach them:
 [theme]
 icons = "auto"        # auto, ascii, unicode, nerd
 logos = false         # the real GitHub and GitLab marks; needs a Nerd Font
-border = "rounded"    # rounded, light, heavy, double
+border = "light"      # light, rounded, heavy, double
 animations = true
 splash = true
 ```

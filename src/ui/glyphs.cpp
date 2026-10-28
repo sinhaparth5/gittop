@@ -100,6 +100,7 @@ constexpr GlyphSet kAscii{
 
     .bar_full = "#",
     .bar_track = ".",
+    .stripe = "=",
 };
 
 constexpr GlyphSet kUnicode{
@@ -198,6 +199,7 @@ constexpr GlyphSet kUnicode{
 
     .bar_full = "█",
     .bar_track = "─",
+    .stripe = "▀",
 };
 
 // Nerd Font icons live in the private use area, which means two things worth
@@ -304,6 +306,7 @@ constexpr GlyphSet kNerd{
 
     .bar_full = "█",
     .bar_track = "─",
+    .stripe = "▀",
 };
 
 bool Contains(const char* haystack, const char* needle) {

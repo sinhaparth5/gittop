@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `gittop` is a btop-inspired terminal dashboard for Git: local repository state that works with no
 network, plus GitHub and GitLab panels. There are ten views — status, history, branches, graph,
 diff, stashes, remote, CI, pull requests and settings — plus push/pull, stashing, rebase helpers,
-opening a pull request, sign-in, a `/` filter, eight themes, rebindable keys, a configurable tab set
+opening a pull request, sign-in, a `/` filter, nine themes, rebindable keys, a configurable tab set
 and the mouse. Under
 all of it sit two token layers (colours and glyphs), one `Panel()` every framed panel goes through,
 cell-accurate text measurement, and a motion budget.
@@ -822,6 +822,11 @@ the same colour. This is not a bug in the palettes — they are Catppuccin's and
 published colours and retuning them would make them not those themes — and gittop stays readable
 because a status is drawn as a **glyph and a letter** as well as a colour. That rule is load-bearing,
 not decorative; it is why `Decorate()` returns three things.
+
+`mainframe`, the default since #33, is white on black with red alone for conflicts and danger, and
+it passes by lightness rather than hue: worst case ΔE 20.8 across the same four visions. Its accent
+is white, the same as its text, which is why `Panel()` shows focus by inverting the title rather
+than by tinting it — a focus cue that only works through colour would vanish here.
 
 `theme.name = "accessible"` is the palette for when the colour should work rather than merely be
 redundant: the four states move off the red/green axis onto blue/amber, separated by lightness as

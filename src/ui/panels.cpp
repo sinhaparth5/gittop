@@ -280,16 +280,18 @@ Decorator PaneFrame() {
          bgcolor(Emerging(theme().surface));
 }
 
-// The wordmark, five rows of it, as a mask rather than as literal block
-// characters: '#' is filled and '.' is not, which is what lets the same shape be
-// drawn with █ on a terminal that has one and with '#' on a terminal that does
-// not, and lets every cell take its own colour off a ramp.
+// The wordmark, five rows of it, as a mask rather than as literal characters:
+// '#' is filled and ' ' is not, which is what lets the same shape be drawn with
+// the stripe glyph on a terminal that has one and with '=' on a terminal that
+// does not, and lets every cell take its own colour off a ramp. Wide slab
+// letters, because each row is drawn as a bar with a gap under it — the striped
+// mainframe logo — and a stroke one cell wide disappears into its own gaps.
 constexpr std::array<const char*, 5> kWordmark = {
-    " ###  ### ##### #####  ###  #### ",
-    "#      #    #     #   #   # #   #",
-    "# ##   #    #     #   #   # #### ",
-    "#  #   #    #     #   #   # #    ",
-    " ###  ###   ##    ##   ###  #    ",
+    "#######  #######  #######  #######  #######  ###### ",
+    "##         ###      ###      ###    ##   ##  ##   ##",
+    "## ####    ###      ###      ###    ##   ##  ###### ",
+    "##   ##    ###      ###      ###    ##   ##  ##     ",
+    "#######  #######    ###      ###    #######  ##     ",
 };
 
 Element Splash(const std::string& repo, const std::string& version, float reveal, int width,
@@ -314,8 +316,12 @@ Element Splash(const std::string& repo, const std::string& version, float reveal
       // hue rather than washing it grey.
       const float across = static_cast<float>(i) / static_cast<float>(mask.size() - 1);
       const float down = static_cast<float>(row) / static_cast<float>(kWordmark.size() - 1);
-      const Rgb hue = Mix(t.staged_ramp.from, t.staged_ramp.to, (across * 0.7F) + (down * 0.3F));
-      cells.push_back(text(g.bar_full) | color(ToColor(Mix(t.bg.rgb, hue, shown))));
+      // Held to the bright half of the ramp: a striped mark is drawn in
+      // solid ink, and its left-hand letters fading toward the page reads as a
+      // rendering fault rather than as light.
+      const Rgb hue =
+          Mix(t.staged_ramp.from, t.staged_ramp.to, 0.5F + (across * 0.35F) + (down * 0.15F));
+      cells.push_back(text(g.stripe) | color(ToColor(Mix(t.bg.rgb, hue, shown))));
     }
     art.push_back(hbox(std::move(cells)));
   }
@@ -347,14 +353,14 @@ Element Splash(const std::string& repo, const std::string& version, float reveal
   card.push_back(hbox({filler(), text(repo) | bold | color(ToColor(ink)), filler()}));
   if (room_for_tagline) {
     card.push_back(hbox({filler(),
-                         text(std::string("a dashboard for git ") + g.bullet + " " + version) |
+                         text(std::string("REPOSITORY CONSOLE ") + g.bullet + " " + version) |
                              color(ToColor(faint)),
                          filler()}));
   }
   if (room_for_padding) {
     card.push_back(text(""));
   }
-  card.push_back(hbox({filler(), text("any key to begin") | color(ToColor(faint)), filler()}));
+  card.push_back(hbox({filler(), text("PRESS ANY KEY") | color(ToColor(faint)), filler()}));
   if (room_for_padding) {
     card.push_back(text(""));
   }
@@ -380,7 +386,7 @@ Element Header(const model::StatusSnapshot& snapshot) {
   const std::size_t total = snapshot.total();
 
   Elements parts{
-      text(" gittop ") | bold | color(t.bg) | bgcolor(t.accent),
+      text(" GITTOP ") | bold | color(t.bg) | bgcolor(t.accent),
       text("  "),
   };
   // The badge already says gittop. Printing the repository name beside it reads
@@ -1246,7 +1252,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
   }
 
   return vbox({
-             hbox({text(" Keys") | bold | color(t.text), filler()}),
+             hbox({text(" "), text(" KEYS ") | bold | color(t.bg) | bgcolor(t.accent), filler()}),
              separator() | color(t.border),
              std::move(body),
              separator() | color(t.border),

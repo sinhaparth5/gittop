@@ -193,11 +193,13 @@ void App::ApplyConfig() {
   // want as replacing every check and arrow with a private-use icon.
   ui::SetProviderLogos(config_.GetBool("theme.logos", false));
 
-  ui::PanelBorder border = ui::PanelBorder::Rounded;
-  const std::string wanted_border = config_.Get("theme.border", "rounded");
+  // Square by default: the mainframe look is ruled boxes, and a rounded corner
+  // is the one thing on that screen that reads as a different decade.
+  ui::PanelBorder border = ui::PanelBorder::Light;
+  const std::string wanted_border = config_.Get("theme.border", "light");
   if (!ui::ParsePanelBorder(wanted_border, &border)) {
     complain("unknown theme.border '" + wanted_border + "'");
-    border = ui::PanelBorder::Rounded;
+    border = ui::PanelBorder::Light;
   }
   ui::SetPanelBorder(border);
 
