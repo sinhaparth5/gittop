@@ -22,546 +22,162 @@
 
 ---
 
-## About gittop
+gittop shows your working tree, commit history, CI runs and pull requests on one screen. The local
+views read the repository through libgit2 and work offline. The remote views talk to GitHub and
+GitLab, and fall back to local-only when there is no token, remote or connection.
 
-Most Git tooling makes you choose. A TUI like lazygit shows you the repo but knows nothing about
-your pipeline. The GitHub web UI shows you the pipeline but pulls you out of the terminal. gittop
-puts both in one screen: working tree state on the left, commit history and activity graphs in the
-middle, CI runs and open pull requests on the right.
+## Install
 
-The local half works with no network. libgit2 reads the repo directly, so staging a file or writing
-a commit does not shell out to `git` or depend on its output format. The remote half talks to the
-GitHub and GitLab REST APIs and degrades to the local view when there is no token, no remote, or no
-connection.
-
-## Installing
-
-On Linux (x86_64, glibc 2.35+ — Ubuntu 22.04, Debian 12 or newer):
+On Linux (x86_64, glibc 2.35+):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sinhaparth5/gittop/master/install.sh | sh
 ```
 
-That puts `gittop` in `~/.local/bin` with no sudo, after checking the download against the release's
-`SHA256SUMS`. **Run the same command again to update**; it does nothing when you already have the
-latest. `GITTOP_PREFIX=/some/dir` installs somewhere else and `GITTOP_VERSION=2026.10.1` pins a
-release. To remove it, delete `~/.local/bin/gittop`.
+This installs to `~/.local/bin` without sudo and checks the download against `SHA256SUMS`. Run it
+again to update. `GITTOP_PREFIX` changes the location and `GITTOP_VERSION` pins a release.
 
 Or download a [release](https://github.com/sinhaparth5/gittop/releases) by hand:
 
 ```bash
-sudo apt install ./gittop_*_amd64.deb  # Ubuntu 22.04+, Debian 12+
+sudo apt install ./gittop_*_amd64.deb    # Ubuntu 22.04+, Debian 12+
+tar xzf gittop-*-linux-x86_64.tar.gz     # any other distro: put bin/gittop on your PATH
 ```
 
-Or the portable tarball for any other distribution — unpack it and put `bin/gittop` on your `PATH`:
+On Windows, use the `.exe` installer (it can add gittop to `PATH`) or the `.zip` (no admin needed).
+Run it in Windows Terminal for full colour. WSL works with the `.deb`.
 
-```bash
-tar xzf gittop-*-linux-x86_64.tar.gz
-```
+## Views
 
-Both carry the icon and a desktop entry, so gittop shows up in application menus as well as on the
-command line. To build it yourself instead, see [Building it](#building-it).
+`1`–`9` and `0` jump to a tab, `tab` cycles.
 
-### Windows
+- **Status**: stage, unstage, discard and commit files.
+- **History**: commit log with a lane graph and a 91-day activity heatmap.
+- **Branches**: ahead/behind counts, checkout, and pruning of deleted upstreams.
+- **Graph**: commits over time by day, week or month, plus top authors and hours.
+- **Diff**: unstaged, staged, or any commit's diff.
+- **Stashes**: stash, apply, pop and drop.
+- **Remote**: repository info and remaining API budget, across multiple remotes.
+- **CI**: GitHub Actions runs and GitLab pipelines, filterable by branch or tag, with jobs on `enter`.
+- **Pull requests**: open PRs/MRs with details, and `n` to open a new one.
+- **Settings**: theme, glyphs, border, animations, sign-in. Changes save immediately.
 
-There is a native `gittop.exe`. Two downloads, and which you want depends on whether you would
-rather have it on your `PATH` or not have an installer:
-
-```
-gittop-<version>-windows-x86_64.exe    installer — offers to add gittop to PATH
-gittop-<version>-windows-x86_64.zip    unpack and run, no administrator needed
-```
-
-The installer's PATH page defaults to **not** adding anything, so pick "for all users" or "for the
-current user" if you want to be able to type `gittop`. Already-open terminals keep the PATH they
-started with; open a new one. If your PATH is already very long the installer will say so and leave
-it alone rather than risk truncating it — add `<install dir>\bin` yourself in that case, and see
-[CHANGELOG.md](CHANGELOG.md) under 2026.08.9 for why.
-
-It is a single self-contained binary: no Visual C++ redistributable, no OpenSSL, nothing to install
-beside it. HTTPS goes through WinHTTP and Schannel, so it trusts the certificates Windows trusts,
-and ssh remotes run the `ssh.exe` that ships with Windows — which means your `~/.ssh/config`, your
-agent and your `known_hosts` work exactly as they do from any other terminal.
-
-Use it in **Windows Terminal** rather than the old console window. gittop asks the console what it
-can render and will use 24-bit colour where it is available, but a legacy `conhost` window predates
-that and gets sixteen colours, which is a duller dashboard than the one in the screenshots.
-
-WSL still works and is still a good answer if that is where your repositories live — install the
-`.deb` inside it as above. gittop knows when it is there: it opens browsers with `wslview` and
-detects Windows Terminal's colour support either way.
-
-## What works today
-
-Ten views, switched with `1` through `9` and `0`, or cycled with `tab`.
-
-**Status.**
-
-- Status cards for staged, unstaged, untracked, and conflicted counts, with gradient fill bars
-  that ease to their new value when something changes
-- A file list grouped by state, with the directory dimmed and the filename bright so long lists
-  scan by name
-- Stage and unstage per file (`space`, or `s` and `u`), or stage everything with `a`
-- Discard, behind a confirm dialog. Tracked files restore from the index, matching `git restore`;
-  untracked files are deleted, and the dialog says which of the two is about to happen
-- Commit from an overlay
-
-Status is conveyed by glyph and letter as well as color, so a row reads correctly without being
-able to separate green from amber.
-
-**History.**
-
-- Commit log with a box-drawing lane graph, branch and tag badges, author, and relative age
-- A 91-day activity heatmap, 13 weeks across by weekday down
-- HEAD marked distinctly from every other commit
-
-**Branches.**
-
-- Local branches with ahead/behind counts against their upstream, checked-out branch first
-- Remote branches nothing here tracks yet, listed after the local ones as `remote only`
-- `enter` checks the selected branch out; on a remote-only one it first creates a local branch
-  tracking it, and a working-tree change in the way stops it rather than being overwritten
-- A branch whose upstream was deleted on the remote reads `gone` rather than a count against a
-  ref that no longer describes anything, and `x` prunes the tracking refs that have gone stale
-
-**Graph.**
-
-- A braille area chart of commits over the whole history, gradient filled with a bright crest
-- Pan through time with `h` and `l`, jump to either end with `g` and `G`
-- Switch granularity between day, week, and month with `d`, `w`, and `m`
-- A scroll handle shows where the visible window sits in the full timeline
-- Top authors, weekday distribution, and a commits-by-hour sparkline in the author's own timezone
-
-**Diff.**
-
-- The unstaged diff, the staged diff, or any commit's, with old and new line numbers side by side
-- `enter` on a file in the status view opens that file's diff; `enter` on a commit in the history
-  view opens that commit's, against its first parent
-- `s` swaps between the unstaged and staged halves; `[` and `]` jump between files
-- Per-file additions and deletions on the banner, and a total in the header
-- A new file shows its contents rather than announcing that a file appeared and stopping there;
-  a binary file is named rather than dumped; a rename is drawn as a rename
-- Capped at 20,000 lines, and it says where it stopped rather than trailing off
-
-**Stashes.**
-
-- `S` puts the whole working tree away, untracked files included — a "clean" tree with new files
-  still in it is not what anyone means by stashing their work
-- The list shows each entry's index, the branch it came from, its subject and its age
-- `a` applies and keeps the entry, `p` pops and `d` drops, the last two behind a confirm
-- Apply and pop stop rather than write over an uncommitted edit, naming the file in the way, and
-  pop keeps the entry when it cannot apply cleanly
-
-**Worktrees and submodules.**
-
-- `W` opens the workspace view: every worktree with its branch and how many files have changed,
-  then every submodule with the commit HEAD records and the one checked out
-- `enter` on a worktree switches gittop to it. `n` checks a branch out in a new worktree beside the
-  main one, creating the branch at HEAD if it does not exist yet
-- `D` deletes a worktree's directory, behind a confirm. It refuses one with changes, and a worktree
-  whose directory is already gone is pruned instead
-- `u` clones or updates the submodule under the cursor and checks out the commit HEAD records. It
-  is not recursive, and over https it goes anonymously, since a submodule can live on any host
-- The view has no tab by default, because ten views already use the ten digit keys. Add
-  `workspace` to `[layout] views` to give it one
-
-**Rebase and interrupted work.**
-
-- `B` rebases the current branch onto its upstream, behind a confirm. It refuses on a dirty tree
-  rather than stashing behind your back
-- A merge, rebase, cherry-pick, revert or bisect left half-finished gets a banner above the file
-  list saying which it is and, for a rebase, how far through
-- `o` opens it: continue, or abort. Both go through a second confirm, so neither is one keystroke
-- Continue commits what is staged and carries on to the next conflict; abort puts the branch back
-  exactly where it started
-- Committing during a merge writes every parent and clears the merge state, which is the part
-  that is easy to get silently wrong
-
-**Filtering.**
-
-- `/` narrows whichever list is on screen — files, commits, branches, stashes, CI runs, pulls
-- The box counts matches as you type, so a query that matches nothing says so before you finish
-  the word rather than showing you a blank list
-- `enter` keeps it and `esc` clears it; the footer keeps showing it, because a list hiding nine
-  rows out of ten and a list with one row in it look identical otherwise
-
-**Remote.**
-
-- Reads the repository from GitHub or GitLab: description, default branch, visibility, last push
-- Stars, forks, open issues, and watchers
-- Remaining API budget as a bar, so you can see a throttle coming rather than hit it
-- Works anonymously on public repositories; a token raises the limit and opens private ones
-- Self-hosted GitHub Enterprise and GitLab are detected from the hostname, and a host that gives
-  nothing away can be named in the config
-- More than one remote: `R` walks them, and every remote-backed view follows
-
-**CI.**
-
-- Workflow runs from GitHub Actions and pipelines from GitLab CI, for the branch you are on
-- `b` filters by any other ref — a branch, a tag, or every ref at once. Worth knowing about if
-  your workflow triggers on tags: the runs are all attributed to the tag, so the branch you are
-  standing on has none of them and an unfiltered look is the only one that shows anything
-- The header always names the ref the list is filtered to, because an empty list under the wrong
-  filter looks exactly like a repository with no CI
-- Passed, failed, running, queued, manual, cancelled and skipped, each with its own glyph and word
-  as well as its own colour
-- Duration per run, counting up while one is still going, and how long ago it started
-- `enter` opens the jobs of the selected run — with GitLab's stages when there are stages
-- Refreshes on a timer while the view is open, and says in the header when the next one is due
-
-**Pull requests.**
-
-- Open pull requests from GitHub and merge requests from GitLab, in one list that says what each
-  provider actually reports rather than inventing the rest
-- Draft, open, merged and closed, each with its own glyph and word
-- `enter` opens the branches, author, labels, reviewers and URL — a disclosure, not a request:
-  everything it shows arrived with the list, so scrolling with it open costs nothing
-- Mergeable, conflicting and blocked where GitLab says so; GitHub's list endpoint does not report
-  mergeability, so that column simply is not drawn rather than guessed at
-- The one for the branch you are standing on is marked and sorted to the top
-- `n` opens one, without leaving. The branch you are on goes into the repository's default branch
-  unless you say otherwise, the title starts as your newest commit, and it asks before it sends —
-  the same confirm push gets, because these are the two things gittop does that other people see
-- It checks first what it already knows: a branch that was never pushed cannot be merged from, so
-  it says so and names the push key instead of relaying a 422 about a field name. A branch that is
-  merely ahead is a warning, not a refusal — it opens, without the commits you have not pushed
-- When a provider does refuse it, you get the provider's own sentence and your draft back in the
-  boxes you typed it into
-
-**Settings.**
-
-- One page, on `0`, for the things that used to be a key you had to know about or a file you had to
-  edit: theme, glyph set, panel border, colour depth, animations, compact layout, the startup card
-- `enter` changes the row under the cursor — the mouse does the same with a second click on a row
-- Connect a GitHub or GitLab account, or sign out of one, without leaving the dashboard
-- Switch which remote the network views read, when a repository has more than one
-- A read-only sidecar naming the repository, its remotes with any credentials stripped out of the
-  URLs, and where the config file is
-- Changes take effect the moment you make them and are saved the moment they take effect — there is
-  no save step. The write edits your config file rather than regenerating it, so the comments,
-  ordering and spacing in a hand-written one all survive it, and only the values that changed move
-- A row that cannot be changed from here says why where its verb would have gone. A token in the
-  environment beats everything, so that row names the variable — never the value — and says the
-  environment wins
-
-## Signing in
-
-`L` anywhere, or the connection row on the settings page. Two routes into one overlay, and which
-one you get is not a preference:
-
-- Where the host has an OAuth application configured, the **device flow**: gittop shows a URL and a
-  short code, opens your browser, and waits. It is the only OAuth flow that needs no loopback
-  server and no open port, which is also what makes it work over ssh.
-- Everywhere else, a **guided personal access token**: a deep link to the provider's token page
-  with the name and the scopes already filled in, and a password field to paste the result into.
-  This is not a degraded mode — no `client_id` ships with gittop, because a device-flow id binds a
-  build to one registered application and that is a packaging decision, so today this is the route
-  every host takes. Set `hosts."<host>".client_id` to get the other one.
-
-The token is written to the config file readable only by you — `0600` in a `0700` directory on
-Linux and macOS, an owner-only ACL on Windows, and a write that cannot secure the file fails rather
-than leaving a token somewhere other accounts can read it. An environment variable
-still beats it, so CI never needs anything on disk; a sign-in that could not be saved keeps working
-for the session and says on screen that it will not survive a restart. There is no code path that
-prints a token, masked or otherwise.
-
-The refresh loop is built around the rate limit rather than a stopwatch. It only runs while the CI
-view is on screen, only when there is a token — sixty anonymous requests an hour does not survive a
-twenty-second poll — and it stops on its own below a fifth of the remaining budget. Every one of
-those cases says why in the header instead of quietly going still. Jobs are read when you ask for
-them rather than for every row, so scrolling a list of runs costs nothing.
-
-The fetch runs on a worker thread. The dashboard keeps drawing while it is in flight, and quitting
-mid-request does not wait for it. Every failure has its own screen: a rejected token says which
-variable or file it came from, a 404 while anonymous points out that private repositories need
-one, and no network at all is reported as the ordinary thing it is.
-
-The layout adapts: stat cards stack two-by-two below 84 columns, the heatmap yields to the log
-on terminals shorter than 30 rows, and the remote view folds its count tiles into a single line
-when there is no room for four.
+`W` opens worktrees and submodules. `/` filters whichever list is on screen. `B` rebases onto the
+upstream, and `o` continues or aborts an interrupted rebase, merge or cherry-pick. `b` on a file
+opens blame, `z` undoes the last change to HEAD and `Z` opens the reflog. Press `?` for every key,
+including interactive rebase, cherry-pick, amend and branch/tag management.
 
 ## Push and pull
 
-`f` fetches, `p` pulls, `P` pushes. All three run on a worker thread with a progress bar, and
-`esc` gives up on one mid-flight.
+`f` fetches, `p` pulls, `P` pushes, `esc` cancels. Pull only fast-forwards. Push never forces and
+asks first. Over ssh, gittop uses your system `ssh`, so your config, agent and keys apply.
 
-Pull fast-forwards or refuses. A branch that has diverged needs a merge commit or a
-rebase, and doing either implicitly behind a key called "pull" is how a tool loses work that
-exists nowhere else — so gittop fetches, says what it found, and leaves the decision alone.
-The fetch has landed by then, so `B` rebases onto the new upstream when you ask it to by name; a
-rebase that stops on a conflict waits for you in `o`, with continue and abort. A
-fast-forward that would write over an uncommitted change stops and names the file in the way.
+## Tokens and sign-in
 
-Push never forces, and there is no flag to make it. It asks before it runs, because it is the only
-thing here that changes something other people can see. A branch with no upstream gets one, the
-same as `git push -u`.
-
-Over https, a token from the environment or the config file is the password. Over ssh, gittop runs
-the `ssh` you already have — so your `~/.ssh/config`, your agent, your keys and your known_hosts
-all apply, and a remote that works from the shell works here with nothing else to set up.
-
-## Themes
-
-Nine built in. The default is `mainframe`: white on true black in the manner of a mainframe
-console, with the focused panel's title and the active tab drawn as inverted bars, square frames,
-and red kept for the one thing a monochrome screen still has to do, which is raise an alarm. The
-splash carries a striped GITTOP wordmark to match. The rest are `default` (the original blue-grey
-palette, now labelled gittop classic), `catppuccin`, `gruvbox`, `nord`, `tokyo-night`, `dracula`,
-`daylight` — a light theme designed as one rather than a dark theme inverted — and `accessible`.
-`t` cycles them, and the settings page picks one from a list and keeps it.
-
-A theme of your own is still a file, because there is no sensible way to type sixteen colours into
-a terminal row. Palettes are written in sixteen roles, so yours is those same roles under
-`[theme.colors]` — anything you leave out keeps the value it had.
-
-Colour degrades on the way to the screen rather than in the panels: truecolor when `COLORTERM`
-says so, the 256-colour cube when `TERM` does, the base sixteen otherwise, and none at all under
-`NO_COLOR`. Every status in gittop is a glyph and a letter as well as a colour, so the monochrome
-case is legible rather than merely supported. The settings page shows what was detected and lets
-you pin it, which is the quickest way to find out that a terminal has been lying about its depth.
-
-**On `accessible`.** The seven curated palettes were measured against a dichromat simulation, and
-most of them put staged and conflicted on colours that are indistinguishable to someone with
-deuteranopia — 0.8 ΔE apart in the default theme, which is to say the same colour. Those are
-Catppuccin's and Gruvbox's real published colours and retuning them would make them not those
-themes, and gittop stays readable regardless because of the glyph-and-letter rule above. But if you
-would rather the colour worked than merely be redundant, `accessible` moves the four states off the
-red/green axis onto blue and amber: worst case 36.6 ΔE across normal vision, deuteranopia,
-protanopia and tritanopia. `mainframe` separates them by lightness instead — white, light grey,
-mid grey and red — at a worst case of 20.8 ΔE across the same four.
-
-## Glyphs, borders and motion
-
-All four of these are rows on the settings page — glyph set, panel border, animations and the
-startup card — and they change as you press them. The file is what they are saved to, not how you
-reach them:
-
-```toml
-[theme]
-icons = "auto"        # auto, ascii, unicode, nerd
-logos = false         # the real GitHub and GitLab marks; needs a Nerd Font
-border = "light"      # light, rounded, heavy, double
-animations = true
-splash = true
-```
-
-Every character gittop draws comes from a named role, the same way every colour does, so switching
-sets is one line rather than a patch. `auto` picks `ascii` when the locale is not UTF-8 or `TERM`
-says the terminal has no shapes, and `unicode` otherwise. It never picks `nerd`: there is no way to
-ask a terminal whether its font has the private-use icons, and guessing wrong fills the screen with
-empty boxes — so that one is yours to turn on.
-
-`logos` is that opt-in narrowed to the two glyphs most worth it. The GitHub and GitLab marks go in
-front of the provider's name everywhere it appears — the remote panel, the CI header, the pull list,
-the sign-in pane, and the settings page's remote row and remotes card — and with `logos = true` they
-are drawn as the real octocat and tanuki from a Nerd Font while the rest of the interface stays on
-whatever `icons` chose. A hexagon is not a logo; a `✓`, on the other hand, is a perfectly good check.
-
-Text is measured in terminal cells rather than bytes, so a Japanese commit message or an emoji in a
-filename is truncated with an ellipsis at the right column instead of tearing the panel border.
-
-`animations = false` makes the eased bars, the spinners, the toast fade and the splash snap to their
-final state rather than disappear — nothing on screen is lost, only the movement. With animations
-on, the frame rate is capped at 30 and only ever on frames the animation itself asked for, so a
-keystroke is never held up behind a progress bar. An idle dashboard requests no frames at all.
-
-## Keys and the mouse
-
-Every key is rebindable under `[keys]` in the config, by action name rather than by position, and
-the footer hints and the help overlay read the bindings in force rather than a list of what they
-used to be.
-
-The mouse works too: the wheel scrolls, a click selects a row or switches to a tab, and clicking
-the row already under the cursor opens it.
-
-Commands of your own go on keys too, one `[[commands]]` table each:
-
-```toml
-[[commands]]
-key = "ctrl-f"
-scope = "branches"          # optional: only on this view
-run = ["git", "fetch", "{remote}", "{branch}"]
-confirm = true              # optional: ask first, showing the full command
-```
-
-`run` is an argv and never goes through a shell. `{branch}` is the selected branch on the branches
-view and the checked-out one elsewhere; `{commit}` is the selected commit on the history view and
-`HEAD` elsewhere; `{file}` is the file under the cursor on the status, diff or blame view; `{remote}`
-is the current remote. Anything else in braces, like `@{u}`, is left for git. The command runs in
-the repository's top directory with no terminal to prompt on, its last line of output is shown,
-and every view is re-read afterwards. A command's key takes precedence over a built-in one.
-
-## Terminal size
-
-gittop needs at least 80x24. Below that it draws one card giving the size it has and the size it
-needs, instead of a layout cut off at the edge. Keys still work underneath it, so `q` quits and an
-open prompt keeps its input; resizing brings everything back as it was.
-
-## Custom layouts
-
-`[layout]` decides which tabs exist and in what order:
-
-```toml
-[layout]
-views = "status diff history branches stashes"
-start_view = "status"
-compact = false
-```
-
-Any view left out is simply not there — a reasonable thing to want on a repository with no remote
-worth watching. The digit keys are positional, so `2` reaches whatever you put second and the tab
-prints the same number; there is no way for a tab to advertise a key that goes somewhere else.
-`compact` forces the narrow layout at any width, which gittop otherwise switches to under 84
-columns on its own; that one is also a row on the settings page. Which tabs exist stays in the file
-— it is a decision you make once, not one you want a keystroke away from.
-
-gittop re-reads the repository on its own when a file in it changes, so a save in another window
-shows without `r`. Ignored paths are not watched. To turn it off:
-
-```toml
-[general]
-auto_refresh = false
-```
-
-## Tokens
-
-Public repositories need no token. GitHub allows 60 anonymous requests an hour; a token raises
-that to 5000 and lets gittop read private repositories.
-
-The environment is checked first, so a shell or a CI job never has to write a secret to disk:
+Public repositories need no token. A token raises GitHub's limit from 60 to 5000 requests an hour
+and unlocks private repositories. Press `L` to sign in, or set one in the environment:
 
 ```bash
 export GITHUB_TOKEN=ghp_...      # or GH_TOKEN, or GITTOP_TOKEN for either provider
 export GITLAB_TOKEN=glpat-...    # or CI_JOB_TOKEN
 ```
 
-Otherwise the token lives in `~/.config/gittop/config.toml` — `%APPDATA%\gittop\config.toml` on
-Windows, and `gittop --config-path` prints whichever applies. gittop creates it readable only by
-you. Signing
-in with `L` writes it for you, so the usual way to get a token on disk is to press a key rather than
-to open an editor.
+Signing in saves the token to the config file, readable only by you. gittop never prints a token.
+
+## Config
 
 ```bash
-gittop --init-config    # writes a commented starter
-gittop --config-path    # prints where it looks
+gittop --init-config    # write a commented starter
+gittop --config-path    # print where it looks
 ```
 
-A token is never printed back to you, masked or otherwise. The remote panel names the variable or
-the file it came from and nothing else.
+```toml
+[theme]
+name = "mainframe"    # default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight, accessible
+icons = "auto"        # auto, ascii, unicode, nerd
+logos = false         # real GitHub/GitLab marks; needs a Nerd Font
+border = "light"      # light, rounded, heavy, double
+animations = true
 
-## What is not here yet
+[layout]
+views = "status diff history branches stashes"
+start_view = "status"
+compact = false
 
-Staging a hunk rather than a whole file. Interactive rebase with reword, squash, drop and reorder
-— `B` today is `rebase @{upstream}` and nothing else. Merge, so a pull that is not a fast-forward
-has an option besides rebasing. More than one page of CI and pull request history. Merging a pull
-request, which is a much larger blast radius than opening one and is argued separately. Picking the
-two branches from a list rather than typing them, which needs remote branches gittop cannot see yet.
+[general]
+auto_refresh = true
 
-[Open issues](https://github.com/sinhaparth5/gittop/issues) track these and are the current list;
-[`CHANGELOG.md`](CHANGELOG.md) is what has landed so far, and [`CLAUDE.md`](CLAUDE.md) has the
-stack decisions and the source layout behind them.
+[keys]                # rebind any action by name
+
+[[commands]]          # your own commands on keys
+key = "ctrl-f"
+scope = "branches"
+run = ["git", "fetch", "{remote}", "{branch}"]
+confirm = true
+```
+
+`t` cycles themes. `accessible` keeps the status colours apart for colour-blind users, and every
+status also has a glyph and letter. Custom commands run without a shell and support `{branch}`,
+`{commit}`, `{file}` and `{remote}`.
 
 ## Keys
 
-| Key               | Action                                                               |
-| ----------------- | -------------------------------------------------------------------- |
-| `1` … `9` `0`     | Jump to a tab by its number                                          |
-| `tab`             | Cycle through the views                                              |
-| `j` `k` or arrows | Move the selection                                                   |
-| `g` `G`           | First / last, or oldest / newest on the graph                        |
-| `ctrl-u` `ctrl-d` | Move a screen at a time                                              |
-| `/`               | Filter the list on screen; `esc` clears it                           |
-| `enter`           | Diff a file or a commit, jobs of a CI run, details of a pull request |
-| `h` `l`           | Pan the graph through time                                           |
-| `d` `w` `m`       | Graph bucket: day, week, month                                       |
-| `space`           | Stage or unstage the selection                                       |
-| `s` `u`           | Stage / unstage explicitly                                           |
-| `a`               | Stage everything                                                     |
-| `d`               | Discard the selection, after a confirm                               |
-| `c`               | Write a commit                                                       |
-| `s`               | Diff view: swap between unstaged and staged                          |
-| `[` `]`           | Diff view: previous / next file                                      |
-| `S`               | Stash the whole working tree                                         |
-| `a` `p` `d`       | Stash view: apply / pop / drop, the last two after a confirm         |
-| `B`               | Rebase this branch onto its upstream, after a confirm                |
-| `o`               | Continue or abort a rebase, merge or cherry-pick                     |
-| `f` `p` `P`       | Fetch / pull / push                                                  |
-| `enter`           | Branches view: check out the selection (a remote one gets tracked)   |
-| `x`               | Branches view: prune remote-tracking refs, after a confirm           |
-| `b`               | CI view: show runs for another branch, a tag, or every ref           |
-| `n`               | Pulls view: open one, after a confirm                                |
-| `W`               | Worktrees and submodules; `enter` there switches worktree            |
-| `n` `D`           | Workspace view: add a worktree / remove one, after a confirm         |
-| `u`               | Workspace view: clone or update the submodule                        |
-| `R`               | Switch to the next remote                                            |
-| `L`               | Sign in to GitHub or GitLab                                          |
-| `t`               | Next theme                                                           |
-| `r`               | Re-read the repository, or re-fetch on the remote views              |
-| `?`               | Help                                                                 |
-| `q`               | Quit                                                                 |
+| Key               | Action                                                       |
+| ----------------- | ------------------------------------------------------------ |
+| `1`–`9` `0`       | Jump to a tab                                                |
+| `tab`             | Cycle views                                                  |
+| `j` `k` / arrows  | Move                                                         |
+| `g` `G`           | First / last                                                 |
+| `ctrl-u` `ctrl-d` | Page up / down                                               |
+| `/`               | Filter                                                       |
+| `enter`           | Open (diff, CI jobs, PR details, checkout)                   |
+| `space` `s` `u`   | Toggle / stage / unstage                                     |
+| `a`               | Stage all                                                    |
+| `d`               | Discard                                                      |
+| `c`               | Commit                                                       |
+| `S`               | Stash                                                        |
+| `a` `p` `d`       | Stash view: apply / pop / drop                               |
+| `[` `]`           | Diff view: previous / next file                              |
+| `h` `l` `d` `w` `m` | Graph: pan, and bucket by day / week / month               |
+| `B` `o`           | Rebase / continue or abort                                   |
+| `f` `p` `P`       | Fetch / pull / push                                          |
+| `x`               | Branches view: prune                                         |
+| `b`               | CI view: pick a ref                                          |
+| `n`               | Pulls view: open a PR                                        |
+| `W`               | Worktrees and submodules                                     |
+| `R`               | Next remote                                                  |
+| `L`               | Sign in                                                      |
+| `t`               | Next theme                                                   |
+| `r`               | Reload                                                       |
+| `?`               | Help                                                         |
+| `q`               | Quit                                                         |
 
-Keys that appear twice are scoped to a view: `s` stages on the status view and swaps sides on the
-diff view, `d` discards, changes the graph bucket, and drops a stash. Which one a key means is a
-fact about where you are, not something the config decides.
+Mouse works too: scroll, click to select, click again to open.
 
-## Building it
+## Building
 
-C++20, drawn with [FTXUI](https://github.com/ArthurSonzogni/FTXUI), reading Git through
-[libgit2](https://libgit2.org/), talking to the providers over [libcurl](https://curl.se/libcurl/)
-and [nlohmann/json](https://github.com/nlohmann/json).
-
-Needs a C++20 compiler, CMake 3.24 or newer, zlib, and libcurl. The other three are fetched and
-built by CMake.
+Needs a C++20 compiler, CMake 3.24+, zlib and libcurl. FTXUI, libgit2 and nlohmann/json are fetched
+by CMake.
 
 ```bash
-sudo apt install libcurl4-openssl-dev     # or libcurl-devel, or curl on Homebrew
-
+sudo apt install libcurl4-openssl-dev
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-./build/gittop            # reads the repository containing the current directory
-./build/gittop /some/repo # or one you name
+./build/gittop [path]
+ctest --test-dir build
 ```
 
-The first configure downloads the fetched dependencies, so it takes a few minutes. After that,
-builds are quick. `ctest --test-dir build` runs the unit tests; configure with
-`-DGITTOP_BUILD_TESTS=OFF` to skip building them.
-
-libcurl is the one dependency taken from the system rather than built here, because the
-distribution's copy comes configured for the platform's CA bundle and TLS backend. A vendored one
-would have to be told where the machine keeps its certificates before it could verify a request.
-
-libgit2's transports are on, and neither costs a build dependency. HTTPS uses libgit2's
-`OpenSSL-Dynamic` backend, which loads libssl at run time rather than linking it, so no OpenSSL
-headers are needed to build and the binary is not tied to the version it compiled against. SSH
-runs the system `ssh` instead of libssh2 — cheaper to build, and better behaved, since it inherits
-your own ssh configuration.
-
-### On Windows
-
-The same command works, with Visual Studio 2022 or newer:
+On Windows (Visual Studio 2022+):
 
 ```
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 cmake --build build --config Release
 ```
 
-Nothing has to be installed first — libcurl is fetched and built here too, since Windows has no
-system copy, and it uses Schannel rather than a bundled CA file. `MultiThreaded` links the C++
-runtime statically, which is what makes the result a single file that runs on a machine with no
-redistributable installed.
+`scripts/build-windows.sh --run` cross-compiles from Linux and runs it under Wine (needs Docker).
 
-`cpack -G ZIP -C Release` and `cpack -G NSIS -C Release` produce the two downloads above.
-
-You can also build it from Linux without a Windows machine, which is how the port is checked
-between releases:
-
-```bash
-scripts/build-windows.sh --run       # cross-compile with mingw-w64 and run under Wine
-```
-
-That needs only docker. It is not a substitute for building on Windows — a different compiler and
-a different C runtime — but it catches the mistakes that actually get made, and it runs in one
-command from a checkout.
+Planned work is in [issues](https://github.com/sinhaparth5/gittop/issues); shipped work is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
