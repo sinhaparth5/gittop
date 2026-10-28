@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <ftxui/dom/elements.hpp>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -88,6 +89,17 @@ class App {
     // all six, because the question is always the same: these commits get new
     // ids, and some of them may already be somebody else's.
     Rewrite,
+    // Amending a commit the upstream already has: the same question as a
+    // rewrite, for one commit.
+    Amend,
+  };
+
+  // What the commit box is writing. One box for all three, because each is a
+  // single summary line and a second Input would be a second cursor for paste.
+  enum class CommitMode {
+    Commit,
+    Reword,
+    Amend,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -339,6 +351,9 @@ class App {
 
   void OpenCommit();
   void PerformCommit();
+  void OpenAmend();
+  void PerformAmend();
+  void CommitInEditor();
 
   void OpenOverlay(Overlay which);
   void CloseOverlay();
@@ -568,9 +583,10 @@ class App {
   std::chrono::steady_clock::time_point overlay_since_{};
 
   std::string commit_message_;
-  // The commit box doubles as the reword box: one line of summary either way,
-  // and a second single-line Input would be a second cursor for paste to track.
-  bool rewording_ = false;
+  CommitMode commit_mode_ = CommitMode::Commit;
+  // Hands the terminal to `fn` and takes it back. Set in Run, where the screen
+  // lives, so the editor key can reach it without App owning the screen.
+  std::function<void(std::function<void()>)> suspend_;
   git::Rewrite rewrite_kind_ = git::Rewrite::Squash;
   std::string rewrite_id_;
   std::string rewrite_subject_;

@@ -168,6 +168,7 @@ add_library(gittop_core STATIC
   src/config/config.cpp
   src/git/askpass.cpp
   src/git/blame.cpp
+  src/git/message.cpp
   src/git/diff.cpp
   src/git/graph.cpp
   src/git/rebase.cpp

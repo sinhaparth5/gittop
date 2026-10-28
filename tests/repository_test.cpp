@@ -311,3 +311,38 @@ TEST_CASE("a conflict mid-rewrite stops as a rebase that continues") {
   CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
   CHECK(Log(dir) == std::vector<std::string>{"two", "first"});
 }
+
+TEST_CASE("an amend with nothing staged only rewrites the message") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  const std::string before = IdOf(dir, "HEAD^{tree}");
+  bool pushed = true;
+  CHECK(repo->HeadSummary(&pushed) == "first");
+  CHECK_FALSE(pushed);  // origin/main does not exist, so nothing is upstream
+
+  REQUIRE(repo->Amend("first, amended").ok);
+  CHECK(Log(dir) == std::vector<std::string>{"first, amended"});
+  CHECK(IdOf(dir, "HEAD^{tree}") == before);
+
+  std::ofstream(dir.path() / "README") << "changed\n";
+  REQUIRE(repo->StageAll().ok);
+  REQUIRE(repo->Amend("first, amended").ok);
+  CHECK(Log(dir).size() == 1);
+  CHECK(IdOf(dir, "HEAD^{tree}") != before);
+}
+
+TEST_CASE("an edited message commits without comments, and an empty one aborts") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  std::ofstream(dir.path() / "a.txt") << "a\n";
+  REQUIRE(repo->StageAll().ok);
+
+  const std::string path = repo->PrepareCommitMessage();
+  const gittop::git::OpResult empty = repo->CommitEditedMessage();
+  CHECK_FALSE(empty.ok);
+  CHECK(Log(dir).size() == 1);
+
+  std::ofstream(path) << "add a\n\nwith a body\n# a comment\n";
+  REQUIRE(repo->CommitEditedMessage().ok);
+  CHECK(Log(dir)[0] == "add a\n\nwith a body\n");
+}

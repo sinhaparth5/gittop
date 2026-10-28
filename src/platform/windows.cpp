@@ -301,6 +301,28 @@ int RunQuiet(const std::vector<std::string>& args) {
   return RunProcess(args, /*capture=*/false, 0, nullptr);
 }
 
+int RunInTerminal(const std::vector<std::string>& args) {
+  if (args.empty()) {
+    return -1;
+  }
+  // No STARTF_USESTDHANDLES and no CREATE_NO_WINDOW: the child inherits this
+  // console, which is the point — the editor draws on it while gittop waits.
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  std::wstring command = BuildCommandLine(args);
+  if (::CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+                       &si, &pi) == 0) {
+    return -1;
+  }
+  ::WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD code = 0;
+  const BOOL got = ::GetExitCodeProcess(pi.hProcess, &code);
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return got != 0 ? static_cast<int>(code) : -1;
+}
+
 std::string RunCapture(const std::vector<std::string>& args, std::size_t limit,
                        bool* exited_ok) {
   std::string out;
