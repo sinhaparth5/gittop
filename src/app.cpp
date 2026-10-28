@@ -2776,6 +2776,55 @@ void App::PerformRebase() {
   }
 }
 
+void App::RequestRewrite(git::Rewrite kind) {
+  if (operation_.active()) {
+    Note(std::string(model::OperationName(operation_.operation)) + " is already in progress",
+         true);
+    return;
+  }
+  const std::vector<model::Commit>& commits = VisibleHistory().commits;
+  if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(commits.size())) {
+    Note("no commit selected", false);
+    return;
+  }
+  const model::Commit& commit = commits[static_cast<std::size_t>(commit_selected_)];
+  // Asked before the confirm rather than after it, so a commit that cannot be
+  // edited says why instead of offering a question whose answer fails.
+  rewrite_scope_ = repo_.PreviewRewrite(commit.id, kind);
+  if (!rewrite_scope_.error.empty()) {
+    Note(rewrite_scope_.error, true);
+    return;
+  }
+  rewrite_kind_ = kind;
+  rewrite_id_ = commit.id;
+  rewrite_subject_ = commit.short_id + " " + commit.summary;
+  if (kind == git::Rewrite::Reword) {
+    rewording_ = true;
+    commit_message_ = commit.summary;
+    commit_cursor_ = static_cast<int>(commit_message_.size());
+    OpenOverlay(kCommit);
+    return;
+  }
+  confirm_kind_ = ConfirmKind::Rewrite;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformRewrite() {
+  CloseOverlay();
+  const git::OpResult result = repo_.RewriteHistory(
+      rewrite_id_, rewrite_kind_, rewrite_kind_ == git::Rewrite::Reword ? commit_message_ : "");
+  if (rewrite_kind_ == git::Rewrite::Reword) {
+    rewording_ = false;
+    commit_message_.clear();
+  }
+  history_loaded_ = false;
+  Apply(result);
+  // A conflict is still an Ok result, and the banner is what says the rewrite
+  // has stopped rather than finished.
+  operation_ = repo_.ReadOperation();
+  EnsureHistory();
+}
+
 void App::CheckoutSelectedBranch() {
   const std::vector<model::Branch>& branches = VisibleHistory().branches;
   if (branch_selected_ < 0 || branch_selected_ >= static_cast<int>(branches.size())) {
@@ -3125,6 +3174,7 @@ void App::OpenCommit() {
     Note("nothing staged to commit", true);
     return;
   }
+  rewording_ = false;
   commit_message_.clear();
   OpenOverlay(kCommit);
 }
@@ -3171,6 +3221,7 @@ ui::Scope App::CurrentScope() const {
     case ui::View::Pulls:
       return ui::Scope::Pull;
     case ui::View::History:
+      return ui::Scope::History;
     case ui::View::Remote:
     case ui::View::Blame:
     // Claims no keys of its own. Everything it does is on `enter`, which is
@@ -3382,6 +3433,24 @@ bool App::Perform(ui::Action action) {
     case ui::Action::Operation:
       OpenOperation();
       return true;
+    case ui::Action::Squash:
+      RequestRewrite(git::Rewrite::Squash);
+      return true;
+    case ui::Action::Fixup:
+      RequestRewrite(git::Rewrite::Fixup);
+      return true;
+    case ui::Action::DropCommit:
+      RequestRewrite(git::Rewrite::Drop);
+      return true;
+    case ui::Action::Reword:
+      RequestRewrite(git::Rewrite::Reword);
+      return true;
+    case ui::Action::MoveDown:
+      RequestRewrite(git::Rewrite::MoveDown);
+      return true;
+    case ui::Action::MoveUp:
+      RequestRewrite(git::Rewrite::MoveUp);
+      return true;
 
     case ui::Action::PanLeft:
       PanGraph(std::max(1, ui::GraphWindow(graph_.bucket) / 8));
@@ -3535,12 +3604,22 @@ int App::Run() {
   InputOption input_option;
   input_option.multiline = false;
   input_option.cursor_position = &commit_cursor_;
-  input_option.on_enter = [this] { PerformCommit(); };
+  input_option.on_enter = [this] {
+    if (!rewording_) {
+      PerformCommit();
+    } else if (commit_message_.empty()) {
+      Note("commit message is empty", true);
+    } else {
+      confirm_kind_ = ConfirmKind::Rewrite;
+      OpenOverlay(kConfirm);
+    }
+  };
   auto commit_input = Input(&commit_message_, "summary of the change", input_option);
 
   auto commit_pane = Renderer(commit_input, [this, commit_input] {
     return vbox({
-               text(" Commit") | bold | color(ui::theme().accent),
+               text(rewording_ ? " Reword " + rewrite_subject_ : " Commit") | bold |
+                   color(ui::theme().accent),
                separator() | color(ui::theme().border),
                hbox({
                    text(std::string("  ") + ui::glyphs().prompt + " ") |
@@ -3550,7 +3629,7 @@ int App::Run() {
                separator() | color(ui::theme().border),
                hbox({
                    text(" "),
-                   ui::Chip("enter", "commit"),
+                   ui::Chip("enter", rewording_ ? "reword" : "commit"),
                    filler(),
                    ui::Chip("esc", "cancel"),
                }),
@@ -3616,6 +3695,41 @@ int App::Run() {
             pull_draft_.source_branch + " " + ui::glyphs().arrow_right + " " +
                 pull_draft_.target_branch,
             /*warning=*/"", "open", pull_draft_.title);
+      }
+
+      case ConfirmKind::Rewrite: {
+        const std::size_t n = rewrite_scope_.commits;
+        std::string warning = "Rewrites " + std::to_string(n) + " commit" + (n == 1 ? "" : "s");
+        // The "visible to other people" case: those commits are on the remote
+        // already, and replacing them there takes a force push gittop will not do.
+        if (rewrite_scope_.pushed > 0) {
+          warning += ", " + std::to_string(rewrite_scope_.pushed) +
+                     " already on the upstream — others may have them";
+        }
+        warning += ".";
+        const char* question = "";
+        switch (rewrite_kind_) {
+          case git::Rewrite::Squash:
+            question = "Squash this commit into its parent?";
+            break;
+          case git::Rewrite::Fixup:
+            question = "Fold this commit into its parent, dropping its message?";
+            break;
+          case git::Rewrite::Drop:
+            question = "Drop this commit?";
+            break;
+          case git::Rewrite::Reword:
+            question = "Reword this commit?";
+            break;
+          case git::Rewrite::MoveDown:
+            question = "Move this commit below its parent?";
+            break;
+          case git::Rewrite::MoveUp:
+            question = "Move this commit above its child?";
+            break;
+        }
+        return ui::ConfirmPane(question, rewrite_subject_, warning, "rewrite",
+                               rewrite_kind_ == git::Rewrite::Reword ? commit_message_ : "");
       }
 
       case ConfirmKind::Prune: {
@@ -4100,6 +4214,9 @@ int App::Run() {
               case ConfirmKind::PullCreate:
                 PerformPullCreate();
                 break;
+              case ConfirmKind::Rewrite:
+                PerformRewrite();
+                break;
               case ConfirmKind::Discard:
                 PerformDiscard();
                 break;
@@ -4115,6 +4232,8 @@ int App::Run() {
             // confirm the most expensive key on the pane.
             if (confirm_kind_ == ConfirmKind::PullCreate) {
               OpenOverlay(kPullCreate);
+            } else if (confirm_kind_ == ConfirmKind::Rewrite && rewording_) {
+              OpenOverlay(kCommit);  // the same reason, for the summary just typed
             } else {
               CloseOverlay();
             }

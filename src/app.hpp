@@ -84,6 +84,10 @@ class App {
     // The second thing gittop does that other people can see, and the second
     // one to ask first. Push was the only member of that list until now.
     PullCreate,
+    // A squash, fixup, drop, reword or move on the history view. One kind for
+    // all six, because the question is always the same: these commits get new
+    // ids, and some of them may already be somebody else's.
+    Rewrite,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -144,6 +148,8 @@ class App {
   // saying where they came from.
   void RequestRebase();
   void PerformRebase();
+  void RequestRewrite(git::Rewrite kind);
+  void PerformRewrite();
   void CheckoutSelectedBranch();
   void OpenOperation();
   void RequestOperation(ConfirmKind kind);
@@ -562,6 +568,13 @@ class App {
   std::chrono::steady_clock::time_point overlay_since_{};
 
   std::string commit_message_;
+  // The commit box doubles as the reword box: one line of summary either way,
+  // and a second single-line Input would be a second cursor for paste to track.
+  bool rewording_ = false;
+  git::Rewrite rewrite_kind_ = git::Rewrite::Squash;
+  std::string rewrite_id_;
+  std::string rewrite_subject_;
+  git::RewriteScope rewrite_scope_;
   model::StatusEntry discard_target_;
   ConfirmKind confirm_kind_ = ConfirmKind::Discard;
 

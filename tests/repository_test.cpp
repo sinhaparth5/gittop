@@ -7,6 +7,7 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "git/repository.hpp"
 #include "scratch_dir.hpp"
@@ -206,4 +207,107 @@ TEST_CASE("blame follows a file across a rename") {
   CHECK(blame.lines[1].summary == "second line");
   CHECK(blame.lines[1].text == "second");
   CHECK(blame.lines[1].author == "Test");
+}
+
+namespace {
+
+using gittop::git::Rewrite;
+
+// The first-parent line from HEAD, newest first, as full messages.
+std::vector<std::string> Log(const ScratchDir& dir) {
+  git_repository* raw = nullptr;
+  REQUIRE(git_repository_open(&raw, dir.path().string().c_str()) == 0);
+  std::vector<std::string> log;
+  git_object* object = nullptr;
+  REQUIRE(git_revparse_single(&object, raw, "HEAD") == 0);
+  auto* commit = reinterpret_cast<git_commit*>(object);
+  while (commit != nullptr) {
+    log.emplace_back(git_commit_message(commit));
+    git_commit* parent = nullptr;
+    git_commit_parent(&parent, commit, 0);
+    git_commit_free(commit);
+    commit = parent;
+  }
+  git_repository_free(raw);
+  return log;
+}
+
+std::string IdOf(const ScratchDir& dir, const char* spec) {
+  git_repository* raw = nullptr;
+  REQUIRE(git_repository_open(&raw, dir.path().string().c_str()) == 0);
+  git_object* object = nullptr;
+  REQUIRE(git_revparse_single(&object, raw, spec) == 0);
+  std::string id = git_oid_tostr_s(git_object_id(object));
+  git_object_free(object);
+  git_repository_free(raw);
+  return id;
+}
+
+void CommitFile(Repository& repo, const ScratchDir& dir, const char* file, const char* text,
+                const char* message) {
+  std::ofstream(dir.path() / file) << text;
+  REQUIRE(repo.StageAll().ok);
+  REQUIRE(repo.Commit(message).ok);
+}
+
+}  // namespace
+
+TEST_CASE("squashing two commits leaves one with both changes and both messages") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "a.txt", "a\n", "add a");
+  CommitFile(*repo, dir, "b.txt", "b\n", "add b");
+
+  const gittop::git::RewriteScope scope = repo->PreviewRewrite(IdOf(dir, "HEAD"), Rewrite::Squash);
+  CHECK(scope.error.empty());
+  CHECK(scope.commits == 2);
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD"), Rewrite::Squash, "").ok);
+  const std::vector<std::string> log = Log(dir);
+  REQUIRE(log.size() == 2);
+  CHECK(log[0] == "add a\n\nadd b");
+  CHECK(Slurp(dir.path() / "a.txt") == "a\n");
+  CHECK(Slurp(dir.path() / "b.txt") == "b\n");
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+}
+
+TEST_CASE("fixup, reword, move and drop rewrite the line under HEAD") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "a.txt", "a\n", "add a");
+  CommitFile(*repo, dir, "b.txt", "b\n", "add b");
+  CommitFile(*repo, dir, "c.txt", "c\n", "add c");
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD~2"), Rewrite::MoveUp, "").ok);
+  CHECK(Log(dir) == std::vector<std::string>{"add c", "add a", "add b", "first"});
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD~1"), Rewrite::Reword, "add a, renamed").ok);
+  CHECK(Log(dir)[1] == "add a, renamed");
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD"), Rewrite::Fixup, "").ok);
+  CHECK(Log(dir) == std::vector<std::string>{"add a, renamed", "add b", "first"});
+  CHECK(Slurp(dir.path() / "c.txt") == "c\n");
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD~1"), Rewrite::Drop, "").ok);
+  CHECK(Log(dir) == std::vector<std::string>{"add a, renamed", "first"});
+  CHECK_FALSE(std::filesystem::exists(dir.path() / "b.txt"));
+
+  CHECK_FALSE(repo->PreviewRewrite(IdOf(dir, "HEAD~1"), Rewrite::Drop).error.empty());
+}
+
+TEST_CASE("a conflict mid-rewrite stops as a rebase that continues") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "README", "one\n", "one");
+  CommitFile(*repo, dir, "README", "two", "two");
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD~1"), Rewrite::Drop, "").ok);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::Rebase);
+  CHECK_FALSE(repo->RebaseContinue().ok);  // still conflicted
+
+  std::ofstream(dir.path() / "README") << "two";
+  REQUIRE(repo->StageAll().ok);
+  REQUIRE(repo->RebaseContinue().ok);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+  CHECK(Log(dir) == std::vector<std::string>{"two", "first"});
 }

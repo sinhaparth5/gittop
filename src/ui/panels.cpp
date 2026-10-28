@@ -922,6 +922,15 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(KeyChip(keys, Action::DiffStage, "stage hunk/line"));
     chips.push_back(KeyChip(keys, Action::DiffSwitch, "staged"));
     chips.push_back(KeyChip(keys, Action::Blame, "blame"));
+  } else if (view == View::History) {
+    // No move chip: five rewrites and help and quit is what fits in 80
+    // columns, and j and k are the one thing nobody needs reminding of.
+    chips.push_back(KeyChip(keys, Action::Squash, "squash"));
+    chips.push_back(KeyChip(keys, Action::Fixup, "fixup"));
+    chips.push_back(KeyChip(keys, Action::Reword, "reword"));
+    chips.push_back(KeyChip(keys, Action::DropCommit, "drop"));
+    chips.push_back(Chip(keys.KeyFor(Action::MoveDown) + "/" + keys.KeyFor(Action::MoveUp),
+                         "reorder"));
   } else if (view == View::Blame) {
     chips.push_back(Chip(move, "move"));
     chips.push_back(KeyChip(keys, Action::Open, "commit"));
@@ -1168,6 +1177,9 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       text(""),
       heading("HISTORY SURGERY"),
       line(Action::Rebase, "rebase onto upstream, after a confirm"),
+      pair(Action::Squash, Action::Fixup, "history: squash / fixup into the parent"),
+      pair(Action::Reword, Action::DropCommit, "history: reword / drop the commit"),
+      pair(Action::MoveDown, Action::MoveUp, "history: move the commit down / up"),
       line(Action::Operation, "continue or abort what is in progress"),
       text(""),
       heading("THE REMOTE"),
