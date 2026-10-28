@@ -107,6 +107,9 @@ able to separate green from amber.
 **Branches.**
 
 - Local branches with ahead/behind counts against their upstream, checked-out branch first
+- Remote branches nothing here tracks yet, listed after the local ones as `remote only`
+- `enter` checks the selected branch out; on a remote-only one it first creates a local branch
+  tracking it, and a working-tree change in the way stops it rather than being overwritten
 - A branch whose upstream was deleted on the remote reads `gone` rather than a count against a
   ref that no longer describes anything, and `x` prunes the tracking refs that have gone stale
 
@@ -421,6 +424,7 @@ stack decisions and the source layout behind them.
 | `B`               | Rebase this branch onto its upstream, after a confirm                |
 | `o`               | Continue or abort a rebase, merge or cherry-pick                     |
 | `f` `p` `P`       | Fetch / pull / push                                                  |
+| `enter`           | Branches view: check out the selection (a remote one gets tracked)   |
 | `x`               | Branches view: prune remote-tracking refs, after a confirm           |
 | `b`               | CI view: show runs for another branch, a tag, or every ref           |
 | `n`               | Pulls view: open one, after a confirm                                |

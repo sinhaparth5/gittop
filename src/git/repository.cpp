@@ -755,20 +755,30 @@ model::HistorySnapshot Repository::ReadHistory(std::size_t max_commits,
 
   // ------------------------------------------------------------- branches
   git_branch_iterator* branch_iter = nullptr;
-  if (git_branch_iterator_new(&branch_iter, repo, GIT_BRANCH_LOCAL) == 0) {
+  std::unordered_set<std::string> tracked;
+  if (git_branch_iterator_new(&branch_iter, repo, GIT_BRANCH_ALL) == 0) {
     git_reference* ref = nullptr;
     git_branch_t branch_type = GIT_BRANCH_LOCAL;
 
     while (git_branch_next(&ref, &branch_type, branch_iter) == 0) {
+      // `origin/HEAD` is a pointer at one of the other remote branches, not a
+      // branch of its own.
+      if (git_reference_type(ref) == GIT_REFERENCE_SYMBOLIC) {
+        git_reference_free(ref);
+        continue;
+      }
       model::Branch branch;
       const char* name = nullptr;
       if (git_branch_name(&name, ref) == 0 && name != nullptr) {
         branch.name = name;
       }
-      branch.is_head = git_branch_is_head(ref) == 1;
+      branch.remote = branch_type == GIT_BRANCH_REMOTE;
+      branch.is_head = !branch.remote && git_branch_is_head(ref) == 1;
 
       git_reference* upstream = nullptr;
-      if (git_branch_upstream(&upstream, ref) == 0) {
+      if (branch.remote) {
+        // No upstream of its own, and no ahead/behind to report.
+      } else if (git_branch_upstream(&upstream, ref) == 0) {
         branch.has_upstream = true;
         const char* upstream_name = nullptr;
         if (git_branch_name(&upstream_name, upstream) == 0 && upstream_name != nullptr) {
@@ -789,6 +799,9 @@ model::HistorySnapshot Repository::ReadHistory(std::size_t max_commits,
         branch.upstream = ConfiguredUpstream(repo, ref);
         branch.upstream_gone = !branch.upstream.empty();
       }
+      if (!branch.upstream.empty()) {
+        tracked.insert(branch.upstream);
+      }
 
       if (const git_oid* tip = git_reference_target(ref); tip != nullptr) {
         git_commit* tip_commit = nullptr;
@@ -804,12 +817,24 @@ model::HistorySnapshot Repository::ReadHistory(std::size_t max_commits,
     }
     git_branch_iterator_free(branch_iter);
   }
+  // A local branch and its upstream are one row, so a remote branch only gets a
+  // row of its own when nothing here tracks it.
+  snap.branches.erase(std::remove_if(snap.branches.begin(), snap.branches.end(),
+                                     [&](const model::Branch& b) {
+                                       return b.remote && tracked.count(b.name) > 0;
+                                     }),
+                      snap.branches.end());
 
-  // Most recently touched first, with the checked-out branch pinned to the top.
+  // Most recently touched first, with the checked-out branch pinned to the top
+  // and the remote-only ones after every local one: a repository with forty
+  // colleagues' branches should not push your own off the screen.
   std::sort(snap.branches.begin(), snap.branches.end(),
             [](const model::Branch& a, const model::Branch& b) {
               if (a.is_head != b.is_head) {
                 return a.is_head;
+              }
+              if (a.remote != b.remote) {
+                return b.remote;
               }
               return a.time > b.time;
             });
@@ -919,6 +944,98 @@ OpResult Repository::Discard(const StatusEntry& entry) {
     return OpResult::Fail(LastError());
   }
   return OpResult::Ok("discarded changes in " + entry.path);
+}
+
+OpResult Repository::Checkout(const model::Branch& branch) {
+  git_repository* repo = repo_.get();
+  if (branch.is_head) {
+    return OpResult::Ok("already on " + branch.name);
+  }
+  // A merge or rebase in progress owns the index; switching away from under it
+  // strands the half-finished operation on a branch it does not belong to.
+  if (git_repository_state(repo) != GIT_REPOSITORY_STATE_NONE) {
+    return OpResult::Fail("finish or abort what is in progress first");
+  }
+
+  git_reference* ref = nullptr;
+  if (git_branch_lookup(&ref, repo, branch.name.c_str(),
+                        branch.remote ? GIT_BRANCH_REMOTE : GIT_BRANCH_LOCAL) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  // The local name is what follows the remote's own name, which may itself
+  // contain a slash — so ask libgit2 which remote this is rather than splitting.
+  std::string local = branch.name;
+  if (branch.remote) {
+    git_buf remote_name = GIT_BUF_INIT;
+    if (git_branch_remote_name(&remote_name, repo, git_reference_name(ref)) != 0) {
+      git_reference_free(ref);
+      return OpResult::Fail(LastError());
+    }
+    local = branch.name.substr(std::min(branch.name.size(), remote_name.size + 1));
+    git_buf_dispose(&remote_name);
+
+    git_reference* existing = nullptr;
+    if (git_branch_lookup(&existing, repo, local.c_str(), GIT_BRANCH_LOCAL) == 0) {
+      git_reference_free(existing);
+      git_reference_free(ref);
+      return OpResult::Fail("a local " + local + " already exists and does not track " +
+                            branch.name);
+    }
+  }
+
+  git_commit* target = nullptr;
+  if (git_reference_peel(reinterpret_cast<git_object**>(&target), ref, GIT_OBJECT_COMMIT) != 0) {
+    git_reference_free(ref);
+    return OpResult::Fail(LastError());
+  }
+
+  // The tracking branch is made before the tree moves and deleted again if the
+  // tree refuses to, so the one failure that matters — a dirty working tree —
+  // leaves nothing behind, and nothing after the checkout can fail with the
+  // working tree already on the other commit and HEAD still on this one.
+  if (branch.remote) {
+    git_reference* created = nullptr;
+    if (git_branch_create(&created, repo, local.c_str(), target, 0) != 0) {
+      git_commit_free(target);
+      git_reference_free(ref);
+      return OpResult::Fail(LastError());
+    }
+    git_reference_free(ref);
+    ref = created;
+    if (git_branch_set_upstream(ref, branch.name.c_str()) != 0) {
+      const std::string error = LastError();
+      git_branch_delete(ref);
+      git_reference_free(ref);
+      git_commit_free(target);
+      return OpResult::Fail(error);
+    }
+  }
+
+  git_checkout_options co;
+  git_checkout_options_init(&co, GIT_CHECKOUT_OPTIONS_VERSION);
+  co.checkout_strategy = GIT_CHECKOUT_SAFE;
+  const int checked_out =
+      git_checkout_tree(repo, reinterpret_cast<git_object*>(target), &co);
+  git_commit_free(target);
+  if (checked_out != 0) {
+    const std::string error = checked_out == GIT_ECONFLICT
+                                  ? "local changes are in the way — commit or stash them first"
+                                  : LastError();
+    if (branch.remote) {
+      git_branch_delete(ref);
+    }
+    git_reference_free(ref);
+    return OpResult::Fail(error);
+  }
+
+  const int rc = git_repository_set_head(repo, git_reference_name(ref));
+  git_reference_free(ref);
+  if (rc != 0) {
+    return OpResult::Fail(LastError());
+  }
+  return OpResult::Ok(branch.remote ? "switched to " + local + ", tracking " + branch.name
+                                    : "switched to " + local);
 }
 
 OpResult Repository::Commit(const std::string& message) {

@@ -96,6 +96,11 @@ class Repository {
   OpResult Discard(const model::StatusEntry& entry);
   OpResult Commit(const std::string& message);
 
+  // Switches to `branch`. A remote-only one first gets a local branch of the
+  // same short name tracking it, which is `git checkout -b topic --track
+  // origin/topic`. SAFE, so an uncommitted change in the way stops it.
+  OpResult Checkout(const model::Branch& branch);
+
   // Stash mutations, in git/stash.cpp. Every one of them renumbers the entries
   // below it, so the caller re-reads the list rather than adjusting its own.
   OpResult StashSave(const std::string& message, bool include_untracked);
