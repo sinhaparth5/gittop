@@ -93,6 +93,10 @@ struct TransferResult {
   // Set when the operation succeeded but changed nothing, which is a different
   // thing from failing and should not be reported in red.
   bool no_op = false;
+
+  // A pull that fetched and then found the branch had diverged. The fetch
+  // landed, so a rebase onto the upstream will work now — App names the key.
+  bool diverged = false;
 };
 
 // All three open their own git_repository from `repo_path`. libgit2 objects are

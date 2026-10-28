@@ -263,7 +263,9 @@ when there is no room for four.
 
 Pull fast-forwards or refuses. A branch that has diverged needs a merge commit or a
 rebase, and doing either implicitly behind a key called "pull" is how a tool loses work that
-exists nowhere else — so gittop fetches, says what it found, and leaves the decision alone. A
+exists nowhere else — so gittop fetches, says what it found, and leaves the decision alone.
+The fetch has landed by then, so `B` rebases onto the new upstream when you ask it to by name; a
+rebase that stops on a conflict waits for you in `o`, with continue and abort. A
 fast-forward that would write over an uncommitted change stops and names the file in the way.
 
 Push never forces, and there is no flag to make it. It asks before it runs, because it is the only

@@ -581,13 +581,16 @@ TransferResult Pull(const std::string& repo_path, const std::string& remote_name
     return result;
   }
 
-  // Anything that is not a fast-forward needs a merge commit or a rebase, and
-  // gittop does neither yet. Doing one implicitly behind a key called "pull" is
-  // how a tool loses work that was never committed anywhere else.
+  // Anything that is not a fast-forward needs a merge commit or a rebase. Doing
+  // one implicitly behind a key called "pull" is how a tool loses work that was
+  // never committed anywhere else, so pull stops here and the rebase is its own
+  // key, asked for by name.
   if ((analysis & GIT_MERGE_ANALYSIS_FASTFORWARD) == 0) {
-    return Failure(branch + " and its upstream have diverged",
-                   "gittop only fast-forwards; this needs a merge or a rebase",
-                   "the fetch already landed, so `git rebase` or `git merge` will work now");
+    TransferResult diverged = Failure(branch + " and its upstream have diverged",
+                                      "pull only fast-forwards; this needs a rebase",
+                                      "the fetch already landed, so a rebase will work now");
+    diverged.diverged = true;
+    return diverged;
   }
 
   ObjectHandle target;

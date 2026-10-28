@@ -2375,6 +2375,20 @@ void App::CollectTransfer() {
       Note("ssh could not use that passphrase", true);
       return;
     }
+    // The fetch half of the pull landed, so the remote-tracking ref is new and
+    // the branch view's counts are stale even though the pull failed.
+    if (result.diverged) {
+      Refresh();
+      history_loaded_ = false;
+      if (view_ != ui::View::Status) {
+        EnsureHistory();
+      }
+      const std::string rebase_key = keys_.KeyFor(ui::Action::Rebase);
+      if (!rebase_key.empty()) {
+        Note(result.summary + " — " + rebase_key + " rebases onto it", true);
+        return;
+      }
+    }
     Note(result.summary + (result.detail.empty() ? "" : " — " + result.detail), true);
     return;
   }
