@@ -63,7 +63,8 @@ OpResult CommitApplied(git_repository* repo, const git_signature* author,
   return result;
 }
 
-// Refused rather than stashed, as a rebase is: both write the working tree.
+}  // namespace
+
 const char* Blocked(Repository& self, git_repository* repo) {
   if (git_repository_state(repo) != GIT_REPOSITORY_STATE_NONE) {
     return "finish or abort what is in progress first";
@@ -74,8 +75,6 @@ const char* Blocked(Repository& self, git_repository* repo) {
   }
   return nullptr;
 }
-
-}  // namespace
 
 OpResult Repository::CherryPick(const std::vector<std::string>& ids, std::size_t* applied) {
   *applied = 0;

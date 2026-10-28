@@ -85,6 +85,16 @@ struct RefEntry {
   bool is_tag = false;
 };
 
+// One line of HEAD's reflog, newest first. `old_id` is where HEAD was before
+// the action `message` describes, which is what undoing it goes back to.
+struct ReflogEntry {
+  std::string id;
+  std::string old_id;
+  std::string short_id;
+  std::string message;
+  std::int64_t time = 0;
+};
+
 struct HistorySnapshot {
   std::vector<Commit> commits;
   std::vector<Branch> branches;

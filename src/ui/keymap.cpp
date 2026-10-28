@@ -108,6 +108,8 @@ const NamedAction kActionNames[] = {
 
     {"rebase", Action::Rebase},
     {"operation", Action::Operation},
+    {"undo", Action::Undo},
+    {"reflog", Action::Reflog},
 
     {"squash", Action::Squash},
     {"fixup", Action::Fixup},
@@ -280,6 +282,10 @@ Keymap::Keymap() {
   Bind(Action::StashSave, Scope::Global, "S");
   Bind(Action::Rebase, Scope::Global, "B");
   Bind(Action::Operation, Scope::Global, "o");
+  // Global, as lazygit's `z` is: a wrong reset or rebase is noticed wherever
+  // you happen to be, and both act on HEAD rather than on a selected row.
+  Bind(Action::Undo, Scope::Global, "z");
+  Bind(Action::Reflog, Scope::Global, "Z");
   // Global because one action has one scope and blame belongs to two views, the
   // status list and the diff. Everywhere else it says which file it needs; the
   // CI view's ref picker shadows it there, which is the one place it means nothing.

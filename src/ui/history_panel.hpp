@@ -28,4 +28,9 @@ ftxui::Element ActivityPanel(const model::HistorySnapshot& history);
 ftxui::Element BranchList(const model::HistorySnapshot& history, int selected, int width,
                           std::vector<ftxui::Box>* rows = nullptr);
 
+// HEAD's reflog as an overlay list, newest first, with the cursor on
+// `selected`. `height` is the terminal's, which bounds how many rows show.
+ftxui::Element ReflogPane(const std::vector<model::ReflogEntry>& entries, int selected,
+                          int width, int height);
+
 }  // namespace gittop::ui

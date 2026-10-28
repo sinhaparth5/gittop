@@ -426,3 +426,45 @@ TEST_CASE("a revert commits the inverse of the change") {
   CHECK_FALSE(std::filesystem::exists(dir.path() / "a.txt"));
   CHECK(Log(dir)[0].rfind("Revert \"add a\"\n\nThis reverts commit ", 0) == 0);
 }
+
+TEST_CASE("one undo takes back a whole rewrite, and refuses on a dirty tree") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "a.txt", "a\n", "add a");
+  CommitFile(*repo, dir, "b.txt", "b\n", "add b");
+  CommitFile(*repo, dir, "c.txt", "c\n", "add c");
+  const std::vector<std::string> before = Log(dir);
+
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD~1"), Rewrite::Drop, "").ok);
+  REQUIRE(Log(dir).size() == before.size() - 1);
+
+  const std::vector<gittop::model::ReflogEntry> reflog = repo->ReadReflog(50);
+  const std::size_t steps = gittop::git::UndoSteps(reflog);
+  REQUIRE(steps > 1);
+  CHECK(reflog[0].id == IdOf(dir, "HEAD"));
+
+  std::ofstream(dir.path() / "a.txt") << "dirty\n";
+  CHECK_FALSE(repo->ResetTo(reflog[steps - 1].old_id).ok);
+  std::ofstream(dir.path() / "a.txt") << "a\n";
+
+  REQUIRE(repo->ResetTo(reflog[steps - 1].old_id).ok);
+  CHECK(Log(dir) == before);
+  CHECK(Slurp(dir.path() / "b.txt") == "b\n");
+  // The reset is itself an entry, so a second undo puts the rewrite back.
+  CHECK(gittop::git::UndoSteps(repo->ReadReflog(50)) == 1);
+}
+
+TEST_CASE("an undo outside a rebase is one entry") {
+  const auto log = [](std::initializer_list<const char*> messages) {
+    std::vector<gittop::model::ReflogEntry> out;
+    for (const char* message : messages) {
+      out.emplace_back().message = message;
+    }
+    return out;
+  };
+  CHECK(gittop::git::UndoSteps({}) == 0);
+  CHECK(gittop::git::UndoSteps(log({"commit (amend): x", "rebase: y"})) == 1);
+  CHECK(gittop::git::UndoSteps(log({"rebase (finish): returning", "rebase (pick): b",
+                                    "rebase (start): checkout main",
+                                    "rebase (finish): an older one"})) == 3);
+}
