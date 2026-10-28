@@ -1054,6 +1054,7 @@ OpResult Repository::Commit(const std::string& message) {
     return OpResult::Fail("a rebase is in progress — continue it instead of committing");
   }
 
+  const int state = git_repository_state(repo);
   IndexHandle h;
   if (git_repository_index(&h.index, repo) != 0) {
     return OpResult::Fail(LastError());
@@ -1109,8 +1110,9 @@ OpResult Repository::Commit(const std::string& message) {
   }
 
   // MERGE_HEAD and MERGE_MSG only go away when something clears them, and until
-  // they do the repository still reports itself as mid-merge.
-  if (merging) {
+  // they do the repository still reports itself as mid-merge. The same goes for
+  // CHERRY_PICK_HEAD and REVERT_HEAD: committing is how those finish.
+  if (state != GIT_REPOSITORY_STATE_NONE) {
     git_repository_state_cleanup(repo);
   }
 

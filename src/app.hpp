@@ -367,6 +367,9 @@ class App {
   void RequestDeleteBranch();
   void PerformDeleteBranch();
   void TagSelectedCommit();
+  void MarkSelectedCommit();
+  void PasteMarkedCommits();
+  void RevertSelectedCommit();
 
   void OpenOverlay(Overlay which);
   void CloseOverlay();
@@ -604,6 +607,9 @@ class App {
   bool ref_remote_ = false;
   bool ref_merged_ = true;
   std::string push_refspec_;
+  // Commit ids marked for a cherry-pick, in the order they were marked. Kept
+  // across reloads by id, because a list index means nothing after HEAD moves.
+  std::vector<std::string> marked_commits_;
   std::string push_what_;
   // Hands the terminal to `fn` and takes it back. Set in Run, where the screen
   // lives, so the editor key can reach it without App owning the screen.

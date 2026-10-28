@@ -78,6 +78,9 @@ enum class Action {
   RenameBranch,
   DeleteBranch,
   Tag,
+  MarkCommit,
+  PasteCommits,
+  RevertCommit,
   CiRef,
   PullCreate,
 

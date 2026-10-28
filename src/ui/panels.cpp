@@ -1194,6 +1194,8 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       pair(Action::NewBranch, Action::RenameBranch, "branches: new from / rename the selection"),
       line(Action::DeleteBranch, "branches: delete it, here or on the remote"),
       line(Action::Tag, "history: tag the commit, then offer to push it"),
+      pair(Action::MarkCommit, Action::PasteCommits, "history: mark / cherry-pick the marked"),
+      line(Action::RevertCommit, "history: revert the commit"),
       line(Action::CiRef, "CI view: show runs for another ref"),
       line(Action::PullCreate, "pulls view: open one, after a confirm"),
       line(Action::NextRemote, "switch to the next remote"),

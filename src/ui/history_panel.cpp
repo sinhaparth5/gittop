@@ -123,7 +123,7 @@ Element RefBadges(const model::Commit& commit) {
 }  // namespace
 
 Element CommitList(const model::HistorySnapshot& history, int selected, int width,
-                   std::vector<Box>* row_boxes) {
+                   std::vector<Box>* row_boxes, const std::vector<std::string>* marked) {
   const Theme& t = theme();
   const GlyphSet& g = glyphs();
 
@@ -153,6 +153,8 @@ Element CommitList(const model::HistorySnapshot& history, int selected, int widt
   for (std::size_t i = 0; i < history.commits.size(); ++i) {
     const model::Commit& commit = history.commits[i];
     const bool is_selected = static_cast<int>(i) == selected;
+    const bool is_marked = marked != nullptr &&
+                           std::find(marked->begin(), marked->end(), commit.id) != marked->end();
 
     // Cursor, space, gutter, gap, short id, gap  |  gap, author, gap, age, space
     // — plus the panel's own two border columns. Everything on the row except
@@ -163,7 +165,7 @@ Element CommitList(const model::HistorySnapshot& history, int selected, int widt
 
     Element row = hbox({
         text(is_selected ? g.cursor : " ") | color(t.accent),
-        text(" "),
+        text(is_marked ? g.check : " ") | color(t.staged),
         Gutter(commit, lanes),
         text("  "),
         text(commit.short_id) | color(t.accent),

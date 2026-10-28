@@ -379,3 +379,50 @@ TEST_CASE("a tag is lightweight without a message and annotated with one") {
   CHECK(IdOf(dir, "refs/tags/v2") != IdOf(dir, "HEAD"));  // a tag object
   CHECK(IdOf(dir, "v2^{commit}") == IdOf(dir, "HEAD"));
 }
+
+TEST_CASE("cherry-picked commits land on HEAD in order, keeping their messages") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "a.txt", "a\n", "add a");
+  CommitFile(*repo, dir, "b.txt", "b\n", "add b");
+  const std::string a = IdOf(dir, "HEAD~1");
+  const std::string b = IdOf(dir, "HEAD");
+  REQUIRE(repo->RewriteHistory(a, Rewrite::Drop, "").ok);
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD"), Rewrite::Drop, "").ok);
+  REQUIRE(Log(dir).size() == 1);
+
+  std::size_t applied = 0;
+  REQUIRE(repo->CherryPick({a, b}, &applied).ok);
+  CHECK(applied == 2);
+  CHECK(Log(dir) == std::vector<std::string>{"add b", "add a", "first"});
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+}
+
+TEST_CASE("a conflicting cherry-pick stops, and committing finishes it") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "README", "theirs\n", "theirs");
+  const std::string theirs = IdOf(dir, "HEAD");
+  REQUIRE(repo->RewriteHistory(theirs, Rewrite::Drop, "").ok);
+  CommitFile(*repo, dir, "README", "ours\n", "ours");
+
+  std::size_t applied = 0;
+  REQUIRE(repo->CherryPick({theirs}, &applied).ok);
+  CHECK(applied == 0);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::CherryPick);
+  CHECK(repo->PendingMessage().rfind("theirs", 0) == 0);
+
+  std::ofstream(dir.path() / "README") << "both\n";
+  REQUIRE(repo->StageAll().ok);
+  REQUIRE(repo->Commit("theirs").ok);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+}
+
+TEST_CASE("a revert commits the inverse of the change") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  CommitFile(*repo, dir, "a.txt", "a\n", "add a");
+  REQUIRE(repo->Revert(IdOf(dir, "HEAD")).ok);
+  CHECK_FALSE(std::filesystem::exists(dir.path() / "a.txt"));
+  CHECK(Log(dir)[0].rfind("Revert \"add a\"\n\nThis reverts commit ", 0) == 0);
+}
