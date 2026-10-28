@@ -917,6 +917,7 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(Chip(keys.KeyFor(Action::DiffPrevFile) + "/" +
                              keys.KeyFor(Action::DiffNextFile),
                          "file"));
+    chips.push_back(KeyChip(keys, Action::DiffStage, "stage hunk/line"));
     chips.push_back(KeyChip(keys, Action::DiffSwitch, "staged"));
   } else if (view == View::Settings) {
     chips.push_back(Chip(move, "move"));
@@ -1147,6 +1148,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
 
   Elements right{
       heading("THE DIFF"),
+      line(Action::DiffStage, "(un)stage the hunk or line under the cursor"),
       line(Action::DiffSwitch, "swap between unstaged and staged"),
       pair(Action::DiffPrevFile, Action::DiffNextFile, "previous / next file"),
       text(""),

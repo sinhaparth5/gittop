@@ -61,6 +61,7 @@ enum class Action {
   Commit,
 
   DiffSwitch,
+  DiffStage,
   DiffNextFile,
   DiffPrevFile,
 

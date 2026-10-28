@@ -25,6 +25,18 @@ struct DiffRequest {
   std::string commit;  // Source::Commit only; anything git rev-parse accepts
 };
 
+// One hunk of a file's diff, or one line of it, as the diff view addresses it.
+// `header` is the hunk header the caller was looking at: the diff is re-read
+// before anything is applied, and a header that no longer matches means the
+// file changed since, so the line under the cursor is not the one in the patch.
+struct HunkPick {
+  model::DiffSource source = model::DiffSource::Worktree;
+  std::string path;
+  std::size_t hunk = 0;
+  std::string header;
+  int line = -1;  // the n-th +/-/context line of the hunk; -1 takes all of it
+};
+
 // Outcome of a mutating operation. Failures carry a message the UI shows in the
 // status bar rather than throwing, because a rejected stage is an ordinary
 // thing for a user to do, not an exceptional one.
@@ -95,6 +107,12 @@ class Repository {
   // unstaged first, which keeps a single keystroke from destroying two things.
   OpResult Discard(const model::StatusEntry& entry);
   OpResult Commit(const std::string& message);
+
+  // Stages a hunk or a line of the working-tree diff, or unstages one of the
+  // staged diff, by applying a patch built from it to the index. In
+  // git/diff.cpp. Only a modified file: a new, deleted or renamed one stages
+  // whole from the status view.
+  OpResult ApplyHunk(const HunkPick& pick);
 
   // Switches to `branch`. A remote-only one first gets a local branch of the
   // same short name tracking it, which is `git checkout -b topic --track

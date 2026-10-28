@@ -84,6 +84,7 @@ const NamedAction kActionNames[] = {
     {"commit", Action::Commit},
 
     {"diff_switch", Action::DiffSwitch},
+    {"diff_stage", Action::DiffStage},
     {"diff_next_file", Action::DiffNextFile},
     {"diff_prev_file", Action::DiffPrevFile},
 
@@ -271,6 +272,7 @@ Keymap::Keymap() {
   // `s` switches sides on the diff view and stages on the status view: two
   // scoped bindings that never meet, so neither shadows the other.
   Bind(Action::DiffSwitch, Scope::Diff, "s");
+  Bind(Action::DiffStage, Scope::Diff, "space");
   Bind(Action::DiffNextFile, Scope::Diff, "]");
   Bind(Action::DiffPrevFile, Scope::Diff, "[");
 
