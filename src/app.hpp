@@ -316,6 +316,7 @@ class App {
   const model::StatusEntry* Selected() const;
 
   void ToggleStage();
+  void StageDiffLine();
   void StageSelected();
   void UnstageSelected();
   void StageEverything();

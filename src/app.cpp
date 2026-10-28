@@ -2931,6 +2931,48 @@ void App::ToggleStage() {
   }
 }
 
+// On a hunk header, the whole hunk; on a + or - line, that line alone. Which
+// way is the diff's side: the working tree stages, the staged diff unstages.
+void App::StageDiffLine() {
+  const auto& lines = diff_.lines;
+  const auto here = static_cast<std::size_t>(std::max(0, diff_line_));
+  if (here >= lines.size()) {
+    return;
+  }
+  using model::DiffLineKind;
+  git::HunkPick pick;
+  pick.source = diff_request_.source;
+  int content = 0;
+  std::size_t at = here;
+  for (;; --at) {
+    const DiffLineKind kind = lines[at].kind;
+    if (kind == DiffLineKind::HunkHeader) {
+      break;
+    }
+    if (kind == DiffLineKind::FileHeader || kind == DiffLineKind::Binary || at == 0) {
+      Note("put the cursor on a hunk or a changed line", false);
+      return;
+    }
+    if (kind != DiffLineKind::Note && at != here) {
+      ++content;
+    }
+  }
+  if (lines[here].kind == DiffLineKind::Note) {
+    Note("put the cursor on a hunk or a changed line", false);
+    return;
+  }
+  pick.header = lines[at].text;
+  pick.line = at == here ? -1 : content;
+  for (; lines[at].kind != DiffLineKind::FileHeader; --at) {
+    pick.hunk += lines[at].kind == DiffLineKind::HunkHeader ? 1 : 0;
+  }
+  --pick.hunk;
+  pick.path = lines[at].text;
+
+  Apply(repo_.ApplyHunk(pick));
+  EnsureDiff();
+}
+
 void App::StageSelected() {
   const model::StatusEntry* entry = Selected();
   if (entry == nullptr) {
@@ -3214,6 +3256,9 @@ bool App::Perform(ui::Action action) {
 
     case ui::Action::DiffSwitch:
       SwitchDiffSource();
+      return true;
+    case ui::Action::DiffStage:
+      StageDiffLine();
       return true;
     case ui::Action::DiffNextFile:
       JumpFile(1);

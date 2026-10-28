@@ -159,8 +159,10 @@ struct DiffHandles {
   git_tree* right = nullptr;
   git_commit* commit = nullptr;
   git_object* object = nullptr;
+  git_patch* patch = nullptr;
 
   ~DiffHandles() {
+    if (patch != nullptr) git_patch_free(patch);
     if (diff != nullptr) git_diff_free(diff);
     if (left != nullptr) git_tree_free(left);
     if (right != nullptr) git_tree_free(right);
@@ -168,6 +170,27 @@ struct DiffHandles {
     if (object != nullptr) git_object_free(object);
   }
 };
+
+// The two diffs that touch the index. An unborn HEAD has no tree, and libgit2
+// reads a null tree as "empty", which is exactly right: everything in the index
+// is an addition.
+int DiffIndex(DiffHandles& handles, git_repository* repo, DiffSource source,
+              const git_diff_options& opts) {
+  if (source == DiffSource::Worktree) {
+    return git_diff_index_to_workdir(&handles.diff, repo, nullptr, &opts);
+  }
+  git_reference* head = nullptr;
+  if (git_repository_head(&head, repo) == 0) {
+    git_commit* head_commit = nullptr;
+    if (git_reference_peel(reinterpret_cast<git_object**>(&head_commit), head,
+                           GIT_OBJECT_COMMIT) == 0) {
+      git_commit_tree(&handles.left, head_commit);
+      git_commit_free(head_commit);
+    }
+    git_reference_free(head);
+  }
+  return git_diff_tree_to_index(&handles.diff, repo, handles.left, nullptr, &opts);
+}
 
 }  // namespace
 
@@ -200,30 +223,11 @@ DiffSnapshot Repository::ReadDiff(const DiffRequest& request, std::size_t max_li
   }
 
   switch (request.source) {
-    case DiffSource::Worktree: {
-      snap.title = "working tree against the index";
-      if (git_diff_index_to_workdir(&handles.diff, repo, nullptr, &opts) != 0) {
-        snap.error = LastError();
-        return snap;
-      }
-      break;
-    }
-
+    case DiffSource::Worktree:
     case DiffSource::Staged: {
-      snap.title = "index against HEAD";
-      // An unborn HEAD has no tree, and libgit2 reads a null tree as "empty",
-      // which is exactly right: everything in the index is an addition.
-      git_reference* head = nullptr;
-      if (git_repository_head(&head, repo) == 0) {
-        git_commit* head_commit = nullptr;
-        if (git_reference_peel(reinterpret_cast<git_object**>(&head_commit), head,
-                               GIT_OBJECT_COMMIT) == 0) {
-          git_commit_tree(&handles.left, head_commit);
-          git_commit_free(head_commit);
-        }
-        git_reference_free(head);
-      }
-      if (git_diff_tree_to_index(&handles.diff, repo, handles.left, nullptr, &opts) != 0) {
+      snap.title = request.source == DiffSource::Worktree ? "working tree against the index"
+                                                          : "index against HEAD";
+      if (DiffIndex(handles, repo, request.source, opts) != 0) {
         snap.error = LastError();
         return snap;
       }
@@ -290,6 +294,115 @@ DiffSnapshot Repository::ReadDiff(const DiffRequest& request, std::size_t max_li
                                   -1, -1});
   }
   return snap;
+}
+
+OpResult Repository::ApplyHunk(const HunkPick& pick) {
+  if (pick.source == DiffSource::Commit) {
+    return OpResult::Fail("a commit is history — there is nothing in it to stage");
+  }
+  git_repository* repo = repo_.get();
+  DiffHandles handles;
+
+  // The same three lines of context ReadDiff asks for, or hunk n here would be
+  // a different hunk from the n-th one on screen.
+  git_diff_options opts;
+  git_diff_options_init(&opts, GIT_DIFF_OPTIONS_VERSION);
+  opts.context_lines = 3;
+  opts.flags = GIT_DIFF_DISABLE_PATHSPEC_MATCH;
+  char* pathspec[1] = {const_cast<char*>(pick.path.c_str())};
+  opts.pathspec.strings = pathspec;
+  opts.pathspec.count = 1;
+
+  if (DiffIndex(handles, repo, pick.source, opts) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  if (git_diff_num_deltas(handles.diff) != 1) {
+    return OpResult::Fail("the diff changed — press r");
+  }
+  if (git_diff_get_delta(handles.diff, 0)->status != GIT_DELTA_MODIFIED) {
+    return OpResult::Fail("a new, deleted or renamed file stages whole, from the status view");
+  }
+  if (git_patch_from_diff(&handles.patch, handles.diff, 0) != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  const git_diff_hunk* hunk = nullptr;
+  std::size_t count = 0;
+  if (pick.hunk >= git_patch_num_hunks(handles.patch) ||
+      git_patch_get_hunk(&hunk, &count, handles.patch, pick.hunk) != 0 ||
+      Chomp(hunk->header, hunk->header_len) != pick.header) {
+    return OpResult::Fail("the diff changed — press r");
+  }
+
+  // Unstaging is staging the reverse of the staged diff: flip every + and -
+  // and read the hunk from its new side, and the rule below serves both.
+  const bool reverse = pick.source == DiffSource::Staged;
+  std::string body;
+  int old_count = 0;
+  int new_count = 0;
+  int content = -1;
+  bool changes = false;
+  for (std::size_t i = 0; i < count; ++i) {
+    const git_diff_line* line = nullptr;
+    if (git_patch_get_line_in_hunk(&line, handles.patch, pick.hunk, i) != 0) {
+      return OpResult::Fail(LastError());
+    }
+    char origin = line->origin;
+    // The "no newline at end of file" markers are rebuilt from the content
+    // below, so they are not counted as lines the cursor can stand on either —
+    // ReadDiff turns them into notes.
+    if (origin != GIT_DIFF_LINE_ADDITION && origin != GIT_DIFF_LINE_DELETION &&
+        origin != GIT_DIFF_LINE_CONTEXT) {
+      continue;
+    }
+    ++content;
+    if (reverse && origin != ' ') {
+      origin = origin == '+' ? '-' : '+';
+    }
+    const bool picked = pick.line < 0 || pick.line == content;
+    // An addition left out never happens; a removal left out keeps its line.
+    if (!picked && origin == '+') {
+      continue;
+    }
+    if (!picked && origin == '-') {
+      origin = ' ';
+    }
+    changes = changes || origin != ' ';
+    old_count += origin != '+' ? 1 : 0;
+    new_count += origin != '-' ? 1 : 0;
+    body += origin;
+    body.append(line->content, line->content_len);
+    if (body.back() != '\n') {
+      body += "\n\\ No newline at end of file\n";
+    }
+  }
+  if (!changes) {
+    return OpResult::Fail("a context line has nothing to stage");
+  }
+
+  // libgit2 places a hunk by its new start, which for a pure insertion is one
+  // past the line it goes after.
+  const int start = reverse ? hunk->new_start : hunk->old_start;
+  const int new_start = old_count == 0 ? start + 1 : start;
+  const std::string patch = "diff --git a/" + pick.path + " b/" + pick.path + "\n--- a/" +
+                            pick.path + "\n+++ b/" + pick.path + "\n@@ -" +
+                            std::to_string(start) + "," + std::to_string(old_count) + " +" +
+                            std::to_string(new_start) + "," + std::to_string(new_count) +
+                            " @@\n" + body;
+
+  git_diff* parsed = nullptr;
+  if (git_diff_from_buffer(&parsed, patch.data(), patch.size()) != 0) {
+    return OpResult::Fail(LastError());
+  }
+  const int rc = git_apply(repo, parsed, GIT_APPLY_LOCATION_INDEX, nullptr);
+  git_diff_free(parsed);
+  if (rc != 0) {
+    return OpResult::Fail(LastError());
+  }
+
+  const char* verb = reverse ? "unstaged" : "staged";
+  return OpResult::Ok(std::string(verb) + (pick.line < 0 ? " hunk in " : " line in ") +
+                      pick.path);
 }
 
 }  // namespace gittop::git
