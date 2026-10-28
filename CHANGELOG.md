@@ -17,6 +17,40 @@ published.
 
 ---
 
+## 2026.10.0 — 2026-10-28
+
+A new default look, remote branches you can see and check out, and a test suite.
+
+### Added
+
+- **`mainframe`, a monochrome console theme, is now the default.** White on black, with red kept
+  for conflicts and danger alone. The tab bar draws the active tab as one inverted block, the
+  header row is a full-width status bar, labels are upper case, and the GITTOP wordmark replaces
+  the old logo. It passes the colour-blindness check by lightness rather than hue: worst case
+  ΔE 20.8 across normal vision, deuteranopia, protanopia and tritanopia. Every other theme is still
+  one `t` away. ([#33](https://github.com/sinhaparth5/gittop/issues/33))
+- **The Branches view lists remote-only branches.** A branch that exists on the remote with no
+  local branch tracking it shows as `origin/topic`, and checking it out creates a local branch of
+  the same name tracking it — `git checkout -b topic --track origin/topic`.
+  ([#8](https://github.com/sinhaparth5/gittop/issues/8))
+- **A diverged pull now points at the rebase key** rather than only refusing, so the way forward is
+  on screen. Pull still fast-forwards or refuses. ([#7](https://github.com/sinhaparth5/gittop/issues/7))
+- **A minimum terminal size of 80×24.** Below it gittop draws a card naming the current and the
+  required size instead of a layout torn across the border.
+  ([#14](https://github.com/sinhaparth5/gittop/issues/14))
+- **A test suite.** `ctest --test-dir build` runs doctest over text measurement, the config writer,
+  the CI status foldings, remote URL parsing, graph lanes and fixture repositories, plus a check
+  that no non-ASCII literal escapes `glyphs.cpp`. Both release jobs run it before packaging.
+  ([#9](https://github.com/sinhaparth5/gittop/issues/9))
+
+### Changed
+
+- **OAuth device-flow client ids come from the build, not the source.** They are the
+  `GITTOP_GITHUB_CLIENT_ID` and `GITTOP_GITLAB_CLIENT_ID` CMake variables, which the release
+  workflow fills from repository variables, so the official builds offer browser sign-in. A build
+  without them, including a distribution rebuild, uses the personal access token route.
+  ([#10](https://github.com/sinhaparth5/gittop/issues/10))
+
 ## 2026.08.9 — 2026-08-15
 
 The Windows installer's "add to PATH" option now adds to PATH.
