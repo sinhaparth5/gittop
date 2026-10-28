@@ -36,10 +36,21 @@ connection.
 
 ## Installing
 
-Download the latest [release](https://github.com/sinhaparth5/gittop/releases).
+On Linux (x86_64, glibc 2.35+ — Ubuntu 22.04, Debian 12 or newer):
 
 ```bash
-sudo dpkg -i gittop_*_amd64.deb        # Ubuntu 22.04+, Debian 12+
+curl -fsSL https://raw.githubusercontent.com/sinhaparth5/gittop/master/install.sh | sh
+```
+
+That puts `gittop` in `~/.local/bin` with no sudo, after checking the download against the release's
+`SHA256SUMS`. **Run the same command again to update**; it does nothing when you already have the
+latest. `GITTOP_PREFIX=/some/dir` installs somewhere else and `GITTOP_VERSION=2026.10.1` pins a
+release. To remove it, delete `~/.local/bin/gittop`.
+
+Or download a [release](https://github.com/sinhaparth5/gittop/releases) by hand:
+
+```bash
+sudo apt install ./gittop_*_amd64.deb  # Ubuntu 22.04+, Debian 12+
 ```
 
 Or the portable tarball for any other distribution — unpack it and put `bin/gittop` on your `PATH`:

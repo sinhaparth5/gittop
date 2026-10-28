@@ -405,6 +405,11 @@ jobs:
             [ -f "$1" ] || { echo "no artifact matching $pattern" >&2; exit 1; }
           done
 
+      # install.sh refuses an asset it cannot verify, so a release without
+      # this file is one the one-line install cannot use.
+      - name: Checksum the assets
+        run: sha256sum ./*.deb ./*.tar.gz ./*.zip ./*.exe | sed 's#  \./#  #' > SHA256SUMS
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -415,4 +420,4 @@ jobs:
             --title "gittop ${TAG#v}" \
             --notes-file release-notes.md \
             --verify-tag \
-            ./*.deb ./*.tar.gz ./*.zip ./*.exe
+            ./*.deb ./*.tar.gz ./*.zip ./*.exe SHA256SUMS
