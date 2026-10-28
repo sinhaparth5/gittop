@@ -363,6 +363,23 @@ used to be.
 The mouse works too: the wheel scrolls, a click selects a row or switches to a tab, and clicking
 the row already under the cursor opens it.
 
+Commands of your own go on keys too, one `[[commands]]` table each:
+
+```toml
+[[commands]]
+key = "ctrl-f"
+scope = "branches"          # optional: only on this view
+run = ["git", "fetch", "{remote}", "{branch}"]
+confirm = true              # optional: ask first, showing the full command
+```
+
+`run` is an argv and never goes through a shell. `{branch}` is the selected branch on the branches
+view and the checked-out one elsewhere; `{commit}` is the selected commit on the history view and
+`HEAD` elsewhere; `{file}` is the file under the cursor on the status, diff or blame view; `{remote}`
+is the current remote. Anything else in braces, like `@{u}`, is left for git. The command runs in
+the repository's top directory with no terminal to prompt on, its last line of output is shown,
+and every view is re-read afterwards. A command's key takes precedence over a built-in one.
+
 ## Terminal size
 
 gittop needs at least 80x24. Below that it draws one card giving the size it has and the size it

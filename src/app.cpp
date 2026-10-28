@@ -8,10 +8,13 @@
 #include <ftxui/dom/elements.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
+#include <sstream>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -294,6 +297,8 @@ void App::ApplyConfig() {
       complain(error);
     }
   }
+
+  LoadCommands(complain);
 
   // Said once at startup rather than left for the user to discover by pressing
   // a key and getting something else.
@@ -3296,6 +3301,175 @@ void App::CollectBlame() {
       std::clamp(blame_selected_, 0, std::max(0, static_cast<int>(blame_.lines.size()) - 1));
 }
 
+void App::LoadCommands(const std::function<void(std::string)>& complain) {
+  for (std::size_t i = 0; i < config_.TableCount("commands"); ++i) {
+    const std::string prefix = "commands." + std::to_string(i) + ".";
+    const std::string where = "commands[" + std::to_string(i) + "]: ";
+    CustomCommand command;
+    std::string label;
+    if (!ui::ParseKey(config_.Get(prefix + "key"), &command.event, &label)) {
+      complain(where + "key '" + config_.Get(prefix + "key") + "' is not a key gittop can read");
+      continue;
+    }
+    command.run = config_.GetList(prefix + "run");
+    if (command.run.empty() || command.run.front().empty()) {
+      complain(where + "run needs an argv, like [\"git\", \"fetch\"]");
+      continue;
+    }
+    const std::string scope = config_.Get(prefix + "scope", "global");
+    if (scope != "global") {
+      if (!ui::ParseViewName(scope, &command.view)) {
+        complain(where + "scope '" + scope + "' is not a view gittop has");
+        continue;
+      }
+      command.scoped = true;
+    }
+    command.confirm = config_.GetBool(prefix + "confirm", false);
+    commands_.push_back(std::move(command));
+  }
+}
+
+bool App::RunCustomCommand(const ftxui::Event& event) {
+  // The view's own commands before the global ones, the same order the keymap
+  // takes, and both before the built-in keys: a key the user bound a command
+  // to is one they meant to take.
+  const CustomCommand* match = nullptr;
+  for (const CustomCommand& command : commands_) {
+    if (command.event == event && (!command.scoped || command.view == view_) &&
+        (match == nullptr || (command.scoped && !match->scoped))) {
+      match = &command;
+    }
+  }
+  if (match == nullptr) {
+    return false;
+  }
+  if (command_fetcher_.Running()) {
+    Note("a command is already running", false);
+    return true;
+  }
+  if (!ExpandCommand(match->run, &command_argv_)) {
+    return true;
+  }
+  if (match->confirm) {
+    confirm_kind_ = ConfirmKind::Command;
+    OpenOverlay(kConfirm);
+  } else {
+    StartCommand();
+  }
+  return true;
+}
+
+bool App::ExpandCommand(const std::vector<std::string>& run, std::vector<std::string>* argv) {
+  // Each value is looked up only when the argv names it, so a command that
+  // never says {file} is not refused for want of a selected file.
+  const auto value = [this](const std::string& name, std::string* out) -> bool {
+    if (name == "branch") {
+      const std::vector<model::Branch>& branches = VisibleHistory().branches;
+      if (view_ == ui::View::Branches && branch_selected_ >= 0 &&
+          branch_selected_ < static_cast<int>(branches.size())) {
+        *out = branches[static_cast<std::size_t>(branch_selected_)].name;
+      } else {
+        *out = HeadBranch();
+      }
+    } else if (name == "commit") {
+      const std::vector<model::Commit>& commits = VisibleHistory().commits;
+      if (view_ == ui::View::History && commit_selected_ >= 0 &&
+          commit_selected_ < static_cast<int>(commits.size())) {
+        *out = commits[static_cast<std::size_t>(commit_selected_)].id;
+      } else {
+        *out = "HEAD";
+      }
+    } else if (name == "file") {
+      const model::StatusEntry* entry = Selected();
+      if (view_ == ui::View::Status && entry != nullptr) {
+        *out = entry->path;
+      } else if (view_ == ui::View::Diff) {
+        *out = diff_request_.path;
+      } else if (view_ == ui::View::Blame) {
+        *out = blame_.path;
+      }
+    } else if (name == "remote") {
+      if (!remotes_.empty()) {
+        *out = remotes_[remote_index_].name;
+      }
+    } else {
+      return false;  // not ours: git's own HEAD@{1} and @{u} pass through
+    }
+    if (out->empty()) {
+      Note("{" + name + "} has nothing to stand for here", true);
+    }
+    return true;
+  };
+
+  argv->clear();
+  for (const std::string& arg : run) {
+    std::string expanded;
+    std::size_t at = 0;
+    while (at < arg.size()) {
+      const std::size_t open = arg.find('{', at);
+      const std::size_t close = open == std::string::npos ? open : arg.find('}', open);
+      if (close == std::string::npos) {
+        expanded += arg.substr(at);
+        break;
+      }
+      std::string filled;
+      if (value(arg.substr(open + 1, close - open - 1), &filled)) {
+        if (filled.empty()) {
+          return false;
+        }
+        expanded += arg.substr(at, open - at) + filled;
+      } else {
+        expanded += arg.substr(at, close + 1 - at);
+      }
+      at = close + 1;
+    }
+    argv->push_back(std::move(expanded));
+  }
+  return true;
+}
+
+void App::StartCommand() {
+  std::string label;
+  for (const std::string& arg : command_argv_) {
+    label += (label.empty() ? "" : " ") + arg;
+  }
+  Note("running " + label, false);
+  command_fetcher_.Start(
+      [argv = command_argv_, cwd = repo_.WorkdirPath(), label](const std::atomic<bool>&) {
+        CommandResult result;
+        result.label = label;
+        result.output = platform::RunCommand(argv, cwd, 64 * 1024, &result.status);
+        return result;
+      });
+}
+
+void App::CollectCommand() {
+  CommandResult result;
+  if (!command_fetcher_.Consume(&result)) {
+    return;
+  }
+  // The toast is one line, so it is the last thing the command said; git puts
+  // progress behind carriage returns, and only the final state is worth it.
+  std::string last;
+  std::istringstream lines(result.output);
+  for (std::string line; std::getline(lines, line);) {
+    line = line.substr(line.find_last_of('\r') == std::string::npos ? 0
+                                                                    : line.find_last_of('\r') + 1);
+    if (line.find_first_not_of(" \t") != std::string::npos) {
+      last = line;
+    }
+  }
+  if (result.status == 0) {
+    Note(last.empty() ? result.label + " done" : last, false);
+  } else if (result.status == 127 || result.status < 0) {
+    Note("could not run " + result.label, true);
+  } else {
+    Note(result.label + " failed" + (last.empty() ? "" : ": " + last), true);
+  }
+  // Whatever it did, the repository may have changed under every view.
+  ReloadRepository();
+}
+
 void App::StageSelected() {
   const model::StatusEntry* entry = Selected();
   if (entry == nullptr) {
@@ -4168,6 +4342,7 @@ const Event kPollReady = Event::Special("gittop:poll-ready");
 const Event kTick = Event::Special("gittop:tick");
 const Event kWatched = Event::Special("gittop:watched");
 const Event kBlameReady = Event::Special("gittop:blame-ready");
+const Event kCommandDone = Event::Special("gittop:command-done");
 
 int App::Run() {
   Refresh();
@@ -4195,6 +4370,7 @@ int App::Run() {
   device_fetcher_.SetNotifier([&screen] { screen.PostEvent(kDeviceCodeReady); });
   poll_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPollReady); });
   blame_fetcher_.SetNotifier([&screen] { screen.PostEvent(kBlameReady); });
+  command_fetcher_.SetNotifier([&screen] { screen.PostEvent(kCommandDone); });
   ticker_.SetNotifier([&screen] { screen.PostEvent(kTick); });
 
   // ---------------------------------------------------------- commit overlay
@@ -4306,6 +4482,14 @@ int App::Run() {
             "Reset " + (snapshot_.branch.empty() ? std::string("HEAD") : snapshot_.branch) +
                 " to " + reset_target_.substr(0, 7) + "?",
             reset_what_, "Commits after it leave the branch; the reflog keeps them.", "reset");
+
+      case ConfirmKind::Command: {
+        std::string line;
+        for (const std::string& arg : command_argv_) {
+          line += (line.empty() ? "" : " ") + arg;
+        }
+        return ui::ConfirmPane("Run this command?", line, /*warning=*/"", "run");
+      }
 
       case ConfirmKind::RemoveWorktree: {
         const model::Worktree* tree = SelectedWorktree();
@@ -4679,6 +4863,10 @@ int App::Run() {
       CollectBlame();
       return true;
     }
+    if (event == kCommandDone) {
+      CollectCommand();
+      return true;
+    }
     if (event == kPullsReady) {
       CollectPulls();
       return true;
@@ -4869,6 +5057,10 @@ int App::Run() {
                 break;
               case ConfirmKind::RemoveWorktree:
                 PerformRemoveWorktree();
+                break;
+              case ConfirmKind::Command:
+                CloseOverlay();
+                StartCommand();
                 break;
               case ConfirmKind::DeleteRemoteBranch:
               case ConfirmKind::PushTag:
@@ -5077,6 +5269,9 @@ int App::Run() {
     // One table lookup rather than thirty comparisons, which is what lets the
     // config move a key: the scope decides whether the graph's `d` or the
     // status view's is the one this keypress means.
+    if (RunCustomCommand(event)) {
+      return true;
+    }
     const ui::Action action = keys_.Lookup(CurrentScope(), event);
     if (action == ui::Action::Quit) {
       screen.Exit();
@@ -5136,6 +5331,9 @@ int App::Run() {
   device_fetcher_.Shutdown();
   poll_fetcher_.Shutdown();
   blame_fetcher_.Shutdown();
+  // ponytail: joins a running command, so quitting waits for it to exit; kill
+  // the child on Shutdown if a command that hangs ever turns up.
+  command_fetcher_.Shutdown();
   return 0;
 }
 

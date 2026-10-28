@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <map>
 #include <string>
 #include <vector>
@@ -7,8 +8,9 @@
 namespace gittop::config {
 
 // A deliberately small TOML reader: comments, table headers with dotted and
-// quoted segments, and `key = value` where value is a quoted string, an
-// integer, or a bool. That is the whole language gittop's config speaks.
+// quoted segments, `[[name]]` arrays of tables, and `key = value` where value
+// is a quoted string, an integer, a bool, or a one-line array of strings. That
+// is the whole language gittop's config speaks.
 //
 // It is a strict subset rather than a lookalike, so the files it reads are also
 // valid TOML. Swapping in a real parser later is then a drop-in rather than a
@@ -60,6 +62,13 @@ class Config {
   // than part of the key path so a self-hosted instance needs no code change.
   std::string HostValue(const std::string& host, const std::string& field) const;
 
+  // A string array, for `[[commands]] run`. Arrays are read but never written:
+  // nothing gittop saves is one, so a rewrite keeps their lines verbatim.
+  std::vector<std::string> GetList(const std::string& key) const;
+
+  // How many `[[name]]` tables the file has. Element i's keys are `name.i.key`.
+  std::size_t TableCount(const std::string& name) const;
+
   bool empty() const { return values_.empty(); }
   const std::map<std::string, std::string>& values() const { return values_; }
 
@@ -73,6 +82,8 @@ class Config {
   std::string Rewrite() const;
 
   std::map<std::string, std::string> values_;
+  std::map<std::string, std::vector<std::string>> lists_;
+  std::map<std::string, std::size_t> arrays_;
 
   // The file exactly as Load read it, one entry per line, so Save can edit it
   // rather than replace it. Empty for a config that was never on disk — which

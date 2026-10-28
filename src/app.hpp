@@ -103,6 +103,9 @@ class App {
     // Deletes a linked worktree's directory, or prunes git's record of a
     // missing one: ref_target_ names it.
     RemoveWorktree,
+    // A `[[commands]]` entry with `confirm = true`: command_argv_ is the
+    // expanded argv, shown in full so the question is what will actually run.
+    Command,
   };
 
   // What the commit box is writing. One box for all three, because each is a
@@ -168,6 +171,28 @@ class App {
   void OpenBlame();
   void StartBlame(const std::string& path);
   void CollectBlame();
+
+  // `[[commands]]` from the config: a key, an optional view it is limited to,
+  // and an argv with {branch} {commit} {file} {remote} filled from the
+  // selection. Run on a worker in the workdir, never through a shell; the
+  // output's last line is the toast and the repository is re-read afterwards.
+  struct CustomCommand {
+    ftxui::Event event;
+    bool scoped = false;
+    ui::View view = ui::View::Status;
+    std::vector<std::string> run;
+    bool confirm = false;
+  };
+  struct CommandResult {
+    std::string label;
+    std::string output;
+    int status = -1;
+  };
+  void LoadCommands(const std::function<void(std::string)>& complain);
+  bool RunCustomCommand(const ftxui::Event& event);
+  bool ExpandCommand(const std::vector<std::string>& run, std::vector<std::string>* argv);
+  void StartCommand();
+  void CollectCommand();
   void SaveStash();
   void RequestStash(ConfirmKind kind);
   void PerformStashPop();
@@ -575,6 +600,10 @@ class App {
   remote::Fetcher<remote::DeviceCode> device_fetcher_;
   remote::Fetcher<remote::PollResult> poll_fetcher_;
   remote::Fetcher<model::BlameSnapshot> blame_fetcher_;
+
+  std::vector<CustomCommand> commands_;
+  std::vector<std::string> command_argv_;
+  remote::Fetcher<CommandResult> command_fetcher_;
 
   ui::SignInStage signin_stage_ = ui::SignInStage::Starting;
   model::RemoteRef signin_ref_;

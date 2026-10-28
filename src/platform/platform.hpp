@@ -51,6 +51,18 @@ int RunInTerminal(const std::vector<std::string>& argv);
 std::string RunCapture(const std::vector<std::string>& argv, std::size_t limit,
                        bool* exited_ok = nullptr);
 
+// Runs a command the user wrote into the config, in `cwd`, and returns what it
+// printed — stdout and stderr together, because git reports both its progress
+// and its failures on stderr — truncated to `limit` bytes. `status` is the
+// exit code, or -1 if it could not be run.
+//
+// stdin is the null device and the child gets no terminal to prompt on: the
+// TUI holds this one in raw mode, and a credential prompt drawn over it would
+// read the user's next keystrokes as a password. A command that needs to ask
+// fails instead, and says so in what it prints.
+std::string RunCommand(const std::vector<std::string>& argv, const std::string& cwd,
+                       std::size_t limit, int* status);
+
 // -------------------------------------------------------------------- desktop
 
 // The clipboard's text, or empty. Truncated to `limit` bytes.
