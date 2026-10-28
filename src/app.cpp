@@ -3182,7 +3182,10 @@ void App::OpenCommit() {
     Note("nothing staged to commit", true);
     return;
   }
-  OpenNameBox(CommitMode::Commit, "", "Commit", "");
+  // A stopped cherry-pick or revert has the message it meant to use waiting in
+  // MERGE_MSG. The box takes its first line; C takes all of it.
+  const std::string pending = repo_.PendingMessage();
+  OpenNameBox(CommitMode::Commit, "", "Commit", pending.substr(0, pending.find('\n')));
 }
 
 void App::OpenAmend() {
@@ -3340,6 +3343,73 @@ void App::PerformDeleteBranch() {
   const git::OpResult result = repo_.DeleteBranch(ref_target_);
   history_loaded_ = false;
   Apply(result);
+  EnsureHistory();
+}
+
+void App::MarkSelectedCommit() {
+  const std::vector<model::Commit>& commits = VisibleHistory().commits;
+  if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(commits.size())) {
+    Note("no commit selected", false);
+    return;
+  }
+  const std::string& id = commits[static_cast<std::size_t>(commit_selected_)].id;
+  const auto found = std::find(marked_commits_.begin(), marked_commits_.end(), id);
+  if (found != marked_commits_.end()) {
+    marked_commits_.erase(found);
+  } else {
+    marked_commits_.push_back(id);
+  }
+  Note(std::to_string(marked_commits_.size()) + " marked — " +
+           keys_.KeyFor(ui::Action::PasteCommits) + " picks them onto HEAD",
+       false);
+}
+
+void App::PasteMarkedCommits() {
+  if (marked_commits_.empty()) {
+    Note("nothing marked — mark commits with " + keys_.KeyFor(ui::Action::MarkCommit), false);
+    return;
+  }
+  // Oldest first, whatever order they were marked in, so a run of commits
+  // lands the way it was written. The list is newest first, so that is the
+  // reverse of where they sit in it; a commit not in the list keeps its place
+  // at the front.
+  const std::vector<model::Commit>& commits = history_.commits;
+  const auto position = [&commits](const std::string& id) {
+    for (std::size_t i = 0; i < commits.size(); ++i) {
+      if (commits[i].id == id) {
+        return i;
+      }
+    }
+    return commits.size();
+  };
+  std::vector<std::string> ids = marked_commits_;
+  std::stable_sort(ids.begin(), ids.end(), [&position](const std::string& a, const std::string& b) {
+    return position(a) > position(b);
+  });
+  std::size_t applied = 0;
+  const git::OpResult result = repo_.CherryPick(ids, &applied);
+  // What got in is unmarked; what did not stays marked, so after a conflict
+  // the rest is one more keystroke once the first is resolved.
+  for (std::size_t i = 0; i < applied; ++i) {
+    marked_commits_.erase(std::find(marked_commits_.begin(), marked_commits_.end(), ids[i]));
+  }
+  history_loaded_ = false;
+  Apply(result);
+  operation_ = repo_.ReadOperation();
+  EnsureHistory();
+}
+
+void App::RevertSelectedCommit() {
+  const std::vector<model::Commit>& commits = VisibleHistory().commits;
+  if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(commits.size())) {
+    Note("no commit selected", false);
+    return;
+  }
+  const git::OpResult result =
+      repo_.Revert(commits[static_cast<std::size_t>(commit_selected_)].id);
+  history_loaded_ = false;
+  Apply(result);
+  operation_ = repo_.ReadOperation();
   EnsureHistory();
 }
 
@@ -3602,6 +3672,15 @@ bool App::Perform(ui::Action action) {
       return true;
     case ui::Action::Tag:
       TagSelectedCommit();
+      return true;
+    case ui::Action::MarkCommit:
+      MarkSelectedCommit();
+      return true;
+    case ui::Action::PasteCommits:
+      PasteMarkedCommits();
+      return true;
+    case ui::Action::RevertCommit:
+      RevertSelectedCommit();
       return true;
     case ui::Action::Prune:
       RequestPrune();
@@ -4179,7 +4258,7 @@ int App::Run() {
         }
         panel = ui::Panel("COMMITS",
                           ui::CommitList(VisibleHistory(), commit_selected_, width,
-                                         &row_boxes_)) |
+                                         &row_boxes_, &marked_commits_)) |
                 flex;
         break;
       }

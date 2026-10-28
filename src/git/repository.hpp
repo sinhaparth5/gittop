@@ -143,6 +143,8 @@ class Repository {
   // HEAD's summary, keeps its body and author, and takes in whatever is staged.
   std::vector<std::string> EditorCommand() const;
   std::string PrepareCommitMessage() const;
+  // MERGE_MSG: what a stopped merge, cherry-pick or revert means to commit as.
+  std::string PendingMessage() const;
   OpResult CommitEditedMessage();
   std::string HeadSummary(bool* pushed) const;  // empty with no commits yet
   OpResult Amend(const std::string& summary);
@@ -157,6 +159,12 @@ class Repository {
   // same short name tracking it, which is `git checkout -b topic --track
   // origin/topic`. SAFE, so an uncommitted change in the way stops it.
   OpResult Checkout(const model::Branch& branch);
+
+  // In git/pick.cpp. Each commits what it applied, keeping a picked commit's
+  // author; a conflict stops it with the operation on disk for the pane to
+  // finish, and `applied` says how many of `ids` got in before that.
+  OpResult CherryPick(const std::vector<std::string>& ids, std::size_t* applied);
+  OpResult Revert(const std::string& id);
 
   // In git/refs.cpp. `from` is anything rev-parse takes. Nothing here is
   // forced: a name that is taken is refused rather than overwritten.

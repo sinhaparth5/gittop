@@ -13,8 +13,10 @@ namespace gittop::ui {
 // after the lane gutter, the ref badges and the fixed right-hand columns. Every
 // one of those is a known width, so the budget is arithmetic rather than a guess
 // — which is what lets the summary end in an ellipsis instead of just stopping.
+// `marked` holds the ids marked for a cherry-pick, drawn with a check.
 ftxui::Element CommitList(const model::HistorySnapshot& history, int selected, int width,
-                          std::vector<ftxui::Box>* rows = nullptr);
+                          std::vector<ftxui::Box>* rows = nullptr,
+                          const std::vector<std::string>* marked = nullptr);
 
 // Trailing-window heatmap, one column per week and one row per weekday, laid
 // out the way a contribution graph is so it reads without a legend lesson.

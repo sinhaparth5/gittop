@@ -100,6 +100,9 @@ const NamedAction kActionNames[] = {
     {"rename_branch", Action::RenameBranch},
     {"delete_branch", Action::DeleteBranch},
     {"tag", Action::Tag},
+    {"mark_commit", Action::MarkCommit},
+    {"paste_commits", Action::PasteCommits},
+    {"revert_commit", Action::RevertCommit},
     {"ci_ref", Action::CiRef},
     {"pull_create", Action::PullCreate},
 
@@ -326,6 +329,11 @@ Keymap::Keymap() {
   Bind(Action::MoveDown, Scope::History, "J");
   Bind(Action::MoveUp, Scope::History, "K");
   Bind(Action::Tag, Scope::History, "T");
+  // Copy and paste, which is what a cherry-pick is from a list: `c` marks, `V`
+  // puts the marked commits on HEAD. `t` is lazygit's revert key.
+  Bind(Action::MarkCommit, Scope::History, "c");
+  Bind(Action::PasteCommits, Scope::History, "V");
+  Bind(Action::RevertCommit, Scope::History, "t");
 
   // Scoped for the same reason, from the other direction: the ref picker only
   // means anything beside a run list, and `b` is a letter worth leaving free

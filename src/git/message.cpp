@@ -69,11 +69,24 @@ std::vector<std::string> Repository::EditorCommand() const {
   return {std::istream_iterator<std::string>(words), std::istream_iterator<std::string>()};
 }
 
+std::string Repository::PendingMessage() const {
+  git_buf message = GIT_BUF_INIT;
+  std::string out;
+  if (git_repository_message(&message, const_cast<git_repository*>(repo_.get())) == 0) {
+    out = message.ptr;
+  }
+  git_buf_dispose(&message);
+  return out;
+}
+
 std::string Repository::PrepareCommitMessage() const {
   const std::filesystem::path path = MessagePath(repo_.get());
-  std::ofstream(path) << "\n"
-                         "# Write the message for this commit above. Lines starting with '#'\n"
-                         "# are ignored, and an empty message aborts the commit.\n";
+  // A stopped merge, cherry-pick or revert has already written the message it
+  // wants in MERGE_MSG, and it starts the file rather than an empty line.
+  const std::string pending = PendingMessage();
+  std::ofstream(path) << (pending.empty() ? "\n" : pending)
+                      << "# Write the message for this commit above. Lines starting with '#'\n"
+                      << "# are ignored, and an empty message aborts the commit.\n";
   return path.string();
 }
 
