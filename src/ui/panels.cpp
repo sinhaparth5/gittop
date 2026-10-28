@@ -943,9 +943,11 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(KeyChip(keys, Action::SignIn, "sign in"));
     chips.push_back(KeyChip(keys, Action::Theme, "theme"));
   } else if (view == View::Branches) {
-    chips.push_back(Chip(move, "move"));
+    // No move chip, for the history view's reason: five actions is the room.
     chips.push_back(KeyChip(keys, Action::Open, "checkout"));
-    chips.push_back(KeyChip(keys, Action::Fetch, "fetch"));
+    chips.push_back(KeyChip(keys, Action::NewBranch, "new"));
+    chips.push_back(KeyChip(keys, Action::RenameBranch, "rename"));
+    chips.push_back(KeyChip(keys, Action::DeleteBranch, "delete"));
     // The only place the prune key is offered, and the only place its effect is
     // visible: a branch reading "gone" here is what it removes the ref for.
     chips.push_back(KeyChip(keys, Action::Prune, "prune"));
@@ -1189,6 +1191,9 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::Pull, "pull, fast-forward only"),
       line(Action::Push, "push this branch, after a confirm"),
       line(Action::Prune, "drop refs for branches the remote lost"),
+      pair(Action::NewBranch, Action::RenameBranch, "branches: new from / rename the selection"),
+      line(Action::DeleteBranch, "branches: delete it, here or on the remote"),
+      line(Action::Tag, "history: tag the commit, then offer to push it"),
       line(Action::CiRef, "CI view: show runs for another ref"),
       line(Action::PullCreate, "pulls view: open one, after a confirm"),
       line(Action::NextRemote, "switch to the next remote"),

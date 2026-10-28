@@ -132,6 +132,13 @@ TransferResult Push(const std::string& repo_path, const std::string& remote_name
                     bool set_upstream, const Credentials& credentials,
                     std::shared_ptr<ProgressSink> sink, const std::atomic<bool>* cancel);
 
+// Pushes one refspec as it is — a tag, or `:refs/heads/x` to delete a branch on
+// the remote — never with force. `what` is the summary's verb phrase.
+TransferResult PushRef(const std::string& repo_path, const std::string& remote_name,
+                       const std::string& refspec, const std::string& what,
+                       const Credentials& credentials, std::shared_ptr<ProgressSink> sink,
+                       const std::atomic<bool>* cancel);
+
 // True when the binary was built with a transport that can reach this URL.
 // Checked before a transfer rather than after, so an ssh remote on a build
 // without ssh support says so instead of failing deep inside libgit2.

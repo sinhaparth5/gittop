@@ -74,6 +74,10 @@ enum class Action {
   StashDrop,
 
   Prune,
+  NewBranch,
+  RenameBranch,
+  DeleteBranch,
+  Tag,
   CiRef,
   PullCreate,
 
