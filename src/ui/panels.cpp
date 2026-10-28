@@ -481,6 +481,25 @@ std::string ViewName(View view) {
   return "?";
 }
 
+Element TooSmall(int width, int height) {
+  const Theme& t = theme();
+  const auto line = [width](const std::string& words, ftxui::Color ink) {
+    return hbox({filler(), text(Truncate(words, width)) | color(ink), filler()});
+  };
+  const std::string have = std::to_string(width) + "x" + std::to_string(height);
+  const std::string need = std::to_string(kMinWidth) + "x" + std::to_string(kMinHeight);
+  // The size first: on a one-line strip it is the line that survives, and it is
+  // the half of the message that says what to do about it.
+  Elements rows{line(have + ", needs " + need, t.text)};
+  if (height >= 2) {
+    rows.insert(rows.begin(), line("terminal too small", t.warning));
+  }
+  if (height >= 3) {
+    rows.push_back(line("keys still work; resize to see", t.text_faint));
+  }
+  return vbox({filler(), vbox(std::move(rows)), filler()}) | bgcolor(t.bg);
+}
+
 Element TabBar(View active, int width, std::vector<Box>* tabs) {
   const Theme& t = theme();
   const std::vector<View>& views = AllViews();
@@ -530,7 +549,10 @@ Element TabBar(View active, int width, std::vector<Box>* tabs) {
   // of them is cut: every cell of padding is worth less than the second half of
   // a word. With the ten built-in tabs these come out at 129, 119, 109, 99, 89,
   // 79 and 69 columns, so full names now hold on forty columns further down than
-  // they did. The 89-column tier gives up the space after the digit, which
+  // they did. kMinWidth is 80, so the 79-column tier is the narrowest anyone
+  // sees with ten tabs; the 69 tier and the digits-only fallback below are kept
+  // for a floor that is lowered later, and below the floor TooSmall is drawn
+  // instead of any of this. The 89-column tier gives up the space after the digit, which
   // leaves the active tab's accent chip looking slightly lopsided — a cheap
   // trade against losing half of every label.
   const Tier kTiers[] = {

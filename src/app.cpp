@@ -3741,6 +3741,18 @@ int App::Run() {
 
   auto root = main_view | Modal(overlay, &overlay_open_);
 
+  // Outside the modal so it outranks the overlays too: they are the first thing
+  // to become unreadable. The hit boxes are cleared because nothing they
+  // describe is on screen, and a click should not land on a row it cannot see.
+  root = Renderer(root, [this, root, &screen] {
+    if (screen.dimx() < ui::kMinWidth || screen.dimy() < ui::kMinHeight) {
+      tab_boxes_.clear();
+      row_boxes_.clear();
+      return ui::TooSmall(screen.dimx(), screen.dimy());
+    }
+    return root->Render();
+  });
+
   // This handler is attached outside the modal wrapper on purpose.
   // Container::Stacked delivers events to its focused child, and the overlay
   // holds the only focusable component in the tree (the commit Input), so a
