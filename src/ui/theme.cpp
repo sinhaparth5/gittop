@@ -25,12 +25,15 @@ constexpr Rgb C(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
 const Palette kPalettes[] = {
     // A mainframe console: white on true black, one ink in a few weights, and
     // the accent is white itself, so focus is shown by inverting a bar rather
-    // than by tinting it. Red is the only hue, kept for conflicts and danger,
-    // because the one thing a monochrome screen must still do is raise an alarm.
+    // than by tinting it. Red is the only strong hue, kept for conflicts and
+    // danger, because the one thing a near-monochrome screen must still do is
+    // raise an alarm. The rest carry a faint tint (mint, amber, slate) so the
+    // statuses can be told apart at a glance rather than by weight alone.
     //
-    // The four statuses step down in lightness (white, light, mid grey, red),
-    // and that is what separates them: worst-case ΔE 20.8 across normal vision,
+    // The four statuses still step down in lightness (white, light, mid, red),
+    // and that is what separates them: worst-case ΔE 20.1 across normal vision,
     // deuteranopia, protanopia and tritanopia, where the classic palette is 0.8.
+    // The tints were chosen to cost almost none of the 20.8 the greys had.
     // text_faint is 4.9:1 on black, which is the floor for words.
     {
         .name = "mainframe",
@@ -45,12 +48,12 @@ const Palette kPalettes[] = {
         .text_dim = C(0xb4, 0xb4, 0xb4),
         .text_faint = C(0x7a, 0x7a, 0x7a),
         .accent = C(0xff, 0xff, 0xff),
-        .green = C(0xff, 0xff, 0xff),   // staged, success, added lines
-        .yellow = C(0xc4, 0xc4, 0xc4),  // unstaged, warning
-        .blue = C(0x7c, 0x7c, 0x7c),    // untracked
+        .green = C(0xd2, 0xf5, 0xd6),   // staged, success, added lines
+        .yellow = C(0xdd, 0xc5, 0x90),  // unstaged, warning
+        .blue = C(0x6a, 0x7e, 0xa3),    // untracked
         .red = C(0xff, 0x5f, 0x56),     // conflicted, danger, removed lines
-        .purple = C(0x9e, 0x9e, 0x9e),
-        .cyan = C(0xd8, 0xd8, 0xd8),
+        .purple = C(0xa5, 0x96, 0xc4),
+        .cyan = C(0xb8, 0xdc, 0xe0),
     },
     // Deep, slightly blue ground with three surface steps above it. Three steps
     // is enough to separate panel from selection from chip without any of them

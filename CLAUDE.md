@@ -829,8 +829,10 @@ published colours and retuning them would make them not those themes — and git
 because a status is drawn as a **glyph and a letter** as well as a colour. That rule is load-bearing,
 not decorative; it is why `Decorate()` returns three things.
 
-`mainframe`, the default since #33, is white on black with red alone for conflicts and danger, and
-it passes by lightness rather than hue: worst case ΔE 20.8 across the same four visions. Its accent
+`mainframe`, the default since #33, is white on black with red the only strong hue, for conflicts and
+danger; the other roles carry a faint mint, amber or slate tint so they read apart at a glance. It
+passes by lightness rather than hue: worst case ΔE 20.1 across the same four visions, and the tints
+were picked to keep that within a point of the 20.8 the plain greys had. Its accent
 is white, the same as its text, which is why `Panel()` shows focus by inverting the title rather
 than by tinting it — a focus cue that only works through colour would vanish here.
 
