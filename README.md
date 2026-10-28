@@ -466,7 +466,8 @@ cmake --build build -j
 ```
 
 The first configure downloads the fetched dependencies, so it takes a few minutes. After that,
-builds are quick.
+builds are quick. `ctest --test-dir build` runs the unit tests; configure with
+`-DGITTOP_BUILD_TESTS=OFF` to skip building them.
 
 libcurl is the one dependency taken from the system rather than built here, because the
 distribution's copy comes configured for the platform's CA bundle and TLS backend. A vendored one

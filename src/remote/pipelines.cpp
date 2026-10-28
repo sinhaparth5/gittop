@@ -11,6 +11,74 @@
 #include "remote/api.hpp"
 
 namespace gittop::remote {
+
+// GitHub answers with two fields. `status` says whether the run is alive, and
+// only once it is "completed" does `conclusion` say how it ended — so a run
+// that is still going has a null conclusion, and reading conclusion alone would
+// report every in-flight run as unknown.
+model::RunStatus GitHubStatus(const std::string& status, const std::string& conclusion) {
+  if (status != "completed") {
+    if (status == "in_progress") {
+      return model::RunStatus::Running;
+    }
+    if (status == "waiting" || status == "action_required") {
+      return model::RunStatus::Manual;
+    }
+    // queued, requested, pending, and anything a future API version adds: all
+    // of them mean the run has not started, which is what Queued says.
+    return model::RunStatus::Queued;
+  }
+
+  if (conclusion == "success") {
+    return model::RunStatus::Success;
+  }
+  if (conclusion == "failure" || conclusion == "timed_out" || conclusion == "startup_failure") {
+    return model::RunStatus::Failed;
+  }
+  if (conclusion == "cancelled") {
+    return model::RunStatus::Cancelled;
+  }
+  if (conclusion == "action_required") {
+    return model::RunStatus::Manual;
+  }
+  // "neutral" is GitHub's "finished without passing or failing", and it greys
+  // the dot exactly as it does for skipped. Folding the two keeps the panel
+  // honest about what it can actually distinguish.
+  if (conclusion == "skipped" || conclusion == "neutral" || conclusion == "stale") {
+    return model::RunStatus::Skipped;
+  }
+  return model::RunStatus::Unknown;
+}
+
+// GitLab answers with one field and more values, none of which need a second
+// field to disambiguate.
+model::RunStatus GitLabStatus(const std::string& status) {
+  if (status == "running") {
+    return model::RunStatus::Running;
+  }
+  if (status == "success") {
+    return model::RunStatus::Success;
+  }
+  if (status == "failed") {
+    return model::RunStatus::Failed;
+  }
+  // One 'l'. GitLab spells it the American way and always has.
+  if (status == "canceled" || status == "canceling") {
+    return model::RunStatus::Cancelled;
+  }
+  if (status == "skipped") {
+    return model::RunStatus::Skipped;
+  }
+  if (status == "manual") {
+    return model::RunStatus::Manual;
+  }
+  if (status == "created" || status == "waiting_for_resource" || status == "preparing" ||
+      status == "pending" || status == "scheduled") {
+    return model::RunStatus::Queued;
+  }
+  return model::RunStatus::Unknown;
+}
+
 namespace {
 
 using model::FetchState;
@@ -23,73 +91,6 @@ using model::RateLimit;
 using model::RemoteRef;
 using model::RunStatus;
 using json = nlohmann::json;
-
-// GitHub answers with two fields. `status` says whether the run is alive, and
-// only once it is "completed" does `conclusion` say how it ended — so a run
-// that is still going has a null conclusion, and reading conclusion alone would
-// report every in-flight run as unknown.
-RunStatus GitHubStatus(const std::string& status, const std::string& conclusion) {
-  if (status != "completed") {
-    if (status == "in_progress") {
-      return RunStatus::Running;
-    }
-    if (status == "waiting" || status == "action_required") {
-      return RunStatus::Manual;
-    }
-    // queued, requested, pending, and anything a future API version adds: all
-    // of them mean the run has not started, which is what Queued says.
-    return RunStatus::Queued;
-  }
-
-  if (conclusion == "success") {
-    return RunStatus::Success;
-  }
-  if (conclusion == "failure" || conclusion == "timed_out" || conclusion == "startup_failure") {
-    return RunStatus::Failed;
-  }
-  if (conclusion == "cancelled") {
-    return RunStatus::Cancelled;
-  }
-  if (conclusion == "action_required") {
-    return RunStatus::Manual;
-  }
-  // "neutral" is GitHub's "finished without passing or failing", and it greys
-  // the dot exactly as it does for skipped. Folding the two keeps the panel
-  // honest about what it can actually distinguish.
-  if (conclusion == "skipped" || conclusion == "neutral" || conclusion == "stale") {
-    return RunStatus::Skipped;
-  }
-  return RunStatus::Unknown;
-}
-
-// GitLab answers with one field and more values, none of which need a second
-// field to disambiguate.
-RunStatus GitLabStatus(const std::string& status) {
-  if (status == "running") {
-    return RunStatus::Running;
-  }
-  if (status == "success") {
-    return RunStatus::Success;
-  }
-  if (status == "failed") {
-    return RunStatus::Failed;
-  }
-  // One 'l'. GitLab spells it the American way and always has.
-  if (status == "canceled" || status == "canceling") {
-    return RunStatus::Cancelled;
-  }
-  if (status == "skipped") {
-    return RunStatus::Skipped;
-  }
-  if (status == "manual") {
-    return RunStatus::Manual;
-  }
-  if (status == "created" || status == "waiting_for_resource" || status == "preparing" ||
-      status == "pending" || status == "scheduled") {
-    return RunStatus::Queued;
-  }
-  return RunStatus::Unknown;
-}
 
 // First line only. A commit message can be a page long and the run list gives
 // it one row.

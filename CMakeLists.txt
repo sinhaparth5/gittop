@@ -155,14 +155,15 @@ if(WIN32)
   set(GITTOP_VERSION_PATCH ${PROJECT_VERSION_PATCH})
   set(GITTOP_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/gittop.ico")
   configure_file(packaging/gittop.rc.in "${CMAKE_CURRENT_BINARY_DIR}/gittop.rc" @ONLY)
-  list(APPEND GITTOP_PLATFORM_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/gittop.rc")
+  set(GITTOP_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/gittop.rc")
 else()
   set(GITTOP_PLATFORM_SOURCE src/platform/posix.cpp)
 endif()
 
-add_executable(gittop
+# Everything but main() is a library, so the test binary links exactly the code
+# that ships rather than a second list of sources that can drift from this one.
+add_library(gittop_core STATIC
   ${GITTOP_PLATFORM_SOURCE}
-  src/main.cpp
   src/app.cpp
   src/config/config.cpp
   src/git/askpass.cpp
@@ -195,17 +196,21 @@ add_executable(gittop
   src/ui/theme.cpp
   src/ui/widgets.cpp
 )
+# The .rc belongs to the executable: a resource in a static library is never
+# linked into anything.
+add_executable(gittop src/main.cpp ${GITTOP_RESOURCE})
+target_link_libraries(gittop PRIVATE gittop_core)
 
 # libgit2package only exports its include path for installed consumers, so an
 # in-tree build has to point at the source headers itself.
-target_include_directories(gittop PRIVATE
+target_include_directories(gittop_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${libgit2_SOURCE_DIR}/include
 )
 
 find_package(Threads REQUIRED)
 
-target_link_libraries(gittop PRIVATE
+target_link_libraries(gittop_core PUBLIC
   ftxui::component
   ftxui::dom
   ftxui::screen
@@ -221,7 +226,7 @@ if(MSVC)
   # /utf-8 is not optional: the sources contain UTF-8 string literals — every
   # glyph in the unicode set — and without it MSVC reads them in the machine's
   # ANSI code page and produces mojibake with no diagnostic.
-  target_compile_options(gittop PRIVATE /W4 /utf-8 /permissive-)
+  target_compile_options(gittop_core PUBLIC /W4 /utf-8 /permissive-)
 
   # _CRT_SECURE_NO_WARNINGS silences C4996 on std::getenv, which gittop calls in
   # seven files to read TERM, COLORTERM, XDG_*, HOME and the token variables.
@@ -234,12 +239,12 @@ if(MSVC)
   # thread-safety concern behind it is real but is about *setting* the
   # environment while reading it, which gittop does only from the UI thread with
   # no transfer in flight (see platform::SetEnv).
-  target_compile_definitions(gittop PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_definitions(gittop_core PUBLIC _CRT_SECURE_NO_WARNINGS)
 else()
-  target_compile_options(gittop PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(gittop_core PUBLIC -Wall -Wextra -Wpedantic)
 endif()
 
-target_compile_definitions(gittop PRIVATE GITTOP_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(gittop_core PUBLIC GITTOP_VERSION="${PROJECT_VERSION}")
 
 if(WIN32)
   # WIN32_LEAN_AND_MEAN and NOMINMAX are set on the target rather than at the top
@@ -251,7 +256,7 @@ if(WIN32)
   # _WIN32_WINNT 0x0601 is Windows 7, which is the floor for CancelIoEx and
   # FILE_FLAG_FIRST_PIPE_INSTANCE. gittop needs a far newer console than that to
   # be usable, but there is no reason for the headers to be the thing that says so.
-  target_compile_definitions(gittop PRIVATE
+  target_compile_definitions(gittop_core PUBLIC
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     _WIN32_WINNT=0x0601)
@@ -261,8 +266,45 @@ if(WIN32)
   # ws2_32/crypt32/bcrypt/winhttp/rpcrt4/secur32 are libgit2's and libcurl's,
   # and are listed here because a static build of either does not carry its own
   # dependencies with it.
-  target_link_libraries(gittop PRIVATE
+  target_link_libraries(gittop_core PUBLIC
     advapi32 shell32 ws2_32 crypt32 bcrypt winhttp rpcrt4 secur32 ole32 user32)
+endif()
+
+# ----------------------------------------------------------------- tests
+# `ctest --test-dir build` after a build. The release workflow runs it before
+# packaging, which makes it the first thing anywhere that checks a behavioural
+# change rather than only that the build compiles.
+option(GITTOP_BUILD_TESTS "Build the unit tests" ON)
+if(GITTOP_BUILD_TESTS)
+  # Header only, so its own CMakeLists is skipped (SOURCE_SUBDIR names one that
+  # does not exist): it asks for a CMake older than CMake 4 accepts, and it
+  # would bring install rules this project would then have to exclude.
+  FetchContent_Declare(doctest
+    URL      https://github.com/doctest/doctest/archive/refs/tags/v2.4.11.tar.gz
+    URL_HASH SHA256=632ed2c05a7f53fa961381497bf8069093f0d6628c5f26286161fbd32a560186
+    SOURCE_SUBDIR none)
+  FetchContent_MakeAvailable(doctest)
+
+  enable_testing()
+  add_executable(gittop_tests
+    tests/main.cpp
+    tests/config_test.cpp
+    tests/graph_test.cpp
+    tests/pipelines_test.cpp
+    tests/provider_test.cpp
+    tests/repository_test.cpp
+    tests/widgets_test.cpp
+  )
+  target_include_directories(gittop_tests PRIVATE ${doctest_SOURCE_DIR})
+  target_link_libraries(gittop_tests PRIVATE gittop_core)
+  add_test(NAME unit COMMAND gittop_tests)
+
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_FOUND)
+    add_test(NAME glyph_literals
+             COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/tests/glyph_literals.py
+                     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui)
+  endif()
 endif()
 
 # ---------------------------------------------------------------- install
