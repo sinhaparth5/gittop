@@ -149,6 +149,9 @@ struct GlyphSet {
 
   const char* bar_full;
   const char* bar_track;
+  // One cell of the striped wordmark: ink across the top half and a gap below,
+  // so a column of them reads as the horizontal bars of a mainframe logo.
+  const char* stripe;
 };
 
 const GlyphSet& glyphs();

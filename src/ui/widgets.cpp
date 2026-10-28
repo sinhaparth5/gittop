@@ -67,7 +67,7 @@ class GradientBarNode : public Node {
   Rgb trough_;
 };
 
-PanelBorder g_border = PanelBorder::Rounded;
+PanelBorder g_border = PanelBorder::Light;
 bool g_reduced_motion = false;
 float g_overlay_reveal = 1.0F;
 
@@ -199,7 +199,15 @@ Element Panel(const std::string& title, Element content, PanelStyle style) {
   const Swatch edge = style.alarm ? t.danger : (style.focused ? t.border_focus : t.border);
   const Swatch ink = style.alarm ? t.danger : (style.focused ? t.accent : t.text_dim);
 
-  Elements bar{text(" "), text(title) | bold | color(ink)};
+  // The panel holding the cursor, or raising an alarm, carries its title as an
+  // inverted bar — the console's way of saying "this one" — so focus survives a
+  // palette where the accent is the same white as the text. The rest are plain.
+  Elements bar{text(" ")};
+  if (style.focused || style.alarm) {
+    bar.push_back(text(" " + title + " ") | bold | color(t.bg) | bgcolor(ink));
+  } else {
+    bar.push_back(text(title) | bold | color(ink));
+  }
   if (!style.note.empty()) {
     bar.push_back(text("  "));
     bar.push_back(text(style.note) | color(t.text_faint));
