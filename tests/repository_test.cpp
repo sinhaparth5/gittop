@@ -186,3 +186,24 @@ TEST_CASE("single added and removed lines stage on their own") {
   REQUIRE(repo->ApplyHunk(Pick(*repo, DiffSource::Staged, 0, 3)).ok);
   CHECK(IndexedReadme(dir) == "b\nc\n");
 }
+
+TEST_CASE("blame follows a file across a rename") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  std::ofstream(dir.path() / "README") << "hello\nsecond\n";
+  REQUIRE(repo->StageAll().ok);
+  REQUIRE(repo->Commit("second line").ok);
+
+  std::filesystem::rename(dir.path() / "README", dir.path() / "NOTES");
+  REQUIRE(repo->StageAll().ok);
+  REQUIRE(repo->Commit("rename").ok);
+
+  const gittop::model::BlameSnapshot blame = repo->ReadBlame("NOTES");
+  REQUIRE(blame.error.empty());
+  REQUIRE(blame.lines.size() == 2);
+  CHECK(blame.lines[0].summary == "first");
+  CHECK(blame.lines[0].first);
+  CHECK(blame.lines[1].summary == "second line");
+  CHECK(blame.lines[1].text == "second");
+  CHECK(blame.lines[1].author == "Test");
+}

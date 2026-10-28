@@ -89,6 +89,8 @@ std::string TabLabel(View view) {
       return "PULLS";
     case View::Settings:
       return "SETTINGS";
+    case View::Blame:
+      return "BLAME";
   }
   return "?";
 }
@@ -919,6 +921,11 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
                          "file"));
     chips.push_back(KeyChip(keys, Action::DiffStage, "stage hunk/line"));
     chips.push_back(KeyChip(keys, Action::DiffSwitch, "staged"));
+    chips.push_back(KeyChip(keys, Action::Blame, "blame"));
+  } else if (view == View::Blame) {
+    chips.push_back(Chip(move, "move"));
+    chips.push_back(KeyChip(keys, Action::Open, "commit"));
+    chips.push_back(KeyChip(keys, Action::Filter, "filter"));
   } else if (view == View::Settings) {
     chips.push_back(Chip(move, "move"));
     // "change" rather than "open": every row on this page does something to the
@@ -1151,6 +1158,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::DiffStage, "(un)stage the hunk or line under the cursor"),
       line(Action::DiffSwitch, "swap between unstaged and staged"),
       pair(Action::DiffPrevFile, Action::DiffNextFile, "previous / next file"),
+      line(Action::Blame, "blame the file, from status or the diff"),
       text(""),
       heading("STASHES"),
       line(Action::StashSave, "stash the whole working tree"),

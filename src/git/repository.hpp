@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "model/blame.hpp"
 #include "model/diff.hpp"
 #include "model/history.hpp"
 #include "model/operation.hpp"
@@ -83,6 +84,11 @@ class Repository {
   // vendored dependency landing in one commit is a diff no terminal is going to
   // scroll, and building the whole of it costs the same as showing it.
   model::DiffSnapshot ReadDiff(const DiffRequest& request, std::size_t max_lines) const;
+
+  // Pure, and defined in git/blame.cpp. HEAD's copy of `path`, each line with
+  // the commit that last touched it. A full history walk on a long-lived file,
+  // so App reads it on a worker with a Repository of its own.
+  model::BlameSnapshot ReadBlame(const std::string& path) const;
 
   // Pure, and defined in git/stash.cpp. Cheap enough to read on every switch to
   // the view: the stash reflog is a handful of entries, not a revwalk.
