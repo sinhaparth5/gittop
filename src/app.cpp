@@ -2988,20 +2988,39 @@ void App::Reload() {
     return;
   }
 
+  ReloadRepository();
+  Note("re-read the repository", false);
+}
+
+void App::ReloadRepository() {
   Refresh();
   history_loaded_ = false;
   diff_loaded_ = false;
   stashes_loaded_ = false;
-  if (view_ == ui::View::Diff) {
-    EnsureDiff();
-  } else if (view_ == ui::View::Stashes) {
-    EnsureStashes();
-  } else if (view_ == ui::View::Blame) {
-    StartBlame(blame_.path);
-  } else if (view_ != ui::View::Status) {
-    EnsureHistory();
+  switch (view_) {
+    case ui::View::Diff:
+      EnsureDiff();
+      break;
+    case ui::View::Stashes:
+      EnsureStashes();
+      break;
+    case ui::View::Blame:
+      StartBlame(blame_.path);
+      break;
+    case ui::View::History:
+    case ui::View::Branches:
+    case ui::View::Graph:
+      EnsureHistory();
+      break;
+    // The rest read nothing a working-tree change touches, and the next switch
+    // to a history view reads it then.
+    case ui::View::Status:
+    case ui::View::Remote:
+    case ui::View::Pipelines:
+    case ui::View::Pulls:
+    case ui::View::Settings:
+      break;
   }
-  Note("re-read the repository", false);
 }
 
 const model::StatusEntry* App::Selected() const {
@@ -3956,6 +3975,7 @@ const Event kTransferDone = Event::Special("gittop:transfer-done");
 const Event kDeviceCodeReady = Event::Special("gittop:device-code-ready");
 const Event kPollReady = Event::Special("gittop:poll-ready");
 const Event kTick = Event::Special("gittop:tick");
+const Event kWatched = Event::Special("gittop:watched");
 const Event kBlameReady = Event::Special("gittop:blame-ready");
 
 int App::Run() {
@@ -4479,6 +4499,12 @@ int App::Run() {
     }
     // One a second while the CI view is open. It repaints the countdown and
     // asks whether the interval is up; the answer is usually no.
+    // The working tree or .git changed, and has had a moment to settle.
+    if (event == kWatched) {
+      ReloadRepository();
+      return true;
+    }
+
     if (event == kTick) {
       MaybeAutoRefresh();
       return true;
@@ -4859,6 +4885,20 @@ int App::Run() {
   std::fputs("\x1b[?2004h", stdout);
   std::fflush(stdout);
 
+  // The watcher's filter asks libgit2 about ignore rules from the watcher's
+  // thread, so it gets a repository of its own rather than borrowing repo_.
+  if (config_.GetBool("general.auto_refresh", true)) {
+    std::string error;
+    std::optional<git::Repository> own = git::Repository::Discover(repo_.WorkdirPath(), &error);
+    if (own) {
+      auto filter = std::make_shared<git::Repository>(std::move(*own));
+      watcher_ = std::make_unique<platform::TreeWatcher>(
+          repo_.WorkdirPath(),
+          [filter](const std::string& rel) { return filter->IsWatchNoise(rel); },
+          [&screen] { screen.PostEvent(kWatched); });
+    }
+  }
+
   screen.Loop(root);
   suspend_ = nullptr;  // it holds the screen by reference
 
@@ -4869,6 +4909,7 @@ int App::Run() {
   // reference. A worker still in a ten-second timeout would otherwise post an
   // event into a destroyed screen on its way out.
   ticker_.Stop();
+  watcher_.reset();
   fetcher_.Shutdown();
   pipeline_fetcher_.Shutdown();
   job_fetcher_.Shutdown();

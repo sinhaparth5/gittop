@@ -321,6 +321,12 @@ constexpr const char* kTemplate = R"(# gittop configuration
 # token = "glpat-xxxxxxxxxxxxxxxxxxxx"
 # client_id = "xxxxxxxxxxxxxxxxxxxx"
 
+[general]
+# Re-reads the repository when a file in it changes, so a save in another
+# window shows without pressing `r`. Ignored paths and .git/objects are not
+# watched, so a build directory does not keep it busy.
+# auto_refresh = true
+
 [pipelines]
 # The CI view re-reads runs on a timer while it is the view on screen, and only
 # when there is a token: sixty anonymous requests an hour does not survive a

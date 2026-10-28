@@ -21,6 +21,7 @@
 #include "model/remote.hpp"
 #include "model/stash.hpp"
 #include "model/status.hpp"
+#include "platform/platform.hpp"
 #include "remote/fetcher.hpp"
 #include "remote/oauth.hpp"
 #include "remote/ticker.hpp"
@@ -142,6 +143,9 @@ class App {
   void SetView(ui::View view);
   void EnsureHistory();
   void Reload();
+  // The repository half of `r`, without the toast: re-reads the status and
+  // whatever the view on screen shows. What the file watcher calls.
+  void ReloadRepository();
 
   // Diffs sit on the same lazy terms as the history: read on the first switch
   // to the view and cached, thrown away by anything that could change one.
@@ -471,6 +475,11 @@ class App {
   remote::Fetcher<model::PipelineSnapshot> pipeline_fetcher_;
   remote::Fetcher<model::JobList> job_fetcher_;
   remote::Ticker ticker_;
+  // Refreshes the repository views when the working tree or .git changes, so
+  // a file saved in another window shows without `r`. Null when
+  // `[general] auto_refresh` is off or the platform has no watcher. Reset
+  // before the screen goes, for the ticker's reason.
+  std::unique_ptr<platform::TreeWatcher> watcher_;
 
   int pipeline_selected_ = 0;
   bool jobs_open_ = false;

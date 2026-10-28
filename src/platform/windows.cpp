@@ -10,13 +10,17 @@
 #include <io.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace gittop::platform {
@@ -762,5 +766,122 @@ std::string ReadSecretFrom(const std::string& endpoint) {
   ::CloseHandle(pipe);
   return secret;
 }
+
+struct TreeWatcher::Impl {
+  std::function<bool(const std::string&)> skip;
+  std::function<void()> changed;
+  HANDLE dir = INVALID_HANDLE_VALUE;
+  HANDLE ready = nullptr;  // signalled when a read completes
+  HANDLE stop = nullptr;   // manual-reset, set once by the destructor
+  std::thread thread;
+
+  // One recursive watch on the root: unlike inotify, the whole tree is one
+  // handle, so a skipped directory still reports and is dropped here instead.
+  void Run() {
+    using Clock = std::chrono::steady_clock;
+    alignas(DWORD) char buffer[16384];
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = ready;
+    bool pending = false;
+    Clock::time_point due;
+    while (true) {
+      ::ResetEvent(ready);
+      if (::ReadDirectoryChangesW(dir, buffer, sizeof(buffer), TRUE,
+                                  FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                                      FILE_NOTIFY_CHANGE_LAST_WRITE,
+                                  nullptr, &overlapped, nullptr) == 0) {
+        return;
+      }
+      while (true) {
+        DWORD timeout = INFINITE;
+        if (pending) {
+          timeout = static_cast<DWORD>(std::max<std::int64_t>(
+              0,
+              std::chrono::duration_cast<std::chrono::milliseconds>(due - Clock::now()).count()));
+        }
+        const HANDLE waits[] = {stop, ready};
+        const DWORD which = ::WaitForMultipleObjects(2, waits, FALSE, timeout);
+        if (which == WAIT_OBJECT_0 || which == WAIT_FAILED) {
+          ::CancelIo(dir);
+          // CancelIo only asks; the kernel may still be writing into `buffer`,
+          // which lives on this stack, until the cancellation lands.
+          DWORD ignored = 0;
+          ::GetOverlappedResult(dir, &overlapped, &ignored, TRUE);
+          return;
+        }
+        if (which == WAIT_TIMEOUT) {
+          pending = false;
+          changed();
+          continue;
+        }
+        break;  // `ready`: the read completed
+      }
+      DWORD got = 0;
+      if (::GetOverlappedResult(dir, &overlapped, &got, FALSE) == 0) {
+        return;
+      }
+      // Zero bytes means the buffer overflowed and the events are lost, which
+      // is a change as far as anyone here can tell.
+      bool relevant = got == 0;
+      for (DWORD at = 0; got != 0;) {
+        const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer + at);
+        std::string rel = Narrow(
+            std::wstring(info->FileName, info->FileNameLength / sizeof(wchar_t)));
+        std::replace(rel.begin(), rel.end(), '\\', '/');
+        if (!skip(rel)) {
+          relevant = true;
+        }
+        if (info->NextEntryOffset == 0) {
+          break;
+        }
+        at += info->NextEntryOffset;
+      }
+      // Due a fixed time after the first change, as on the other platform.
+      if (relevant && !pending) {
+        pending = true;
+        due = Clock::now() + std::chrono::milliseconds(kWatchSettleMs);
+      }
+    }
+  }
+};
+
+TreeWatcher::TreeWatcher(std::string root, std::function<bool(const std::string&)> skip,
+                         std::function<void()> changed)
+    : impl_(std::make_unique<Impl>()) {
+  impl_->skip = std::move(skip);
+  impl_->changed = std::move(changed);
+  impl_->dir = ::CreateFileW(Widen(root).c_str(), FILE_LIST_DIRECTORY,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+                             nullptr);
+  if (impl_->dir == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  impl_->ready = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  impl_->stop = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (impl_->ready == nullptr || impl_->stop == nullptr) {
+    return;
+  }
+  impl_->thread = std::thread([this] { impl_->Run(); });
+}
+
+TreeWatcher::~TreeWatcher() {
+  if (impl_->stop != nullptr) {
+    ::SetEvent(impl_->stop);
+  }
+  if (impl_->thread.joinable()) {
+    impl_->thread.join();
+  }
+  for (const HANDLE handle : {impl_->ready, impl_->stop}) {
+    if (handle != nullptr) {
+      ::CloseHandle(handle);
+    }
+  }
+  if (impl_->dir != INVALID_HANDLE_VALUE) {
+    ::CloseHandle(impl_->dir);
+  }
+}
+
+bool TreeWatcher::ok() const { return impl_->thread.joinable(); }
 
 }  // namespace gittop::platform

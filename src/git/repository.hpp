@@ -210,6 +210,13 @@ class Repository {
 
   std::string WorkdirPath() const;
 
+  // Whether a change at `rel` (relative to the workdir, '/'-separated, a
+  // trailing '/' for a directory) is noise to a file watcher: an ignored path,
+  // or the parts of .git that churn without changing anything on screen —
+  // objects, logs, and lock files, whose rename into place is the event that
+  // counts.
+  bool IsWatchNoise(const std::string& rel) const;
+
   // Configured remotes as (name, fetch URL), in libgit2's order. Parsing a URL
   // into a provider is remote/provider.cpp's job, not this file's: git has no
   // opinion about what is on the other end and neither does this wrapper.
