@@ -45,6 +45,13 @@ struct Branch {
   std::string upstream;
   bool is_head = false;
 
+  // A remote-tracking branch with no local branch tracking it. `name` is then
+  // the short remote form ("origin/topic") and every tracking field stays
+  // empty: ahead and behind of nothing is not zero. A remote branch that some
+  // local branch does track is not listed on its own — it is that row's
+  // upstream already.
+  bool remote = false;
+
   // `has_upstream` means the tracking ref resolved, which is the only case
   // where `ahead` and `behind` are counts of anything. `upstream_gone` is the
   // branch that still asks for an upstream in its config but whose tracking ref

@@ -894,6 +894,7 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
     chips.push_back(KeyChip(keys, Action::Theme, "theme"));
   } else if (view == View::Branches) {
     chips.push_back(Chip(move, "move"));
+    chips.push_back(KeyChip(keys, Action::Open, "checkout"));
     chips.push_back(KeyChip(keys, Action::Fetch, "fetch"));
     // The only place the prune key is offered, and the only place its effect is
     // visible: a branch reading "gone" here is what it removes the ref for.
@@ -1095,7 +1096,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       pair(Action::First, Action::Last, "first / last, or the ends of the graph"),
       pair(Action::PageUp, Action::PageDown, "move a screen at a time"),
       line(Action::Filter, "filter this list; esc clears it"),
-      line(Action::Open, "diff a file, a commit, jobs, PR detail"),
+      line(Action::Open, "diff, checkout a branch, jobs, PR detail"),
       text(""),
       heading("THE GRAPH"),
       pair(Action::PanLeft, Action::PanRight, "pan through time"),

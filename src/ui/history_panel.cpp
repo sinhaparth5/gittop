@@ -279,7 +279,7 @@ Element BranchList(const model::HistorySnapshot& history, int selected, int widt
     }
     return vbox({
         filler(),
-        hbox({filler(), text("no local branches") | color(t.text_faint), filler()}),
+        hbox({filler(), text("no branches") | color(t.text_faint), filler()}),
         filler(),
     });
   }
@@ -297,7 +297,11 @@ Element BranchList(const model::HistorySnapshot& history, int selected, int widt
     // Both counts padded to the same field whether or not they are present, so
     // the upstream name after them starts in the same column on every row.
     Elements tracking;
-    if (branch.upstream_gone) {
+    if (branch.remote) {
+      // Not "no upstream": that is advice to push, and this branch is the remote
+      // end already. Its ahead/behind is left blank rather than drawn as zero.
+      tracking.push_back(text(Fit("remote only", kTrackingCells)) | color(t.text_faint));
+    } else if (branch.upstream_gone) {
       // Deliberately not ahead/behind: there is nothing left to be ahead of, and
       // a count against a ref that describes a branch nobody can push to any
       // more reads as a fact about the remote when it is a fact about a stale

@@ -138,6 +138,7 @@ class App {
   // saying where they came from.
   void RequestRebase();
   void PerformRebase();
+  void CheckoutSelectedBranch();
   void OpenOperation();
   void RequestOperation(ConfirmKind kind);
   void PerformOperationContinue();

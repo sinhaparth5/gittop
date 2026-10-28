@@ -2725,6 +2725,27 @@ void App::PerformRebase() {
   }
 }
 
+void App::CheckoutSelectedBranch() {
+  const std::vector<model::Branch>& branches = VisibleHistory().branches;
+  if (branch_selected_ < 0 || branch_selected_ >= static_cast<int>(branches.size())) {
+    Note("no branch selected", false);
+    return;
+  }
+  // No confirm: SAFE checkout refuses rather than overwrites, so nothing it can
+  // do is unrecoverable — the previous branch is one keystroke away.
+  const git::OpResult result = repo_.Checkout(branches[static_cast<std::size_t>(branch_selected_)]);
+  if (result.ok) {
+    // HEAD moved, so the head pin, every ahead/behind and the log are stale, and
+    // the branch just checked out is now the top row.
+    history_loaded_ = false;
+    branch_selected_ = 0;
+  }
+  Apply(result);
+  if (result.ok) {
+    EnsureHistory();
+  }
+}
+
 void App::OpenOperation() {
   // Read again rather than trusting the cached one: this is the pane whose
   // whole job is to be right about what is happening on disk.
@@ -3116,6 +3137,10 @@ bool App::Perform(ui::Action action) {
       }
       if (view_ == ui::View::Settings) {
         ActivateSetting();
+        return true;
+      }
+      if (view_ == ui::View::Branches) {
+        CheckoutSelectedBranch();
         return true;
       }
       // Everywhere else, opening a row means looking at what changed in it.
