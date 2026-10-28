@@ -972,6 +972,12 @@ Two things CI enforces that a local Debug build will not tell you about:
   proves the `Depends` field is satisfiable; `dpkg` would unpack it regardless and leave an install
   that still runs on the build machine and nowhere else.
 
+`install.sh` at the repository root is the one-line install, and running it again is the update. It
+reads the latest version from the `/releases/latest` redirect rather than the API (no rate limit, no
+JSON parser), installs the Linux tarball into `~/.local`, and **refuses anything it cannot check
+against `SHA256SUMS`**, which the publish job writes. Renaming a release asset breaks it, because the
+script builds the asset name itself.
+
 The release build is `-DCMAKE_BUILD_TYPE=Release` and packages with `cpack -G DEB` and `-G TGZ`
 from the build directory. `packaging/gittop.desktop` goes through `desktop-file-validate`.
 

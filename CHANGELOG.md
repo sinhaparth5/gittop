@@ -17,6 +17,49 @@ published.
 
 ---
 
+## 2026.10.1 — 2026-10-28
+
+Staging by hunk, blame, interactive rebase, branch and tag management, undo, custom commands — and
+a one-line install that is also the update.
+
+### Added
+
+- **One-line install and update on Linux.** `curl -fsSL
+  https://raw.githubusercontent.com/sinhaparth5/gittop/master/install.sh | sh` installs the latest
+  release to `~/.local/bin` without sudo, and running it again updates — or says you are current.
+  It verifies the download against the release's new `SHA256SUMS` file and installs nothing on a
+  mismatch. ([#36](https://github.com/sinhaparth5/gittop/issues/36))
+- **Custom commands bound to keys.** `[[commands]]` in the config runs a program on a key,
+  optionally only on one view and behind a confirm, with `{branch}`, `{commit}`, `{file}` and
+  `{remote}` filled from the selection. It runs in the background without a shell or a terminal,
+  and the toast shows its last line of output.
+  ([#46](https://github.com/sinhaparth5/gittop/issues/46))
+- **Stage and unstage single hunks and lines** from the diff with space.
+  ([#37](https://github.com/sinhaparth5/gittop/issues/37))
+- **A blame view.** `b` on a file in the status list or the diff; `enter` opens a line's commit.
+  ([#38](https://github.com/sinhaparth5/gittop/issues/38))
+- **Interactive rebase from the commit list:** squash, fixup, drop, reword and reorder, behind one
+  confirm that says how many of the rewritten commits are already pushed.
+  ([#39](https://github.com/sinhaparth5/gittop/issues/39))
+- **Amend, and commit in `$EDITOR`.** `A` amends the last commit, `C` writes the message in your
+  editor. ([#40](https://github.com/sinhaparth5/gittop/issues/40))
+- **Create, rename and delete branches; create and push tags.**
+  ([#41](https://github.com/sinhaparth5/gittop/issues/41))
+- **Cherry-pick and revert** from the commit list.
+  ([#42](https://github.com/sinhaparth5/gittop/issues/42))
+- **Undo.** `z` takes back the last change to HEAD and `Z` opens the reflog.
+  ([#43](https://github.com/sinhaparth5/gittop/issues/43))
+- **Worktrees and submodules** are listed, and can be added, removed and updated.
+  ([#45](https://github.com/sinhaparth5/gittop/issues/45))
+- **The status view refreshes itself** when the working tree changes.
+  ([#44](https://github.com/sinhaparth5/gittop/issues/44))
+
+### Changed
+
+- **`mainframe` has a hint of colour.** Staged is mint, unstaged amber and untracked slate, at the
+  same lightness steps as before, so they read apart at a glance and the colour-blindness check
+  still holds (worst case ΔE 20.1).
+
 ## 2026.10.0 — 2026-10-28
 
 A new default look, remote branches you can see and check out, and a test suite.
