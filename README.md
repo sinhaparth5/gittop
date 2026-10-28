@@ -345,6 +345,12 @@ used to be.
 The mouse works too: the wheel scrolls, a click selects a row or switches to a tab, and clicking
 the row already under the cursor opens it.
 
+## Terminal size
+
+gittop needs at least 80x24. Below that it draws one card giving the size it has and the size it
+needs, instead of a layout cut off at the edge. Keys still work underneath it, so `q` quits and an
+open prompt keeps its input; resizing brings everything back as it was.
+
 ## Custom layouts
 
 `[layout]` decides which tabs exist and in what order:

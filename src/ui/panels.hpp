@@ -61,6 +61,18 @@ std::string ViewName(View view);
 ftxui::Element Splash(const std::string& repo, const std::string& version, float reveal,
                       int width, int height);
 
+// The supported floor. Below it no view, overlay or footer is drawn at all —
+// only TooSmall — because FTXUI clips at the cell and says nothing, and a
+// passphrase prompt cut in half is worse than no layout. 80x24 is where every
+// footer chip keeps its whole word and the status list still has rows.
+inline constexpr int kMinWidth = 80;
+inline constexpr int kMinHeight = 24;
+
+// What is drawn instead of everything else below the floor: the size there is
+// and the size gittop needs. Plain centred lines with no border, so it stays
+// legible down to a two-line strip.
+ftxui::Element TooSmall(int width, int height);
+
 ftxui::Element Header(const model::StatusSnapshot& snapshot);
 
 // `tabs` is filled during layout with the box each tab landed in, so a click can
