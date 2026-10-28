@@ -374,6 +374,14 @@ prints the same number; there is no way for a tab to advertise a key that goes s
 columns on its own; that one is also a row on the settings page. Which tabs exist stays in the file
 — it is a decision you make once, not one you want a keystroke away from.
 
+gittop re-reads the repository on its own when a file in it changes, so a save in another window
+shows without `r`. Ignored paths are not watched. To turn it off:
+
+```toml
+[general]
+auto_refresh = false
+```
+
 ## Tokens
 
 Public repositories need no token. GitHub allows 60 anonymous requests an hour; a token raises

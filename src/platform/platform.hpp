@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -225,5 +226,34 @@ class SecretServer {
 // The client half, run in the copy of gittop that ssh spawned as its askpass
 // helper. Returns the secret, or empty.
 std::string ReadSecretFrom(const std::string& endpoint);
+
+// Watches `root` and every directory under it from a thread of its own, and
+// calls `changed` at most once per kWatchSettleMs after something changed — a
+// save is several events, and a checkout is thousands. `skip` is asked about
+// each path, relative to `root` with '/' separators and a trailing '/' for a
+// directory; a skipped directory is never watched at all, which is what keeps
+// a build directory from costing a watch per subdirectory. Both callbacks run
+// on the watcher's thread. The destructor stops and joins it.
+//
+// inotify on Linux and ReadDirectoryChangesW on Windows. `ok()` is false where
+// neither exists or the watch could not be set up, and then nothing is called:
+// the dashboard is exactly as it was before this existed, refreshed by `r`.
+inline constexpr int kWatchSettleMs = 300;
+
+class TreeWatcher {
+ public:
+  TreeWatcher(std::string root, std::function<bool(const std::string&)> skip,
+              std::function<void()> changed);
+  ~TreeWatcher();
+
+  TreeWatcher(const TreeWatcher&) = delete;
+  TreeWatcher& operator=(const TreeWatcher&) = delete;
+
+  bool ok() const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace gittop::platform

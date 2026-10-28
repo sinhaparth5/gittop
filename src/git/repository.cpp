@@ -322,6 +322,15 @@ std::string Repository::WorkdirPath() const {
   return wd != nullptr ? std::string(wd) : std::string{};
 }
 
+bool Repository::IsWatchNoise(const std::string& rel) const {
+  if (rel == ".git/" || rel.rfind(".git/", 0) == 0) {
+    return rel.rfind(".git/objects/", 0) == 0 || rel.rfind(".git/logs/", 0) == 0 ||
+           (rel.size() >= 5 && rel.compare(rel.size() - 5, 5, ".lock") == 0);
+  }
+  int ignored = 0;
+  return git_ignore_path_is_ignored(&ignored, repo_.get(), rel.c_str()) == 0 && ignored == 1;
+}
+
 std::vector<model::RefEntry> Repository::ReadRefs() const {
   std::vector<model::RefEntry> refs;
 

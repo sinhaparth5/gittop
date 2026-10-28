@@ -3,20 +3,27 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#if defined(__linux__)
+#include <sys/inotify.h>
+#endif
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <initializer_list>
 #include <string>
+#include <unordered_map>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -509,5 +516,150 @@ std::string ReadSecretFrom(const std::string& endpoint) {
   ::close(fd);
   return secret;
 }
+
+struct TreeWatcher::Impl {
+  std::string root;
+  std::function<bool(const std::string&)> skip;
+  std::function<void()> changed;
+  int fd = -1;
+  int stop_pipe[2] = {-1, -1};
+  std::thread thread;
+
+#if defined(__linux__)
+  // inotify is not recursive, so every directory is a watch of its own and a
+  // new one has to be added as it appears. This maps each back to its path.
+  std::unordered_map<int, std::string> dirs;
+
+  void Add(const std::string& rel) {
+    const std::string full = rel.empty() ? root : root + "/" + rel;
+    const int wd = ::inotify_add_watch(fd, full.c_str(),
+                                       IN_CREATE | IN_DELETE | IN_CLOSE_WRITE | IN_MOVED_FROM |
+                                           IN_MOVED_TO | IN_ONLYDIR | IN_DONT_FOLLOW);
+    if (wd < 0) {
+      return;  // out of watches, or gone already: the rest still work
+    }
+    dirs[wd] = rel;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(full, ec)) {
+      if (entry.is_symlink(ec) || !entry.is_directory(ec)) {
+        continue;
+      }
+      const std::string child = (rel.empty() ? "" : rel + "/") + entry.path().filename().string();
+      if (!skip(child + "/")) {
+        Add(child);
+      }
+    }
+  }
+
+  void Run() {
+    using Clock = std::chrono::steady_clock;
+    bool pending = false;
+    Clock::time_point due;
+    alignas(struct inotify_event) char buffer[16384];
+    while (true) {
+      int timeout = -1;
+      if (pending) {
+        timeout = static_cast<int>(std::max<std::int64_t>(
+            0, std::chrono::duration_cast<std::chrono::milliseconds>(due - Clock::now()).count()));
+      }
+      struct pollfd fds[2];
+      fds[0] = {fd, POLLIN, 0};
+      fds[1] = {stop_pipe[0], POLLIN, 0};
+      const int ready = ::poll(fds, 2, timeout);
+      if (ready < 0 && errno != EINTR) {
+        return;
+      }
+      // POLLHUP for the reason SecretServer's loop gives.
+      if ((fds[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+        return;
+      }
+      if (pending && Clock::now() >= due) {
+        pending = false;
+        changed();
+      }
+      if (ready <= 0 || (fds[0].revents & POLLIN) == 0) {
+        continue;
+      }
+      const ssize_t got = ::read(fd, buffer, sizeof(buffer));
+      bool relevant = false;
+      for (ssize_t at = 0; at < got;) {
+        const auto* event = reinterpret_cast<const struct inotify_event*>(buffer + at);
+        at += static_cast<ssize_t>(sizeof(struct inotify_event) + event->len);
+        if ((event->mask & IN_Q_OVERFLOW) != 0) {
+          relevant = true;  // events were lost, so assume the worst
+          continue;
+        }
+        if ((event->mask & IN_IGNORED) != 0) {
+          dirs.erase(event->wd);
+          continue;
+        }
+        const auto dir = dirs.find(event->wd);
+        if (dir == dirs.end() || event->len == 0) {
+          continue;
+        }
+        const std::string rel = (dir->second.empty() ? "" : dir->second + "/") + event->name;
+        const bool is_dir = (event->mask & IN_ISDIR) != 0;
+        if (skip(is_dir ? rel + "/" : rel)) {
+          continue;
+        }
+        if (is_dir && (event->mask & (IN_CREATE | IN_MOVED_TO)) != 0) {
+          Add(rel);
+        }
+        relevant = true;
+      }
+      // Due a fixed time after the first change rather than after the last, so
+      // something that never stops writing still refreshes, just not often.
+      if (relevant && !pending) {
+        pending = true;
+        due = Clock::now() + std::chrono::milliseconds(kWatchSettleMs);
+      }
+    }
+  }
+#endif
+};
+
+TreeWatcher::TreeWatcher(std::string root, std::function<bool(const std::string&)> skip,
+                         std::function<void()> changed)
+    : impl_(std::make_unique<Impl>()) {
+  impl_->root = std::move(root);
+  while (impl_->root.size() > 1 && impl_->root.back() == '/') {
+    impl_->root.pop_back();
+  }
+  impl_->skip = std::move(skip);
+  impl_->changed = std::move(changed);
+#if defined(__linux__)
+  impl_->fd = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+  if (impl_->fd < 0) {
+    return;
+  }
+  if (::pipe(impl_->stop_pipe) < 0) {
+    ::close(impl_->fd);
+    impl_->fd = -1;
+    return;
+  }
+  impl_->Add("");
+  impl_->thread = std::thread([this] { impl_->Run(); });
+#endif
+}
+
+TreeWatcher::~TreeWatcher() {
+  // The byte is what ends Run's poll; closing the write end makes it POLLHUP
+  // even if the write failed, so the join below cannot hang.
+  if (impl_->stop_pipe[1] >= 0) {
+    const char byte = 0;
+    (void)WriteAll(impl_->stop_pipe[1], &byte, 1);
+    ::close(impl_->stop_pipe[1]);
+  }
+  if (impl_->thread.joinable()) {
+    impl_->thread.join();
+  }
+  for (const int fd : {impl_->fd, impl_->stop_pipe[0]}) {
+    if (fd >= 0) {
+      ::close(fd);
+    }
+  }
+}
+
+bool TreeWatcher::ok() const { return impl_->thread.joinable(); }
 
 }  // namespace gittop::platform
