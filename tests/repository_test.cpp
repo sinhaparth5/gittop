@@ -346,3 +346,36 @@ TEST_CASE("an edited message commits without comments, and an empty one aborts")
   REQUIRE(repo->CommitEditedMessage().ok);
   CHECK(Log(dir)[0] == "add a\n\nwith a body\n");
 }
+
+TEST_CASE("branches are created, renamed and deleted, and an unmerged one says so") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  REQUIRE(repo->CreateBranch("topic", "main").ok);
+  CHECK_FALSE(repo->CreateBranch("topic", "main").ok);  // taken
+  CHECK_FALSE(repo->CreateBranch("bad name", "main").ok);
+  CHECK(repo->BranchMerged("topic"));
+
+  REQUIRE(repo->RenameBranch("topic", "feature").ok);
+  CHECK(IdOf(dir, "feature") == IdOf(dir, "main"));
+  CHECK_FALSE(repo->DeleteBranch("main").ok);  // checked out
+
+  // A commit only `feature` has, made by moving the ref onto a child of main.
+  CommitFile(*repo, dir, "a.txt", "a\n", "only on feature");
+  REQUIRE(repo->CreateBranch("ahead", "HEAD").ok);
+  REQUIRE(repo->RewriteHistory(IdOf(dir, "HEAD"), Rewrite::Drop, "").ok);
+  CHECK_FALSE(repo->BranchMerged("ahead"));
+  REQUIRE(repo->DeleteBranch("ahead").ok);
+  REQUIRE(repo->DeleteBranch("feature").ok);
+}
+
+TEST_CASE("a tag is lightweight without a message and annotated with one") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  REQUIRE(repo->CreateTag(IdOf(dir, "HEAD"), "v1", "").ok);
+  REQUIRE(repo->CreateTag(IdOf(dir, "HEAD"), "v2", "the second").ok);
+  CHECK_FALSE(repo->CreateTag(IdOf(dir, "HEAD"), "v1", "").ok);  // never forced
+
+  CHECK(IdOf(dir, "refs/tags/v1") == IdOf(dir, "HEAD"));  // points straight at it
+  CHECK(IdOf(dir, "refs/tags/v2") != IdOf(dir, "HEAD"));  // a tag object
+  CHECK(IdOf(dir, "v2^{commit}") == IdOf(dir, "HEAD"));
+}

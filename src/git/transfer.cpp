@@ -629,6 +629,56 @@ TransferResult Pull(const std::string& repo_path, const std::string& remote_name
   return result;
 }
 
+// Pushes one refspec and reads back whether the server took it. Shared by the
+// branch push and PushRef, because the rejection check below is the part a
+// second copy would forget.
+bool SendRefspec(git_remote* remote, const std::string& remote_name, const std::string& refspec,
+                 const Credentials& credentials, const std::shared_ptr<ProgressSink>& sink,
+                 const std::atomic<bool>* cancel, Context* ctx, TransferResult* failure) {
+  std::vector<char*> specs;
+  std::string spec_storage = refspec;
+  specs.push_back(spec_storage.data());
+  git_strarray refspecs = {specs.data(), specs.size()};
+
+  ctx->sink = sink.get();
+  ctx->cancel = cancel;
+  ctx->credentials = &credentials;
+  ctx->progress.phase = TransferPhase::Connecting;
+  Publish(ctx);
+
+  git_push_options options;
+  git_push_options_init(&options, GIT_PUSH_OPTIONS_VERSION);
+  InstallCallbacks(&options.callbacks, ctx);
+
+  if (git_remote_push(remote, &refspecs, &options) != 0) {
+    ctx->progress.phase = TransferPhase::Failed;
+    Publish(ctx);
+    if (Cancelled(ctx)) {
+      *failure = Failure("cancelled", {});
+      return false;
+    }
+    *failure = Failure("push failed", LastError());
+    return false;
+  }
+
+  // git_remote_push returns zero for a push the server refused. The refusal
+  // arrives through push_update_reference and nowhere else, so a push that is
+  // not checked here reports success for a rejected non-fast-forward.
+  if (!ctx->rejections.empty()) {
+    std::string detail;
+    for (const std::string& rejection : ctx->rejections) {
+      detail += detail.empty() ? rejection : "; " + rejection;
+    }
+    ctx->progress.phase = TransferPhase::Failed;
+    Publish(ctx);
+    *failure = Failure(remote_name + " refused the push", detail,
+                       "pull first — gittop never force-pushes");
+    return false;
+  }
+
+  return true;
+}
+
 TransferResult Push(const std::string& repo_path, const std::string& remote_name,
                     bool set_upstream, const Credentials& credentials,
                     std::shared_ptr<ProgressSink> sink, const std::atomic<bool>* cancel) {
@@ -667,43 +717,10 @@ TransferResult Push(const std::string& repo_path, const std::string& remote_name
   // and the guardrail rule says nothing destructive gets a single keystroke —
   // so gittop does not offer one at all yet.
   const std::string refspec = "refs/heads/" + branch + ":refs/heads/" + remote_branch;
-  std::vector<char*> specs;
-  std::string spec_storage = refspec;
-  specs.push_back(spec_storage.data());
-  git_strarray refspecs = {specs.data(), specs.size()};
-
   Context ctx;
-  ctx.sink = sink.get();
-  ctx.cancel = cancel;
-  ctx.credentials = &credentials;
-  ctx.progress.phase = TransferPhase::Connecting;
-  Publish(&ctx);
-
-  git_push_options options;
-  git_push_options_init(&options, GIT_PUSH_OPTIONS_VERSION);
-  InstallCallbacks(&options.callbacks, &ctx);
-
-  if (git_remote_push(remote.get(), &refspecs, &options) != 0) {
-    ctx.progress.phase = TransferPhase::Failed;
-    Publish(&ctx);
-    if (Cancelled(&ctx)) {
-      return Failure("cancelled", {});
-    }
-    return Failure("push failed", LastError());
-  }
-
-  // git_remote_push returns zero for a push the server refused. The refusal
-  // arrives through push_update_reference and nowhere else, so a push that is
-  // not checked here reports success for a rejected non-fast-forward.
-  if (!ctx.rejections.empty()) {
-    std::string detail;
-    for (const std::string& rejection : ctx.rejections) {
-      detail += detail.empty() ? rejection : "; " + rejection;
-    }
-    ctx.progress.phase = TransferPhase::Failed;
-    Publish(&ctx);
-    return Failure(remote_name + " refused the push", detail,
-                   "pull first — gittop never force-pushes");
+  TransferResult refused;
+  if (!SendRefspec(remote.get(), remote_name, refspec, credentials, sink, cancel, &ctx, &refused)) {
+    return refused;
   }
 
   TransferResult result;
@@ -725,6 +742,34 @@ TransferResult Push(const std::string& repo_path, const std::string& remote_name
     }
   }
 
+  ctx.progress.phase = TransferPhase::Done;
+  Publish(&ctx);
+  return result;
+}
+
+TransferResult PushRef(const std::string& repo_path, const std::string& remote_name,
+                       const std::string& refspec, const std::string& what,
+                       const Credentials& credentials, std::shared_ptr<ProgressSink> sink,
+                       const std::atomic<bool>* cancel) {
+  RepoHandle repo;
+  TransferResult failure;
+  if (!Open(repo_path, &repo, &failure)) {
+    return failure;
+  }
+  RemoteHandle remote;
+  if (!LookupRemote(repo.get(), remote_name, &remote, &failure)) {
+    return failure;
+  }
+  Context ctx;
+  if (!SendRefspec(remote.get(), remote_name, refspec, credentials, sink, cancel, &ctx,
+                   &failure)) {
+    return failure;
+  }
+  TransferResult result;
+  result.ok = true;
+  result.summary = what + " on " + remote_name;
+  result.detail = ctx.progress.remote_message;
+  result.no_op = !ctx.any_ref_updated;
   ctx.progress.phase = TransferPhase::Done;
   Publish(&ctx);
   return result;

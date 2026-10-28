@@ -96,6 +96,10 @@ const NamedAction kActionNames[] = {
     {"stash_pop", Action::StashPop},
     {"stash_drop", Action::StashDrop},
     {"prune", Action::Prune},
+    {"new_branch", Action::NewBranch},
+    {"rename_branch", Action::RenameBranch},
+    {"delete_branch", Action::DeleteBranch},
+    {"tag", Action::Tag},
     {"ci_ref", Action::CiRef},
     {"pull_create", Action::PullCreate},
 
@@ -304,6 +308,11 @@ Keymap::Keymap() {
   // key would be a network call with a destructive edge available from every
   // screen, including several that have nothing to do with branches.
   Bind(Action::Prune, Scope::Branches, "x");
+  // `R` shadows the remote switch here, as `f` shadows fetch on the history
+  // view; `D` is capital because a delete should not be the easy letter.
+  Bind(Action::NewBranch, Scope::Branches, "n");
+  Bind(Action::RenameBranch, Scope::Branches, "R");
+  Bind(Action::DeleteBranch, Scope::Branches, "D");
 
   // Scoped to the commit list, which is the one place the commit they rewrite
   // is under the cursor. `f` there shadows fetch, as the stash view's `p`
@@ -316,6 +325,7 @@ Keymap::Keymap() {
   Bind(Action::Reword, Scope::History, "w");
   Bind(Action::MoveDown, Scope::History, "J");
   Bind(Action::MoveUp, Scope::History, "K");
+  Bind(Action::Tag, Scope::History, "T");
 
   // Scoped for the same reason, from the other direction: the ref picker only
   // means anything beside a run list, and `b` is a letter worth leaving free

@@ -1603,6 +1603,15 @@ void App::StartTransfer(TransferKind kind) {
         return git::Push(path, remote_name, /*set_upstream=*/true, credentials, sink, &cancel);
       });
       break;
+    case TransferKind::PushRef: {
+      const std::string refspec = push_refspec_;
+      const std::string what = push_what_;
+      transfer_fetcher_.Start([path, remote_name, refspec, what, credentials, sink](
+                                  const std::atomic<bool>& cancel) {
+        return git::PushRef(path, remote_name, refspec, what, credentials, sink, &cancel);
+      });
+      break;
+    }
     case TransferKind::Prune:
       transfer_fetcher_.Start([path, remote_name, credentials, sink](
                                   const std::atomic<bool>& cancel) {
@@ -2456,6 +2465,9 @@ ui::TransferView App::TransferViewState() const {
     case TransferKind::Push:
       view.title = "Pushing " + snapshot_.branch;
       break;
+    case TransferKind::PushRef:
+      view.title = "Pushing to " + (remotes_.empty() ? "" : remotes_[remote_index_].name);
+      break;
     case TransferKind::Prune:
       view.title = "Pruning " + (remotes_.empty() ? "" : remotes_[remote_index_].name);
       break;
@@ -2799,10 +2811,7 @@ void App::RequestRewrite(git::Rewrite kind) {
   rewrite_id_ = commit.id;
   rewrite_subject_ = commit.short_id + " " + commit.summary;
   if (kind == git::Rewrite::Reword) {
-    commit_mode_ = CommitMode::Reword;
-    commit_message_ = commit.summary;
-    commit_cursor_ = static_cast<int>(commit_message_.size());
-    OpenOverlay(kCommit);
+    OpenNameBox(CommitMode::Reword, commit.id, "Reword " + rewrite_subject_, commit.summary);
     return;
   }
   confirm_kind_ = ConfirmKind::Rewrite;
@@ -2814,7 +2823,6 @@ void App::PerformRewrite() {
   const git::OpResult result = repo_.RewriteHistory(
       rewrite_id_, rewrite_kind_, rewrite_kind_ == git::Rewrite::Reword ? commit_message_ : "");
   if (rewrite_kind_ == git::Rewrite::Reword) {
-    commit_mode_ = CommitMode::Commit;
     commit_message_.clear();
   }
   history_loaded_ = false;
@@ -3174,9 +3182,7 @@ void App::OpenCommit() {
     Note("nothing staged to commit", true);
     return;
   }
-  commit_mode_ = CommitMode::Commit;
-  commit_message_.clear();
-  OpenOverlay(kCommit);
+  OpenNameBox(CommitMode::Commit, "", "Commit", "");
 }
 
 void App::OpenAmend() {
@@ -3186,16 +3192,171 @@ void App::OpenAmend() {
     Note("there is no commit to amend yet", true);
     return;
   }
-  commit_mode_ = CommitMode::Amend;
-  commit_message_ = summary;
+  OpenNameBox(CommitMode::Amend, "", "Amend the last commit", summary);
+}
+
+void App::OpenNameBox(CommitMode mode, std::string target, std::string title, std::string text) {
+  commit_mode_ = mode;
+  ref_target_ = std::move(target);
+  box_title_ = std::move(title);
+  commit_message_ = std::move(text);
   commit_cursor_ = static_cast<int>(commit_message_.size());
+  switch (mode) {
+    case CommitMode::Commit:
+      box_verb_ = "commit";
+      box_placeholder_ = "summary of the change";
+      break;
+    case CommitMode::Reword:
+      box_verb_ = "reword";
+      box_placeholder_ = "summary of the change";
+      break;
+    case CommitMode::Amend:
+      box_verb_ = "amend";
+      box_placeholder_ = "summary of the change";
+      break;
+    case CommitMode::NewBranch:
+      box_verb_ = "create";
+      box_placeholder_ = "name of the new branch";
+      break;
+    case CommitMode::RenameBranch:
+      box_verb_ = "rename";
+      box_placeholder_ = "new name";
+      break;
+    case CommitMode::Tag:
+      box_verb_ = "tag";
+      box_placeholder_ = "v1.2.3 — add a message after it for an annotated tag";
+      break;
+  }
   OpenOverlay(kCommit);
+}
+
+void App::SubmitNameBox() {
+  bool pushed = false;
+  if (commit_mode_ == CommitMode::Commit) {
+    PerformCommit();
+    return;
+  }
+  if (commit_message_.empty()) {
+    Note(commit_mode_ == CommitMode::Reword || commit_mode_ == CommitMode::Amend
+             ? "commit message is empty"
+             : "a name is needed",
+         true);
+    return;
+  }
+  git::OpResult result = git::OpResult::Fail("");
+  switch (commit_mode_) {
+    case CommitMode::Commit:
+      return;
+    case CommitMode::Reword:
+      confirm_kind_ = ConfirmKind::Rewrite;
+      OpenOverlay(kConfirm);
+      return;
+    case CommitMode::Amend:
+      if (repo_.HeadSummary(&pushed); pushed) {
+        confirm_kind_ = ConfirmKind::Amend;
+        OpenOverlay(kConfirm);
+      } else {
+        PerformAmend();
+      }
+      return;
+    case CommitMode::NewBranch:
+      result = repo_.CreateBranch(commit_message_, ref_target_);
+      break;
+    case CommitMode::RenameBranch:
+      result = repo_.RenameBranch(ref_target_, commit_message_);
+      break;
+    case CommitMode::Tag: {
+      // A tag name cannot hold a space, so the first word is the name and
+      // anything after it is the message — and a message is what makes it
+      // annotated. One box, rather than a second question nobody asked for.
+      const std::size_t space = commit_message_.find(' ');
+      const std::string name = commit_message_.substr(0, space);
+      const std::string message =
+          space == std::string::npos ? "" : commit_message_.substr(space + 1);
+      result = repo_.CreateTag(ref_target_, name, message);
+      if (result.ok && !remotes_.empty()) {
+        push_refspec_ = "refs/tags/" + name + ":refs/tags/" + name;
+        push_what_ = "pushed tag " + name;
+        commit_message_.clear();
+        history_loaded_ = false;
+        Apply(result);
+        EnsureHistory();
+        confirm_kind_ = ConfirmKind::PushTag;
+        OpenOverlay(kConfirm);
+        return;
+      }
+      break;
+    }
+  }
+  if (!result.ok) {
+    Apply(result);  // the box stays open with the name in it, to fix
+    return;
+  }
+  commit_message_.clear();
+  CloseOverlay();
+  history_loaded_ = false;
+  Apply(result);
+  EnsureHistory();
+}
+
+void App::RequestDeleteBranch() {
+  const std::vector<model::Branch>& branches = VisibleHistory().branches;
+  if (branch_selected_ < 0 || branch_selected_ >= static_cast<int>(branches.size())) {
+    Note("no branch selected", false);
+    return;
+  }
+  const model::Branch& branch = branches[static_cast<std::size_t>(branch_selected_)];
+  ref_target_ = branch.name;
+  ref_remote_ = branch.remote;
+  if (!branch.remote) {
+    if (branch.is_head) {
+      Note("that is the branch you are on — check out another first", true);
+      return;
+    }
+    ref_merged_ = repo_.BranchMerged(branch.name);
+    confirm_kind_ = ConfirmKind::DeleteBranch;
+    OpenOverlay(kConfirm);
+    return;
+  }
+  // A remote row is deleted on the remote, which is a push: it has to be the
+  // remote the transfer talks to, and the part after its name is the branch.
+  DiscoverRemotes();
+  const std::string remote = remotes_.empty() ? "" : remotes_[remote_index_].name;
+  if (remote.empty() || branch.name.rfind(remote + "/", 0) != 0) {
+    Note("only branches on the active remote can be deleted — switch with " +
+             keys_.KeyFor(ui::Action::NextRemote) + " from another view",
+         true);
+    return;
+  }
+  const std::string name = branch.name.substr(remote.size() + 1);
+  push_refspec_ = ":refs/heads/" + name;
+  push_what_ = "deleted " + name;
+  confirm_kind_ = ConfirmKind::DeleteRemoteBranch;
+  OpenOverlay(kConfirm);
+}
+
+void App::PerformDeleteBranch() {
+  CloseOverlay();
+  const git::OpResult result = repo_.DeleteBranch(ref_target_);
+  history_loaded_ = false;
+  Apply(result);
+  EnsureHistory();
+}
+
+void App::TagSelectedCommit() {
+  const std::vector<model::Commit>& commits = VisibleHistory().commits;
+  if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(commits.size())) {
+    Note("no commit selected", false);
+    return;
+  }
+  const model::Commit& commit = commits[static_cast<std::size_t>(commit_selected_)];
+  DiscoverRemotes();
+  OpenNameBox(CommitMode::Tag, commit.id, "Tag " + commit.short_id + " " + commit.summary, "");
 }
 
 void App::PerformAmend() {
   const git::OpResult result = repo_.Amend(commit_message_);
   if (result.ok) {
-    commit_mode_ = CommitMode::Commit;
     commit_message_.clear();
     CloseOverlay();
     history_loaded_ = false;
@@ -3414,6 +3575,33 @@ bool App::Perform(ui::Action action) {
       return true;
     case ui::Action::SignIn:
       RequestSignIn();
+      return true;
+    case ui::Action::NewBranch: {
+      const std::vector<model::Branch>& branches = VisibleHistory().branches;
+      if (branch_selected_ < 0 || branch_selected_ >= static_cast<int>(branches.size())) {
+        Note("no branch selected", false);
+        return true;
+      }
+      const std::string& from = branches[static_cast<std::size_t>(branch_selected_)].name;
+      OpenNameBox(CommitMode::NewBranch, from, "New branch from " + from, "");
+      return true;
+    }
+    case ui::Action::RenameBranch: {
+      const std::vector<model::Branch>& branches = VisibleHistory().branches;
+      if (branch_selected_ < 0 || branch_selected_ >= static_cast<int>(branches.size()) ||
+          branches[static_cast<std::size_t>(branch_selected_)].remote) {
+        Note("only a local branch can be renamed", false);
+        return true;
+      }
+      const std::string& name = branches[static_cast<std::size_t>(branch_selected_)].name;
+      OpenNameBox(CommitMode::RenameBranch, name, "Rename " + name, name);
+      return true;
+    }
+    case ui::Action::DeleteBranch:
+      RequestDeleteBranch();
+      return true;
+    case ui::Action::Tag:
+      TagSelectedCommit();
       return true;
     case ui::Action::Prune:
       RequestPrune();
@@ -3667,30 +3855,12 @@ int App::Run() {
   InputOption input_option;
   input_option.multiline = false;
   input_option.cursor_position = &commit_cursor_;
-  input_option.on_enter = [this] {
-    bool pushed = false;
-    if (commit_mode_ == CommitMode::Commit) {
-      PerformCommit();
-    } else if (commit_message_.empty()) {
-      Note("commit message is empty", true);
-    } else if (commit_mode_ == CommitMode::Reword) {
-      confirm_kind_ = ConfirmKind::Rewrite;
-      OpenOverlay(kConfirm);
-    } else if (repo_.HeadSummary(&pushed); pushed) {
-      confirm_kind_ = ConfirmKind::Amend;
-      OpenOverlay(kConfirm);
-    } else {
-      PerformAmend();
-    }
-  };
-  auto commit_input = Input(&commit_message_, "summary of the change", input_option);
+  input_option.on_enter = [this] { SubmitNameBox(); };
+  auto commit_input = Input(&commit_message_, &box_placeholder_, input_option);
 
   auto commit_pane = Renderer(commit_input, [this, commit_input] {
     return vbox({
-               text(commit_mode_ == CommitMode::Reword  ? " Reword " + rewrite_subject_
-                    : commit_mode_ == CommitMode::Amend ? " Amend the last commit"
-                                                        : " Commit") | bold |
-                   color(ui::theme().accent),
+               text(" " + box_title_) | bold | color(ui::theme().accent),
                separator() | color(ui::theme().border),
                hbox({
                    text(std::string("  ") + ui::glyphs().prompt + " ") |
@@ -3700,9 +3870,7 @@ int App::Run() {
                separator() | color(ui::theme().border),
                hbox({
                    text(" "),
-                   ui::Chip("enter", commit_mode_ == CommitMode::Reword  ? "reword"
-                                    : commit_mode_ == CommitMode::Amend ? "amend"
-                                                                        : "commit"),
+                   ui::Chip("enter", box_verb_),
                    filler(),
                    ui::Chip("esc", "cancel"),
                }),
@@ -3769,6 +3937,23 @@ int App::Run() {
                 pull_draft_.target_branch,
             /*warning=*/"", "open", pull_draft_.title);
       }
+
+      case ConfirmKind::DeleteBranch:
+        return ui::ConfirmPane("Delete the branch " + ref_target_ + "?", ref_target_,
+                               ref_merged_ ? "Everything on it is merged, so nothing is lost."
+                                           : "It is not merged — its commits go with it.",
+                               "delete");
+
+      case ConfirmKind::DeleteRemoteBranch:
+        return ui::ConfirmPane("Delete " + ref_target_ + " on the remote?", ref_target_,
+                               "Everyone who uses this remote loses the branch.", "delete");
+
+      case ConfirmKind::PushTag:
+        return ui::ConfirmPane(
+            "Push the tag to " + (remotes_.empty() ? "the remote" : remotes_[remote_index_].name) +
+                "?",
+            push_refspec_.substr(0, push_refspec_.find(':')).substr(10),
+            /*warning=*/"", "push");
 
       case ConfirmKind::Amend:
         return ui::ConfirmPane("Amend a commit that is already pushed?", commit_message_,
@@ -4297,6 +4482,14 @@ int App::Run() {
               case ConfirmKind::Amend:
                 CloseOverlay();
                 PerformAmend();
+                break;
+              case ConfirmKind::DeleteBranch:
+                PerformDeleteBranch();
+                break;
+              case ConfirmKind::DeleteRemoteBranch:
+              case ConfirmKind::PushTag:
+                CloseOverlay();
+                StartTransfer(TransferKind::PushRef);
                 break;
               case ConfirmKind::Discard:
                 PerformDiscard();

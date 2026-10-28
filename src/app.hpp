@@ -92,6 +92,10 @@ class App {
     // Amending a commit the upstream already has: the same question as a
     // rewrite, for one commit.
     Amend,
+    DeleteBranch,
+    // Separate from the local delete because it is the one other people see.
+    DeleteRemoteBranch,
+    PushTag,
   };
 
   // What the commit box is writing. One box for all three, because each is a
@@ -100,6 +104,9 @@ class App {
     Commit,
     Reword,
     Amend,
+    NewBranch,
+    RenameBranch,
+    Tag,
   };
 
   // Which transfer is in flight, for the progress pane's title and for deciding
@@ -110,6 +117,7 @@ class App {
     Pull,
     Push,
     Prune,
+    PushRef,  // a tag, or a branch deleted on the remote: push_refspec_
   };
 
   // Reads the config into the theme and the keymap. Runs before the first frame
@@ -354,6 +362,11 @@ class App {
   void OpenAmend();
   void PerformAmend();
   void CommitInEditor();
+  void OpenNameBox(CommitMode mode, std::string target, std::string title, std::string text);
+  void SubmitNameBox();
+  void RequestDeleteBranch();
+  void PerformDeleteBranch();
+  void TagSelectedCommit();
 
   void OpenOverlay(Overlay which);
   void CloseOverlay();
@@ -584,6 +597,14 @@ class App {
 
   std::string commit_message_;
   CommitMode commit_mode_ = CommitMode::Commit;
+  std::string box_title_ = "Commit";
+  std::string box_verb_ = "commit";
+  std::string box_placeholder_ = "summary of the change";
+  std::string ref_target_;  // the branch or commit the box or a confirm acts on
+  bool ref_remote_ = false;
+  bool ref_merged_ = true;
+  std::string push_refspec_;
+  std::string push_what_;
   // Hands the terminal to `fn` and takes it back. Set in Run, where the screen
   // lives, so the editor key can reach it without App owning the screen.
   std::function<void(std::function<void()>)> suspend_;

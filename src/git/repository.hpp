@@ -158,6 +158,15 @@ class Repository {
   // origin/topic`. SAFE, so an uncommitted change in the way stops it.
   OpResult Checkout(const model::Branch& branch);
 
+  // In git/refs.cpp. `from` is anything rev-parse takes. Nothing here is
+  // forced: a name that is taken is refused rather than overwritten.
+  OpResult CreateBranch(const std::string& name, const std::string& from);
+  OpResult RenameBranch(const std::string& name, const std::string& to);
+  bool BranchMerged(const std::string& name) const;
+  OpResult DeleteBranch(const std::string& name);
+  // Lightweight with an empty message, annotated otherwise.
+  OpResult CreateTag(const std::string& id, const std::string& name, const std::string& message);
+
   // Stash mutations, in git/stash.cpp. Every one of them renumbers the entries
   // below it, so the caller re-reads the list rather than adjusting its own.
   OpResult StashSave(const std::string& message, bool include_untracked);
