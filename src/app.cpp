@@ -553,6 +553,8 @@ int& App::ActiveSelection() {
       return pull_selected_;
     case ui::View::Diff:
       return diff_line_;
+    case ui::View::Blame:
+      return blame_selected_;
     case ui::View::Stashes:
       return stash_selected_;
     case ui::View::Settings:
@@ -579,6 +581,8 @@ int App::ActiveCount() const {
       return static_cast<int>(VisiblePulls().pulls.size());
     case ui::View::Diff:
       return static_cast<int>(diff_.lines.size());
+    case ui::View::Blame:
+      return static_cast<int>(VisibleBlame().lines.size());
     case ui::View::Stashes:
       return static_cast<int>(VisibleStashes().entries.size());
     // Built rather than stored, so the count and what the panel draws come out
@@ -609,6 +613,9 @@ const model::PullSnapshot& App::VisiblePulls() const {
 }
 const model::StashList& App::VisibleStashes() const {
   return filter_.empty() ? stashes_ : filtered_stashes_;
+}
+const model::BlameSnapshot& App::VisibleBlame() const {
+  return filter_.empty() ? blame_ : filtered_blame_;
 }
 
 void App::RebuildFilter() {
@@ -689,6 +696,17 @@ void App::RebuildFilter() {
     }
   }
 
+  // Every surviving line heads its own run: the line above it on screen may
+  // belong to some other commit now, so the gutter cannot be left blank.
+  filtered_blame_ = blame_;
+  filtered_blame_.lines.clear();
+  for (const model::BlameLine& line : blame_.lines) {
+    if (Matches(filter_, line.author) || Matches(filter_, line.summary)) {
+      filtered_blame_.lines.push_back(line);
+      filtered_blame_.lines.back().first = true;
+    }
+  }
+
   // A filter that narrowed the list out from under the cursor leaves it past
   // the end, and every subsequent Move would clamp against a stale count.
   int& selection = ActiveSelection();
@@ -711,6 +729,8 @@ int App::FilterTotal() const {
       return static_cast<int>(pulls_.pulls.size());
     case ui::View::Stashes:
       return static_cast<int>(stashes_.entries.size());
+    case ui::View::Blame:
+      return static_cast<int>(blame_.lines.size());
     case ui::View::Diff:
     case ui::View::Graph:
     case ui::View::Remote:
@@ -847,6 +867,7 @@ void App::NextRemote() {
     case ui::View::Graph:
     case ui::View::Diff:
     case ui::View::Stashes:
+    case ui::View::Blame:
     // Reads the new remote out of App on the next frame, so there is nothing
     // to kick off here.
     case ui::View::Settings:
@@ -2027,6 +2048,7 @@ void App::CancelSignIn() {
       case ui::View::Graph:
       case ui::View::Diff:
       case ui::View::Stashes:
+      case ui::View::Blame:
       // Where the sign-in was very likely started from. It reads the new token
       // source out of App on the next frame and costs no request to do it.
       case ui::View::Settings:
@@ -2579,6 +2601,19 @@ void App::OpenSelectedDiff() {
     return;
   }
 
+  if (view_ == ui::View::Blame) {
+    const model::BlameSnapshot& blame = VisibleBlame();
+    if (blame_selected_ < 0 || blame_selected_ >= static_cast<int>(blame.lines.size())) {
+      Note("nothing to diff", false);
+      return;
+    }
+    git::DiffRequest request;
+    request.source = model::DiffSource::Commit;
+    request.commit = blame.lines[static_cast<std::size_t>(blame_selected_)].id;
+    ShowDiff(request);
+    return;
+  }
+
   if (view_ == ui::View::History) {
     const model::HistorySnapshot& history = VisibleHistory();
     if (commit_selected_ < 0 || commit_selected_ >= static_cast<int>(history.commits.size())) {
@@ -2837,6 +2872,7 @@ void App::SetView(ui::View view) {
       DiscoverRemotes();
       return;
     case ui::View::Status:
+    case ui::View::Blame:  // started by OpenBlame, which knows which file
       return;
     case ui::View::History:
     case ui::View::Branches:
@@ -2903,6 +2939,8 @@ void App::Reload() {
     EnsureDiff();
   } else if (view_ == ui::View::Stashes) {
     EnsureStashes();
+  } else if (view_ == ui::View::Blame) {
+    StartBlame(blame_.path);
   } else if (view_ != ui::View::Status) {
     EnsureHistory();
   }
@@ -2971,6 +3009,60 @@ void App::StageDiffLine() {
 
   Apply(repo_.ApplyHunk(pick));
   EnsureDiff();
+}
+
+void App::OpenBlame() {
+  std::string path;
+  if (view_ == ui::View::Status) {
+    if (const model::StatusEntry* entry = Selected()) {
+      path = entry->path;
+    }
+  } else if (view_ == ui::View::Diff && !diff_.lines.empty()) {
+    // The file banner above the cursor, which ReadDiff writes as the path.
+    auto at = static_cast<std::size_t>(std::clamp(diff_line_, 0, static_cast<int>(diff_.lines.size()) - 1));
+    while (at > 0 && diff_.lines[at].kind != model::DiffLineKind::FileHeader) --at;
+    if (diff_.lines[at].kind == model::DiffLineKind::FileHeader) {
+      path = diff_.lines[at].text;
+    }
+  }
+  if (path.empty()) {
+    Note("blame needs a file: pick one on the status or diff view", false);
+    return;
+  }
+  blame_selected_ = 0;
+  StartBlame(path);
+  filter_.clear();
+  SetView(ui::View::Blame);
+}
+
+void App::StartBlame(const std::string& path) {
+  blame_ = model::BlameSnapshot{};
+  blame_.path = path;
+  // Its own Repository, opened from the path: libgit2 objects belong to one
+  // thread at a time and App's is the UI thread's.
+  const std::string workdir = repo_.WorkdirPath();
+  blame_fetcher_.Start([workdir, path](const std::atomic<bool>&) {
+    std::string error;
+    std::optional<git::Repository> repo = git::Repository::Discover(workdir, &error);
+    if (!repo) {
+      model::BlameSnapshot failed;
+      failed.path = path;
+      failed.error = error;
+      return failed;
+    }
+    return repo->ReadBlame(path);
+  });
+}
+
+void App::CollectBlame() {
+  model::BlameSnapshot result;
+  if (!blame_fetcher_.Consume(&result) || result.path != blame_.path) {
+    return;
+  }
+  blame_ = std::move(result);
+  RebuildFilter();
+  blame_selected_ =
+      std::clamp(blame_selected_, 0, std::max(0, static_cast<int>(blame_.lines.size()) - 1));
 }
 
 void App::StageSelected() {
@@ -3080,6 +3172,7 @@ ui::Scope App::CurrentScope() const {
       return ui::Scope::Pull;
     case ui::View::History:
     case ui::View::Remote:
+    case ui::View::Blame:
     // Claims no keys of its own. Everything it does is on `enter`, which is
     // already the global "act on this row", so a scope here would only be a
     // second place for a binding to hide.
@@ -3260,6 +3353,9 @@ bool App::Perform(ui::Action action) {
     case ui::Action::DiffStage:
       StageDiffLine();
       return true;
+    case ui::Action::Blame:
+      OpenBlame();
+      return true;
     case ui::Action::DiffNextFile:
       JumpFile(1);
       return true;
@@ -3326,8 +3422,9 @@ std::vector<Box>* App::ActiveRowBoxes() {
     case ui::View::Remote:
     // The diff scrolls but has no rows worth clicking: a line of context is not
     // a thing you select, and reflecting twenty thousand boxes to find that out
-    // would cost more than the whole panel.
+    // would cost more than the whole panel. A blame is windowed the same way.
     case ui::View::Diff:
+    case ui::View::Blame:
       break;
   }
   return nullptr;  // nothing selectable to click on
@@ -3405,6 +3502,7 @@ const Event kTransferDone = Event::Special("gittop:transfer-done");
 const Event kDeviceCodeReady = Event::Special("gittop:device-code-ready");
 const Event kPollReady = Event::Special("gittop:poll-ready");
 const Event kTick = Event::Special("gittop:tick");
+const Event kBlameReady = Event::Special("gittop:blame-ready");
 
 int App::Run() {
   Refresh();
@@ -3430,6 +3528,7 @@ int App::Run() {
   transfer_fetcher_.SetNotifier([&screen] { screen.PostEvent(kTransferDone); });
   device_fetcher_.SetNotifier([&screen] { screen.PostEvent(kDeviceCodeReady); });
   poll_fetcher_.SetNotifier([&screen] { screen.PostEvent(kPollReady); });
+  blame_fetcher_.SetNotifier([&screen] { screen.PostEvent(kBlameReady); });
   ticker_.SetNotifier([&screen] { screen.PostEvent(kTick); });
 
   // ---------------------------------------------------------- commit overlay
@@ -3730,6 +3829,12 @@ int App::Run() {
         panel = ui::StashList(VisibleStashes(), stash_selected_, &row_boxes_);
         break;
 
+      case ui::View::Blame:
+        // Same chrome arithmetic as the diff: what is left is how many fit.
+        panel = ui::BlamePanel(VisibleBlame(), blame_fetcher_.Running(), blame_selected_, width,
+                               std::max(4, height - 8));
+        break;
+
       case ui::View::Graph: {
         // The canvas cannot flex, so its row count is worked out from what is
         // left over. Chrome is header 1 + tabs 1 + footer 2, and the chart's
@@ -3820,6 +3925,10 @@ int App::Run() {
     }
     if (event == kJobsReady) {
       CollectJobs();
+      return true;
+    }
+    if (event == kBlameReady) {
+      CollectBlame();
       return true;
     }
     if (event == kPullsReady) {
@@ -4173,6 +4282,7 @@ int App::Run() {
   transfer_fetcher_.Shutdown();
   device_fetcher_.Shutdown();
   poll_fetcher_.Shutdown();
+  blame_fetcher_.Shutdown();
   return 0;
 }
 

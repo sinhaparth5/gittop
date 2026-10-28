@@ -85,6 +85,7 @@ const NamedAction kActionNames[] = {
 
     {"diff_switch", Action::DiffSwitch},
     {"diff_stage", Action::DiffStage},
+    {"blame", Action::Blame},
     {"diff_next_file", Action::DiffNextFile},
     {"diff_prev_file", Action::DiffPrevFile},
 
@@ -261,6 +262,10 @@ Keymap::Keymap() {
   Bind(Action::StashSave, Scope::Global, "S");
   Bind(Action::Rebase, Scope::Global, "B");
   Bind(Action::Operation, Scope::Global, "o");
+  // Global because one action has one scope and blame belongs to two views, the
+  // status list and the diff. Everywhere else it says which file it needs; the
+  // CI view's ref picker shadows it there, which is the one place it means nothing.
+  Bind(Action::Blame, Scope::Global, "b");
 
   Bind(Action::ToggleStage, Scope::Status, "space");
   Bind(Action::Stage, Scope::Status, "s");

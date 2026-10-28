@@ -24,6 +24,7 @@
 #include "remote/oauth.hpp"
 #include "remote/ticker.hpp"
 #include "remote/token.hpp"
+#include "ui/blame_panel.hpp"
 #include "ui/diff_panel.hpp"
 #include "ui/graph_panel.hpp"
 #include "ui/keymap.hpp"
@@ -126,6 +127,11 @@ class App {
   // Stashes likewise, except that every mutation renumbers the list, so each
   // one re-reads rather than adjusting what it already has.
   void EnsureStashes();
+  // Blame of the file under the cursor in the status list or the diff, read on
+  // a worker with its own Repository; `enter` there opens the line's commit.
+  void OpenBlame();
+  void StartBlame(const std::string& path);
+  void CollectBlame();
   void SaveStash();
   void RequestStash(ConfirmKind kind);
   void PerformStashPop();
@@ -158,6 +164,7 @@ class App {
   const model::PipelineSnapshot& VisiblePipelines() const;
   const model::PullSnapshot& VisiblePulls() const;
   const model::StashList& VisibleStashes() const;
+  const model::BlameSnapshot& VisibleBlame() const;
 
   int& ActiveSelection();
   int ActiveCount() const;
@@ -397,6 +404,9 @@ class App {
   model::PipelineSnapshot filtered_pipelines_;
   model::PullSnapshot filtered_pulls_;
   model::StashList filtered_stashes_;
+  model::BlameSnapshot blame_;
+  model::BlameSnapshot filtered_blame_;
+  int blame_selected_ = 0;
 
   std::vector<model::RemoteRef> remotes_;
   std::size_t remote_index_ = 0;
@@ -487,6 +497,7 @@ class App {
 
   remote::Fetcher<remote::DeviceCode> device_fetcher_;
   remote::Fetcher<remote::PollResult> poll_fetcher_;
+  remote::Fetcher<model::BlameSnapshot> blame_fetcher_;
 
   ui::SignInStage signin_stage_ = ui::SignInStage::Starting;
   model::RemoteRef signin_ref_;

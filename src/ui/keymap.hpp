@@ -62,6 +62,7 @@ enum class Action {
 
   DiffSwitch,
   DiffStage,
+  Blame,
   DiffNextFile,
   DiffPrevFile,
 

@@ -32,6 +32,9 @@ enum class View {
   Pipelines,
   Pulls,
   Settings,
+  // Reached from a file with `b`, never from the tab bar: it is a question
+  // about one file, and a tab would have nothing to show until one is asked.
+  Blame,
 };
 
 // Tab-bar order, which is also the order `tab` cycles, the order the tab
