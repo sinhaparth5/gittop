@@ -10,6 +10,11 @@
 
 namespace gittop::remote {
 
+// The two foldings into model::RunStatus. Public for the tests: this is the
+// table a provider changing its vocabulary breaks without a sound.
+model::RunStatus GitHubStatus(const std::string& status, const std::string& conclusion);
+model::RunStatus GitLabStatus(const std::string& status);
+
 // Blocking. Lists the CI runs for `branch` and normalizes them into
 // model::Pipeline, which is the same shape whichever API replied.
 //

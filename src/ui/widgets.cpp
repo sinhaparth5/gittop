@@ -142,11 +142,12 @@ std::string Fit(const std::string& text, int cells) {
 }
 
 std::string Rjust(const std::string& text, int cells) {
-  const int width = string_width(text);
-  if (width >= cells) {
-    return Truncate(text, cells);
-  }
-  return std::string(static_cast<std::size_t>(cells - width), ' ') + text;
+  // Truncated first and padded after, because a cut that lands on a wide glyph
+  // comes back a cell short — and a short field moves every column after it,
+  // which is the one thing this exists to prevent.
+  const std::string kept = Truncate(text, cells);
+  const int short_by = cells - string_width(kept);
+  return short_by > 0 ? std::string(static_cast<std::size_t>(short_by), ' ') + kept : kept;
 }
 
 // ---------------------------------------------------------------- panel frame

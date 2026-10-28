@@ -42,11 +42,14 @@ Beyond `[path]`, the binary takes `--config <file>`, `--config-path`, `--init-co
 `--version`, and `-h`. The first three exit before any TUI or libgit2 work, which makes
 `--config-path` and `--init-config` the cheapest way to exercise the config layer.
 
-**There is no test target and CI runs no tests.** `CMakeLists.txt` calls neither `enable_testing()`
-nor `add_test()`, and `.github/workflows/release.yml` fires on a tag and only builds, packages and
-smoke-tests the `.deb` — so nothing anywhere checks a behavioural change for you, and a claim that
-something works has to come from having driven it. Verification so far has
-been done by driving the TUI under `script -qec "stty rows N cols M; timeout -s KILL 20 ./build/gittop"`
+**The tests cover the pure layers only.** `ctest --test-dir build` runs a doctest binary
+(`tests/`, linked against `gittop_core`, which is every source but `main.cpp`) over text
+measurement, the config writer, the RunStatus foldings, remote URL parsing, lane assignment, and
+fixture repositories built with libgit2 at test time — plus `tests/glyph_literals.py`, which fails
+on a non-ASCII string literal under `src/ui/` outside `glyphs.cpp`. Both release jobs run it before
+packaging, but the release workflow is the only CI and it fires on a tag, so run it yourself. Add a
+test file to the `gittop_tests` list in `CMakeLists.txt`. Nothing tests App: key routing, the
+filter mirrors and the render tree are still verified by hand, by driving the TUI under `script -qec "stty rows N cols M; timeout -s KILL 20 ./build/gittop"`
 with piped keystrokes, then stripping ANSI with `sed -r 's/\x1B\[[0-9;?]*[A-Za-z]//g'`. Note that
 those captures are binary as far as grep is concerned, so `grep -a` is needed on them. Sleep
 between the piped keys, or the app quits before a fetch has landed, and read the *last* frame —
@@ -438,8 +441,7 @@ transport runs Windows OpenSSH's `ssh.exe` and inherits the user's `~/.ssh/confi
 known_hosts exactly as it does elsewhere. `SelectSSH.cmake` puts no platform guard on it.
 
 **`scripts/build-windows.sh` builds the exe from a Linux checkout and runs it under Wine**, in a
-container built from `packaging/Dockerfile.windows`. This exists because there is no test target
-and CI only runs on a tag, so without it the only thing that ever discovers a broken port is a
+container built from `packaging/Dockerfile.windows`. This exists because CI only runs on a tag, so without it the only thing that ever discovers a broken port is a
 release. It found two real portability errors the first time it ran (`timegm` and `gmtime_r`, both
 now `platform::` roles).
 
