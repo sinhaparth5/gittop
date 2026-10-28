@@ -14,18 +14,19 @@ namespace {
 
 using model::Provider;
 
-// No OAuth application has been registered for gittop, so there is no id to
-// compile in and every host falls back to the guided personal access token.
-// Filling these in is a packaging decision rather than a code one: an id is
-// public by design in a device flow — there is no client secret, which is the
-// whole reason the flow is safe to run in a distributed binary — but it ties
-// the build to one registered application, and a GPL source tree that anyone
-// can rebuild should not have that baked in without the maintainer choosing it.
+// Compiled in from the GITTOP_GITHUB_CLIENT_ID and GITTOP_GITLAB_CLIENT_ID cache
+// variables, empty unless a build sets them — in which case every host falls
+// back to the guided personal access token. An id is public by design in a
+// device flow (there is no client secret, which is the whole reason the flow is
+// safe in a distributed binary), but it ties the build to one registered
+// application. So it is the packager's choice rather than a source literal: the
+// release workflow passes gittop's own, and a distribution rebuilding the
+// package can pass its own or none.
 //
 // hosts."<host>".client_id overrides both, and is the only way a self-hosted
-// instance can ever have one.
-constexpr const char* kGitHubClientId = "";
-constexpr const char* kGitLabClientId = "";
+// instance can ever have one — which is why the token route stays first-class.
+constexpr const char* kGitHubClientId = GITTOP_GITHUB_CLIENT_ID;
+constexpr const char* kGitLabClientId = GITTOP_GITLAB_CLIENT_ID;
 
 // RFC 8628. Both providers spell it exactly this way and reject anything else.
 constexpr const char* kDeviceGrantType = "urn:ietf:params:oauth:grant-type:device_code";

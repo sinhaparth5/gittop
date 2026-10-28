@@ -109,7 +109,9 @@ jobs:
       # Release, not Debug: this binary is the one people run.
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                -DGITTOP_GITHUB_CLIENT_ID="${{ vars.GITTOP_GITHUB_CLIENT_ID }}" \
+                -DGITTOP_GITLAB_CLIENT_ID="${{ vars.GITTOP_GITLAB_CLIENT_ID }}"
           cmake --build build -j"$(nproc)"
 
       # Before packaging, so a release whose tests fail never gets as far as a
@@ -254,7 +256,9 @@ jobs:
         shell: bash
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+                -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
+                -DGITTOP_GITHUB_CLIENT_ID="${{ vars.GITTOP_GITHUB_CLIENT_ID }}" \
+                -DGITTOP_GITLAB_CLIENT_ID="${{ vars.GITTOP_GITLAB_CLIENT_ID }}"
           cmake --build build --config Release -j
 
       # The same tests under MSVC and a real Windows filesystem, which the Wine
