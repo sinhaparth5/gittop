@@ -70,25 +70,25 @@ Decoration Decorate(const StatusEntry& e) {
 std::string TabLabel(View view) {
   switch (view) {
     case View::Status:
-      return "Status";
+      return "STATUS";
     case View::History:
-      return "History";
+      return "HISTORY";
     case View::Branches:
-      return "Branches";
+      return "BRANCHES";
     case View::Graph:
-      return "Graph";
+      return "GRAPH";
     case View::Diff:
-      return "Diff";
+      return "DIFF";
     case View::Stashes:
-      return "Stashes";
+      return "STASHES";
     case View::Remote:
-      return "Remote";
+      return "REMOTE";
     case View::Pipelines:
       return "CI";
     case View::Pulls:
-      return "Pulls";
+      return "PULLS";
     case View::Settings:
-      return "Settings";
+      return "SETTINGS";
   }
   return "?";
 }
@@ -426,7 +426,9 @@ Element Header(const model::StatusSnapshot& snapshot) {
                   color(total > 0 ? t.text : t.text_faint));
   parts.push_back(text(total == 1 ? " change " : " changes ") | color(t.text_faint));
 
-  return hbox(std::move(parts)) | bgcolor(t.surface);
+  // A bar the full width of the screen rather than words floating on the page,
+  // so the one row visible from every view reads as the console's status line.
+  return hbox(std::move(parts)) | bgcolor(t.surface_alt);
 }
 
 namespace {
@@ -620,8 +622,11 @@ Element TabBar(View active, int width, std::vector<Box>* tabs) {
       label = " " + TabLabel(view) + " ";
     }
     if (!label.empty()) {
-      chip_parts.push_back(text(label) | bold | color(on ? t.text : t.text_faint) |
-                           bgcolor(on ? t.surface_alt : t.surface));
+      // The active tab is one inverted block, digit and label together, the way a
+      // console marks the field the cursor is in; a tint alone vanishes on the
+      // mainframe palette, whose accent is its text colour.
+      chip_parts.push_back(text(label) | bold | color(on ? t.bg : t.text_faint) |
+                           bgcolor(on ? t.accent : t.surface));
     }
     Element chip = hbox(std::move(chip_parts));
     if (tabs != nullptr) {
