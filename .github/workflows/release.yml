@@ -408,7 +408,8 @@ jobs:
       # install.sh refuses an asset it cannot verify, so a release without
       # this file is one the one-line install cannot use.
       - name: Checksum the assets
-        run: sha256sum ./*.deb ./*.tar.gz ./*.zip ./*.exe | sed 's#  \./#  #' > SHA256SUMS
+        run: |
+          sha256sum ./*.deb ./*.tar.gz ./*.zip ./*.exe | sed 's#  \./#  #' > SHA256SUMS
 
       - name: Publish
         env:
