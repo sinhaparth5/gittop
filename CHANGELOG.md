@@ -17,6 +17,34 @@ published.
 
 ---
 
+## 2026.10.2 — 2026-10-29
+
+Merge from the branch list, a conflict resolver, and a new default look modelled on btop.
+
+### Added
+
+- **Merge a branch.** `m` on the Branches view merges it into the checked-out branch: a
+  fast-forward when that is all it takes, a merge commit when the two touch different lines, and
+  the conflict resolver when they do not. It refuses on a dirty working tree.
+- **A conflict resolver.** It opens by itself when a merge, cherry-pick, revert or rebase stops, and
+  from `enter` on a conflicted file or in the operation pane. Each block shows ours and theirs side
+  by side: `o`, `t` and `b` keep ours, theirs or both, `O`/`T` take a whole side (including binary
+  files and modify/delete conflicts), and the file is staged once its last marker is gone. A file
+  with an unclosed `<<<<<<<` is never staged.
+- **Resolve in vim or nvim.** `e` opens the file in git's editor, at the block's line for vi, vim
+  and nvim, and stages it if you removed every marker.
+- **`docs/workflows.md`**, a guide to rebase, cherry-pick, revert, merge and resolving conflicts.
+- **A dashboard for a clean tree.** The status view shows a 14-day commit chart, the last commit and
+  repository totals instead of empty columns.
+- **Sparklines on the summary cards**, tracking how each count moved this session.
+
+### Changed
+
+- **`btop` is the new default theme**: black ground, green boxes, a dark red selection bar and
+  btop's meter colours for the statuses (worst case CIELAB ΔE 24.6 across the four colour visions
+  checked). Borders default to rounded. A config that names a theme or border keeps it; `mainframe`
+  and `light` are still there.
+
 ## 2026.10.1 — 2026-10-28
 
 Staging by hunk, blame, interactive rebase, branch and tag management, undo, custom commands — and
