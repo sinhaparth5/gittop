@@ -2,6 +2,7 @@
 
 #include <git2.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -578,9 +579,24 @@ gittop::model::Branch LocalBranch(const char* name) {
   return branch;
 }
 
+// A merge's checkout honours core.autocrlf, which the Windows runners set, so
+// the conflicted file can arrive with CRLF. The resolver keeps whatever ending
+// it was given; these tests are about which lines survive, not the endings.
+std::string NoCr(std::string text) {
+  text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+  return text;
+}
+
+std::vector<std::string> NoCr(std::vector<std::string> lines) {
+  for (std::string& line : lines) {
+    line = NoCr(line);
+  }
+  return lines;
+}
+
 std::string Slurp(const ScratchDir& dir, const char* file) {
   std::ifstream in(dir.path() / file, std::ios::binary);
-  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  return NoCr(std::string(std::istreambuf_iterator<char>(in), {}));
 }
 
 // main and topic both rewrite README from "hello", so merging topic stops.
@@ -624,8 +640,8 @@ TEST_CASE("a conflicting merge stops, and resolving a block stages the file") {
   CHECK(repo->ReadOperation().operation == gittop::model::Operation::Merge);
   const gittop::model::ConflictFile file = repo->ReadConflict("README");
   REQUIRE(file.hunks.size() == 1);
-  CHECK(file.hunks[0].ours == std::vector<std::string>{"main"});
-  CHECK(file.hunks[0].theirs == std::vector<std::string>{"topic"});
+  CHECK(NoCr(file.hunks[0].ours) == std::vector<std::string>{"main"});
+  CHECK(NoCr(file.hunks[0].theirs) == std::vector<std::string>{"topic"});
 
   // A stale view of the file is refused rather than applied to the wrong block.
   CHECK_FALSE(repo->ResolveHunk("README", 0, file.hunks[0].begin + 1,
