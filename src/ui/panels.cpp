@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "platform/platform.hpp"
 #include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -247,7 +248,7 @@ Element Row(const StatusEntry& entry, bool selected, int width) {
 }
 
 Element StatCard(const std::string& label, std::size_t value, float bar, Ramp ramp,
-                 Swatch accent) {
+                 Swatch accent, const std::vector<int>& series) {
   const Theme& t = theme();
   // Fixing the label width equalises every card's minimum, so xflex divides the
   // row evenly. Without it the cards inherit the length of their own label and
@@ -259,22 +260,109 @@ Element StatCard(const std::string& label, std::size_t value, float bar, Ramp ra
                  filler(),
                  text(std::to_string(value)) | bold | color(value > 0 ? accent : t.text_faint),
              }),
-             text(""),
-             GradientBar(bar, ramp, t.surface_alt),
+             // The session so far, right-aligned so the newest sample sits
+             // under the number it led to.
+             hbox({filler(), Sparkline(series, std::max(1, *std::max_element(
+                                                               series.begin(), series.end())),
+                                       ramp)}),
+             GradientBar(bar, ramp, t.surface_raised),
          }) |
          xflex;
 }
 
-Element EmptyState() {
+Element Tile(const std::string& label, const std::string& value, Swatch tint) {
   const Theme& t = theme();
   return vbox({
-      filler(),
-      hbox({filler(), text(glyphs().check) | bold | color(t.success), filler()}),
+             text(label) | color(t.text_faint),
+             text(value) | bold | color(tint),
+         }) |
+         xflex;
+}
+
+std::string MonthDay(std::int64_t day) {
+  const std::tm parts = platform::UtcFromTimestamp(day * 86400);
+  char buffer[16] = {};
+  std::strftime(buffer, sizeof(buffer), "%b %d", &parts);
+  return buffer;
+}
+
+// What a clean tree shows instead of an empty box: the shape of the last two
+// weeks, from the bounded walk the status read already did. Nothing in here
+// costs a request or a second read; that is the rule that lets it be on the
+// screen every repository opens to.
+Element Dashboard(const model::StatusSnapshot& snapshot, int width, int height) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  const std::array<int, model::kPulseDays>& pulse = snapshot.pulse;
+
+  int week = 0;
+  int fortnight = 0;
+  int peak = 0;
+  for (std::size_t i = 0; i < pulse.size(); ++i) {
+    fortnight += pulse[i];
+    week += i + 7 >= pulse.size() ? pulse[i] : 0;
+    peak = std::max(peak, pulse[i]);
+  }
+  const std::string floor = snapshot.pulse_capped ? "+" : "";
+
+  Elements rows{
+      hbox({Gap(), text(g.check) | bold | color(t.success),
+            text(" working tree clean") | bold | color(t.text), filler(),
+            text("nothing to stage or commit") | color(t.text_faint), Gap()}),
       text(""),
-      hbox({filler(), text("working tree clean") | color(t.text), filler()}),
-      hbox({filler(), text("nothing to stage or commit") | color(t.text_faint), filler()}),
-      filler(),
-  });
+      hbox({Gap(),
+            Tile("TODAY", std::to_string(pulse.back()), t.staged), Gap(),
+            Tile("7 DAYS", std::to_string(week) + floor, t.unstaged), Gap(),
+            Tile("14 DAYS", std::to_string(fortnight) + floor, t.untracked), Gap(),
+            Tile("STASHES", std::to_string(snapshot.stashes),
+                 snapshot.stashes > 0 ? t.warning : t.text_faint),
+            Gap()}),
+      text(""),
+  };
+
+  // The chart takes the height the rows around it leave, and its columns split
+  // the width evenly; the axis below is exactly as wide, so its two labels sit
+  // under the first and the last column.
+  const int inner = std::max(28, width - 6);
+  const int column = std::max(1, inner / static_cast<int>(model::kPulseDays) - 1);
+  const int chart_width = (column + kSpaceTight) * static_cast<int>(model::kPulseDays);
+  // Nine rows of text around the chart, two of them the last-commit line,
+  // which is the first thing to go: RECENT says the same thing beside it.
+  const bool room_for_last = height >= 13;
+  const int chart_rows = std::clamp(height - (room_for_last ? 9 : 7), 1, 16);
+  const std::int64_t today = now / 86400;
+  rows.push_back(hbox({Gap(),
+                       hbox({text("COMMITS PER DAY") | color(t.text_faint), filler(),
+                             text("peak " + std::to_string(peak) + floor) | color(t.text_faint)}) |
+                           size(WIDTH, EQUAL, chart_width),
+                       filler()}));
+  rows.push_back(hbox({Gap(), BarChart(pulse.data(), pulse.size(), peak, chart_rows, column,
+                                       t.staged_ramp),
+                       filler()}));
+  rows.push_back(hbox({Gap(),
+                       hbox({text(MonthDay(today - static_cast<std::int64_t>(model::kPulseDays) + 1)) |
+                                 color(t.text_faint),
+                             filler(), text("today") | color(t.text_faint)}) |
+                           size(WIDTH, EQUAL, chart_width),
+                       filler()}));
+
+  if (!snapshot.recent.empty() && room_for_last) {
+    const model::RecentCommit& last = snapshot.recent.front();
+    rows.push_back(text(""));
+    rows.push_back(hbox({
+        Gap(),
+        text("LAST COMMIT  ") | color(t.text_faint),
+        text(last.short_id) | color(t.warning),
+        Gap(),
+        text(Truncate(last.summary, std::max(10, width - 48))) | color(t.text),
+        filler(),
+        text(Truncate(last.author, 18) + "  " + RelativeTime(last.time, now) + " ago") |
+            color(t.text_dim),
+        Gap(),
+    }));
+  }
+  return vbox(std::move(rows));
 }
 
 }  // namespace
@@ -651,18 +739,25 @@ Element TabBar(View active, int width, std::vector<Box>* tabs) {
 }
 
 Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
-                   bool compact) {
+                   bool compact, const StatHistory& history) {
   const Theme& t = theme();
   const auto gap = [] { return text("  "); };
   const auto rule = [&t] { return separator() | color(t.border); };
 
-  Element staged = StatCard("STAGED", snapshot.staged, bars.staged, t.staged_ramp, t.staged);
-  Element unstaged =
-      StatCard("UNSTAGED", snapshot.unstaged, bars.unstaged, t.unstaged_ramp, t.unstaged);
-  Element untracked =
-      StatCard("UNTRACKED", snapshot.untracked, bars.untracked, t.untracked_ramp, t.untracked);
-  Element conflicts =
-      StatCard("CONFLICTS", snapshot.conflicted, bars.conflicted, t.conflict_ramp, t.conflict);
+  // A card with no history yet still gets one sample, so the row is never a
+  // blank line between the number and the bar.
+  const auto series = [&history](std::size_t i, std::size_t now) {
+    return history.series[i].empty() ? std::vector<int>{static_cast<int>(now)}
+                                     : history.series[i];
+  };
+  Element staged = StatCard("STAGED", snapshot.staged, bars.staged, t.staged_ramp, t.staged,
+                            series(0, snapshot.staged));
+  Element unstaged = StatCard("UNSTAGED", snapshot.unstaged, bars.unstaged, t.unstaged_ramp,
+                              t.unstaged, series(1, snapshot.unstaged));
+  Element untracked = StatCard("UNTRACKED", snapshot.untracked, bars.untracked,
+                               t.untracked_ramp, t.untracked, series(2, snapshot.untracked));
+  Element conflicts = StatCard("CONFLICTS", snapshot.conflicted, bars.conflicted,
+                               t.conflict_ramp, t.conflict, series(3, snapshot.conflicted));
 
   if (compact) {
     return vbox({
@@ -695,7 +790,7 @@ Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
 }
 
 Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
-                 std::vector<Box>* row_boxes) {
+                 std::vector<Box>* row_boxes, int height) {
   Elements rows;
 
   if (row_boxes != nullptr) {
@@ -703,7 +798,7 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
   }
 
   if (snapshot.clean()) {
-    rows.push_back(EmptyState());
+    return Panel("CHANGES", Dashboard(snapshot, width, height), {.note = "clean"});
   } else {
     std::optional<Group> current;
     for (std::size_t i = 0; i < snapshot.entries.size(); ++i) {
@@ -729,7 +824,9 @@ Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
     rows.push_back(text(""));
   }
 
-  return Panel("CHANGES", Scrollable(vbox(std::move(rows))));
+  const std::size_t files = snapshot.entries.size();
+  return Panel("CHANGES", Scrollable(vbox(std::move(rows))),
+               {.note = std::to_string(files) + (files == 1 ? " change" : " changes")});
 }
 
 namespace {
@@ -835,7 +932,8 @@ Element RecentList(const model::StatusSnapshot& snapshot) {
         Gap(kSpaceTight),
     }));
   }
-  return Panel("RECENT", vbox(std::move(rows)), {.focused = false});
+  return Panel("RECENT", vbox(std::move(rows)),
+               {.focused = false, .note = "last " + std::to_string(snapshot.recent.size())});
 }
 
 }  // namespace

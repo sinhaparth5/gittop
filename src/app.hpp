@@ -651,6 +651,7 @@ class App {
   bool message_is_error_ = false;
 
   ui::StatBars bars_;
+  ui::StatHistory stat_history_;
   std::chrono::steady_clock::time_point last_frame_{};
   std::chrono::steady_clock::time_point message_at_{};
 

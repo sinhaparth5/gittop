@@ -93,10 +93,10 @@ gittop --config-path    # print where it looks
 
 ```toml
 [theme]
-name = "mainframe"    # default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight, accessible
+name = "btop"         # mainframe, default, catppuccin, gruvbox, nord, tokyo-night, dracula, daylight, accessible
 icons = "auto"        # auto, ascii, unicode, nerd
 logos = false         # real GitHub/GitLab marks; needs a Nerd Font
-border = "light"      # light, rounded, heavy, double
+border = "rounded"    # rounded, light, heavy, double
 animations = true
 
 [layout]

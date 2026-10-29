@@ -67,7 +67,7 @@ class GradientBarNode : public Node {
   Rgb trough_;
 };
 
-PanelBorder g_border = PanelBorder::Light;
+PanelBorder g_border = PanelBorder::Rounded;
 bool g_reduced_motion = false;
 float g_overlay_reveal = 1.0F;
 
@@ -245,7 +245,7 @@ Element Sparkline(const int* values, std::size_t count, int peak, Ramp ramp) {
   cells.reserve(count);
   for (std::size_t i = 0; i < count; ++i) {
     if (values[i] <= 0 || peak <= 0) {
-      cells.push_back(text(g.bullet) | color(t.surface_alt));
+      cells.push_back(text(g.bullet) | color(t.border));
       continue;
     }
     const int level = std::clamp((values[i] * 8) / peak, 1, 8);
@@ -258,6 +258,43 @@ Element Sparkline(const int* values, std::size_t count, int peak, Ramp ramp) {
 
 Element Sparkline(const std::vector<int>& values, int peak, Ramp ramp) {
   return Sparkline(values.data(), values.size(), peak, ramp);
+}
+
+Element BarChart(const int* values, std::size_t count, int peak, int rows, int column,
+                 Ramp ramp) {
+  const Theme& t = theme();
+  const GlyphSet& g = glyphs();
+  rows = std::max(1, rows);
+  column = std::max(1, column);
+
+  Elements lines;
+  for (int r = 0; r < rows; ++r) {
+    // Row 0 is the top. Each row owns eight eighths of height, and its colour
+    // is the ramp at that height, so a tall bar shades as it climbs.
+    const int floor_eighths = (rows - 1 - r) * 8;
+    const Swatch tint{Mix(ramp.from, ramp.to, static_cast<float>(rows - r) / static_cast<float>(rows))};
+    Elements cells;
+    for (std::size_t i = 0; i < count; ++i) {
+      const int height = peak <= 0 || values[i] <= 0
+                             ? 0
+                             : std::max(1, (values[i] * rows * 8) / peak);
+      const int level = std::clamp(height - floor_eighths, 0, 8);
+      std::string cell;
+      if (level > 0) {
+        for (int c = 0; c < column; ++c) {
+          cell += g.blocks[static_cast<std::size_t>(level) - 1];
+        }
+        cells.push_back(text(cell) | color(tint));
+      } else if (r == rows - 1) {
+        cells.push_back(hbox({text(g.bullet) | color(t.border), Gap(column - 1)}));
+      } else {
+        cells.push_back(Gap(column));
+      }
+      cells.push_back(Gap(kSpaceTight));
+    }
+    lines.push_back(hbox(std::move(cells)));
+  }
+  return vbox(std::move(lines));
 }
 
 Element SkeletonRows(int rows, int frame) {

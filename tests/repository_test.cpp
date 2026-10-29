@@ -569,3 +569,17 @@ TEST_CASE("a submodule is listed, and an update clones it at the recorded commit
   CHECK(workspace.submodules.at(0).cloned);
   CHECK(workspace.submodules.at(0).checked_out == workspace.submodules.at(0).recorded);
 }
+
+TEST_CASE("the status read carries today's commits in the pulse and counts stashes") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  gittop::model::StatusSnapshot status = repo->ReadStatus();
+  CHECK(status.pulse.back() == 1);
+  CHECK_FALSE(status.pulse_capped);
+  CHECK(status.stashes == 0);
+
+  std::ofstream(dir.path() / "README") << "changed\n";
+  REQUIRE(repo->StashSave("wip", false).ok);
+  status = repo->ReadStatus();
+  CHECK(status.stashes == 1);
+}

@@ -23,6 +23,32 @@ constexpr Rgb C(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
 //
 // The first entry is the default, and the order here is the order `t` cycles.
 const Palette kPalettes[] = {
+    // btop's own look, which gittop is named after: black ground, boxes ruled
+    // in btop's cpu-box green, the dark red selection bar, and its meter hues
+    // (green, yellow, red) as the statuses. Worst-case ΔE 24.6 across normal
+    // vision, deuteranopia, protanopia and tritanopia, ahead of mainframe's
+    // 20.1: the yellow sits lighter than the green and the red darker than both.
+    // text_faint is 4.9:1 on the ground, at the floor for words.
+    {
+        .name = "btop",
+        .label = "btop",
+        .light = false,
+        .bg = C(0x00, 0x00, 0x00),
+        .surface = C(0x05, 0x05, 0x07),
+        .surface_alt = C(0x6a, 0x2f, 0x2f),
+        .surface_raised = C(0x2c, 0x2c, 0x32),
+        .border = C(0x3d, 0x7b, 0x46),
+        .text = C(0xe6, 0xe6, 0xe6),
+        .text_dim = C(0xb0, 0xb0, 0xb0),
+        .text_faint = C(0x7c, 0x7c, 0x7c),
+        .accent = C(0xff, 0x6b, 0x6b),
+        .green = C(0x50, 0xf0, 0x95),   // staged, success: btop's cpu_start
+        .yellow = C(0xf2, 0xe2, 0x66),  // unstaged, warning: cpu_mid
+        .blue = C(0x48, 0x97, 0xd4),    // untracked: temp_start
+        .red = C(0xff, 0x4a, 0x4a),     // conflicted, danger
+        .purple = C(0xa4, 0x8b, 0xff),
+        .cyan = C(0x36, 0xc5, 0xd6),
+    },
     // A mainframe console: white on true black, one ink in a few weights, and
     // the accent is white itself, so focus is shown by inverting a bar rather
     // than by tinting it. Red is the only strong hue, kept for conflicts and

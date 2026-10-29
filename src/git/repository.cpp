@@ -262,7 +262,42 @@ void ReadRecent(git_repository* repo, git_reference* head, model::StatusSnapshot
     snap->recent.push_back(std::move(entry));
     git_commit_free(commit);
   }
+
+  // Keep walking for the pulse, from the tip again so the twelve above are
+  // counted too. Time-sorted, so the first commit older than the window ends
+  // it; the cap ends it on a repository that is busier than that.
+  constexpr std::int64_t kSecondsPerDay = 86400;
+  const std::int64_t today = static_cast<std::int64_t>(std::time(nullptr)) / kSecondsPerDay;
+  const std::int64_t first = today - static_cast<std::int64_t>(model::kPulseDays) + 1;
+  git_revwalk_reset(walk);
+  git_revwalk_sorting(walk, GIT_SORT_TIME);
+  std::size_t walked = 0;
+  if (git_revwalk_push(walk, tip) == 0) {
+    while (git_revwalk_next(&oid, walk) == 0) {
+      if (++walked > model::kPulseCap) {
+        snap->pulse_capped = true;
+        break;
+      }
+      git_commit* commit = nullptr;
+      if (git_commit_lookup(&commit, repo, &oid) != 0) {
+        continue;
+      }
+      const std::int64_t day = static_cast<std::int64_t>(git_commit_time(commit)) / kSecondsPerDay;
+      git_commit_free(commit);
+      if (day < first) {
+        break;
+      }
+      if (day <= today) {
+        snap->pulse[static_cast<std::size_t>(day - first)]++;
+      }
+    }
+  }
   git_revwalk_free(walk);
+}
+
+int CountStash(std::size_t, const char*, const git_oid*, void* payload) {
+  ++*static_cast<std::size_t*>(payload);
+  return 0;
 }
 
 }  // namespace
@@ -473,6 +508,7 @@ model::StatusSnapshot Repository::ReadStatus() const {
     snap.head_detached = git_repository_head_detached(repo) == 1;
     ReadTracking(repo, head, &snap);
     ReadRecent(repo, head, &snap);
+    git_stash_foreach(repo, CountStash, &snap.stashes);
     git_reference_free(head);
   } else if (head_rc == GIT_EUNBORNBRANCH) {
     snap.head_unborn = true;
