@@ -103,6 +103,7 @@ const NamedAction kActionNames[] = {
     {"mark_commit", Action::MarkCommit},
     {"paste_commits", Action::PasteCommits},
     {"revert_commit", Action::RevertCommit},
+    {"merge", Action::Merge},
     {"ci_ref", Action::CiRef},
     {"pull_create", Action::PullCreate},
 
@@ -323,6 +324,9 @@ Keymap::Keymap() {
   // key would be a network call with a destructive edge available from every
   // screen, including several that have nothing to do with branches.
   Bind(Action::Prune, Scope::Branches, "x");
+  // Merges the selected branch into the checked-out one. Scoped here because
+  // this is the list it names a branch from.
+  Bind(Action::Merge, Scope::Branches, "m");
   // `R` shadows the remote switch here, as `f` shadows fetch on the history
   // view; `D` is capital because a delete should not be the easy letter.
   Bind(Action::NewBranch, Scope::Branches, "n");

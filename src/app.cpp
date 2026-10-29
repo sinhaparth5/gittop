@@ -2641,6 +2641,12 @@ void App::OpenSelectedDiff() {
       Note("nothing to diff", false);
       return;
     }
+    // A conflicted file's diff is the markers git wrote, which is what the
+    // resolver shows better, side by side, with the keys to answer them.
+    if (entry->stage == model::Stage::Conflict) {
+      OpenConflict(entry->path);
+      return;
+    }
     git::DiffRequest request;
     // A staged row and an unstaged row for the same file are two different
     // changes, and showing the wrong one is worse than showing neither.
@@ -2824,6 +2830,8 @@ void App::PerformRebase() {
   if (result.ok && view_ != ui::View::Status) {
     EnsureHistory();
   }
+  operation_ = repo_.ReadOperation();
+  OpenResolverIfStopped();
 }
 
 void App::RequestRewrite(git::Rewrite kind) {
@@ -2869,6 +2877,7 @@ void App::PerformRewrite() {
   // has stopped rather than finished.
   operation_ = repo_.ReadOperation();
   EnsureHistory();
+  OpenResolverIfStopped();
 }
 
 void App::CheckoutSelectedBranch() {
@@ -3031,6 +3040,7 @@ void App::PerformOperationContinue() {
   // Apply only refreshes on success, and a refusal here still leaves the
   // operation banner as the thing the user needs to see.
   operation_ = repo_.ReadOperation();
+  OpenResolverIfStopped();
 }
 
 void App::PerformOperationAbort() {
@@ -3762,6 +3772,7 @@ void App::PasteMarkedCommits() {
   Apply(result);
   operation_ = repo_.ReadOperation();
   EnsureHistory();
+  OpenResolverIfStopped();
 }
 
 void App::RevertSelectedCommit() {
@@ -3776,6 +3787,162 @@ void App::RevertSelectedCommit() {
   Apply(result);
   operation_ = repo_.ReadOperation();
   EnsureHistory();
+  OpenResolverIfStopped();
+}
+
+void App::MergeSelectedBranch() {
+  const std::vector<model::Branch>& branches = VisibleHistory().branches;
+  if (branch_selected_ < 0 || branch_selected_ >= static_cast<int>(branches.size())) {
+    Note("no branch selected", false);
+    return;
+  }
+  // No confirm, for checkout's reason: a merge refuses on a dirty tree, so the
+  // worst it can do is a commit that `z` takes back or a stop that abort undoes.
+  const git::OpResult result = repo_.Merge(branches[static_cast<std::size_t>(branch_selected_)]);
+  history_loaded_ = false;
+  Apply(result);
+  operation_ = repo_.ReadOperation();
+  EnsureHistory();
+  OpenResolverIfStopped();
+}
+
+std::vector<std::string> App::ConflictedPaths() const {
+  std::vector<std::string> paths;
+  for (const model::StatusEntry& entry : snapshot_.entries) {
+    if (entry.stage == model::Stage::Conflict) {
+      paths.push_back(entry.path);
+    }
+  }
+  return paths;
+}
+
+void App::OpenConflict(const std::string& path) {
+  model::ConflictFile file = repo_.ReadConflict(path);
+  if (!file.error.empty()) {
+    Note(file.error, true);
+    return;
+  }
+  conflict_ = std::move(file);
+  conflict_hunk_ = 0;
+  if (!overlay_open_ || overlay_index_ != kConflict) {
+    OpenOverlay(kConflict);
+  }
+}
+
+void App::OpenFirstConflict() {
+  const std::vector<std::string> paths = ConflictedPaths();
+  if (paths.empty()) {
+    Note("no conflicted files", false);
+    return;
+  }
+  OpenConflict(paths.front());
+}
+
+void App::OpenResolverIfStopped() {
+  if (snapshot_.conflicted > 0) {
+    OpenFirstConflict();
+  }
+}
+
+void App::ResolveConflictHunk(model::Side side) {
+  if (conflict_.hunks.empty()) {
+    return;
+  }
+  const std::size_t hunk = static_cast<std::size_t>(conflict_hunk_);
+  AfterResolve(repo_.ResolveHunk(conflict_.path, hunk, conflict_.hunks[hunk].begin, side));
+}
+
+void App::ResolveConflictFile(model::Side side) {
+  AfterResolve(repo_.ResolveFile(conflict_.path, side));
+}
+
+void App::MarkConflictResolved() {
+  AfterResolve(repo_.MarkResolved(conflict_.path));
+}
+
+void App::EditConflict() {
+  std::vector<std::string> argv = repo_.EditorCommand();
+  // vi, vim and nvim take +N to open at a line, so the editor starts on the
+  // block that was on screen. ponytail: other editors open at the top; each
+  // has its own spelling (code -g file:N, emacs +N) if anyone asks.
+  const std::string name = std::filesystem::path(argv.front()).filename().string();
+  const bool vi_family = name == "vi" || name.rfind("vim", 0) == 0 || name.rfind("nvim", 0) == 0;
+  if (vi_family && !conflict_.hunks.empty()) {
+    const std::size_t hunk = static_cast<std::size_t>(conflict_hunk_);
+    argv.push_back("+" + std::to_string(conflict_.hunks[hunk].begin + 1));
+  }
+  argv.push_back((std::filesystem::path(repo_.WorkdirPath()) / conflict_.path).string());
+  const int code = RunEditor(argv);
+  if (code < 0) {
+    Note("could not start " + argv.front() + " — set GIT_EDITOR or EDITOR", true);
+    return;
+  }
+  // Clean on the way out means the editor resolved it, and staging it is what
+  // `git mergetool` does at the same point. Markers left mean it did not, and
+  // the resolver carries on from what the file now says.
+  const model::ConflictFile after = repo_.ReadConflict(conflict_.path);
+  if (after.error.empty() && after.hunks.empty() && !after.unclosed && !after.binary &&
+      after.ours_exists && after.theirs_exists) {
+    MarkConflictResolved();
+    return;
+  }
+  conflict_ = after;
+  conflict_hunk_ = std::clamp(conflict_hunk_, 0, std::max(0, static_cast<int>(conflict_.hunks.size()) - 1));
+  Refresh();
+  Note(std::to_string(conflict_.hunks.size()) + " conflicts still marked in " + conflict_.path,
+       false);
+}
+
+void App::StepConflictFile(int delta) {
+  const std::vector<std::string> paths = ConflictedPaths();
+  if (paths.size() < 2) {
+    return;
+  }
+  const auto at = std::find(paths.begin(), paths.end(), conflict_.path);
+  const int count = static_cast<int>(paths.size());
+  const int here = at == paths.end() ? 0 : static_cast<int>(at - paths.begin());
+  OpenConflict(paths[static_cast<std::size_t>(((here + delta) % count + count) % count)]);
+}
+
+void App::AfterResolve(const git::OpResult& result) {
+  Apply(result);
+  if (!result.ok) {
+    return;
+  }
+  operation_ = repo_.ReadOperation();
+  const std::vector<std::string> paths = ConflictedPaths();
+  if (paths.empty()) {
+    CloseOverlay();
+    // How to finish depends on what stopped: only a rebase has a continue.
+    const std::string finish =
+        operation_.operation == model::Operation::Rebase
+            ? keys_.KeyFor(ui::Action::Operation) + " then c to continue the rebase"
+            : keys_.KeyFor(ui::Action::Commit) + " on the status view to commit";
+    Note(result.message + " · no conflicts left, " + finish, false);
+    return;
+  }
+  if (std::find(paths.begin(), paths.end(), conflict_.path) != paths.end()) {
+    conflict_ = repo_.ReadConflict(conflict_.path);
+    conflict_hunk_ = std::clamp(conflict_hunk_, 0,
+                                std::max(0, static_cast<int>(conflict_.hunks.size()) - 1));
+  } else {
+    OpenConflict(paths.front());
+  }
+}
+
+int App::RunEditor(const std::vector<std::string>& argv) {
+  int code = -1;
+  suspend_([&argv, &code] {
+    // gittop's bracketed paste is its own, set outside FTXUI, so it is handed
+    // back too: an editor started inside it would see paste markers it never
+    // asked for.
+    std::fputs("\x1b[?2004l", stdout);
+    std::fflush(stdout);
+    code = platform::RunInTerminal(argv);
+    std::fputs("\x1b[?2004h", stdout);
+    std::fflush(stdout);
+  });
+  return code;
 }
 
 // Far enough back to reach past a long rebase; the list is a recovery tool,
@@ -3856,17 +4023,7 @@ void App::CommitInEditor() {
   }
   std::vector<std::string> argv = repo_.EditorCommand();
   argv.push_back(repo_.PrepareCommitMessage());
-  int code = -1;
-  suspend_([&argv, &code] {
-    // gittop's bracketed paste is its own, set outside FTXUI, so it is handed
-    // back too: an editor started inside it would see paste markers it never
-    // asked for.
-    std::fputs("\x1b[?2004l", stdout);
-    std::fflush(stdout);
-    code = platform::RunInTerminal(argv);
-    std::fputs("\x1b[?2004h", stdout);
-    std::fflush(stdout);
-  });
+  const int code = RunEditor(argv);
   if (code != 0) {
     Note(code < 0 ? "could not start " + argv.front() + " — set GIT_EDITOR or EDITOR"
                   : argv.front() + " exited with an error — commit aborted",
@@ -4102,6 +4259,9 @@ bool App::Perform(ui::Action action) {
       return true;
     case ui::Action::RevertCommit:
       RevertSelectedCommit();
+      return true;
+    case ui::Action::Merge:
+      MergeSelectedBranch();
       return true;
     case ui::Action::Prune:
       RequestPrune();
@@ -4600,7 +4760,7 @@ int App::Run() {
   });
 
   // -------------------------------------------------------- operation overlay
-  auto operation_pane = Renderer([this] { return ui::OperationPane(operation_); });
+  auto operation_pane = Renderer([this] { return ui::OperationPane(operation_, snapshot_.conflicted); });
 
   // ---------------------------------------------------------- sign-in overlay
   InputOption token_option;
@@ -4662,9 +4822,22 @@ int App::Run() {
     return ui::ReflogPane(reflog_, reflog_selected_, screen.dimx(), screen.dimy());
   });
 
+  auto conflict_pane = Renderer([this, &screen] {
+    const std::vector<std::string> paths = ConflictedPaths();
+    const auto at = std::find(paths.begin(), paths.end(), conflict_.path);
+    ui::ConflictView view;
+    view.file = &conflict_;
+    view.hunk = conflict_hunk_;
+    view.file_index = at == paths.end() ? 0 : static_cast<std::size_t>(at - paths.begin());
+    view.file_count = std::max<std::size_t>(paths.size(), 1);
+    view.operation = model::OperationName(operation_.operation);
+    view.editor = std::filesystem::path(repo_.EditorCommand().front()).filename().string();
+    return ui::ConflictPane(view, screen.dimx(), screen.dimy());
+  });
+
   auto overlay = Container::Tab({commit_pane, confirm_pane, help_pane, transfer_pane,
                                  passphrase_pane, filter_pane, operation_pane, signin_pane,
-                                 ref_picker_pane, pull_create_pane, reflog_pane},
+                                 ref_picker_pane, pull_create_pane, reflog_pane, conflict_pane},
                                 &overlay_index_);
 
   // --------------------------------------------------------------- main view
@@ -4811,7 +4984,8 @@ int App::Run() {
       body.push_back(std::move(panel) | reflect(body_box_));
     }
 
-    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_, keys_, filter_));
+    body.push_back(ui::Footer(message_, message_is_error_, ToastFade(), view_, keys_, filter_,
+                              snapshot_.conflicted > 0));
 
     Element view = vbox(std::move(body)) | bgcolor(ui::theme().bg);
 
@@ -4998,6 +5172,10 @@ int App::Run() {
             CloseOverlay();
             return true;
           }
+          if (event == Event::Return && snapshot_.conflicted > 0) {
+            OpenFirstConflict();
+            return true;
+          }
           // Both answers go on to the confirm pane rather than acting here.
           // Neither is a keystroke that should be one keystroke.
           //
@@ -5140,6 +5318,56 @@ int App::Run() {
           // behind this is dimmed and a key that acts on it from here would act
           // on a list nobody can see.
           return !event.is_mouse();
+        }
+
+        case kConflict: {
+          if (event == Event::Escape) {
+            CloseOverlay();
+            return true;
+          }
+          // Letters rather than keymap actions, as the operation pane's are:
+          // they mean something only while this pane is open, and o/t/b are
+          // the words on the chips.
+          if (event == Event::Character('o')) {
+            ResolveConflictHunk(model::Side::Ours);
+          } else if (event == Event::Character('t')) {
+            ResolveConflictHunk(model::Side::Theirs);
+          } else if (event == Event::Character('b')) {
+            ResolveConflictHunk(model::Side::Both);
+          } else if (event == Event::Character('O')) {
+            ResolveConflictFile(model::Side::Ours);
+          } else if (event == Event::Character('T')) {
+            ResolveConflictFile(model::Side::Theirs);
+          } else if (event == Event::Character('e')) {
+            EditConflict();
+          } else if (event == Event::Character('s')) {
+            MarkConflictResolved();
+          } else if (event == Event::Character(']')) {
+            StepConflictFile(1);
+          } else if (event == Event::Character('[')) {
+            StepConflictFile(-1);
+          } else {
+            const int last = std::max(0, static_cast<int>(conflict_.hunks.size()) - 1);
+            switch (keys_.Lookup(ui::Scope::Global, event)) {
+              case ui::Action::Down:
+                conflict_hunk_ = std::min(conflict_hunk_ + 1, last);
+                break;
+              case ui::Action::Up:
+                conflict_hunk_ = std::max(conflict_hunk_ - 1, 0);
+                break;
+              case ui::Action::First:
+                conflict_hunk_ = 0;
+                break;
+              case ui::Action::Last:
+                conflict_hunk_ = last;
+                break;
+              default:
+                // Swallowed: a key that acted on the dimmed dashboard behind
+                // this would act on a list nobody can see.
+                return !event.is_mouse();
+            }
+          }
+          return true;
         }
 
         case kReflog: {

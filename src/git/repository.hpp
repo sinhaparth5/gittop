@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "model/blame.hpp"
+#include "model/conflict.hpp"
 #include "model/diff.hpp"
 #include "model/history.hpp"
 #include "model/operation.hpp"
@@ -167,6 +168,24 @@ class Repository {
   OpResult CherryPick(const std::vector<std::string>& ids, std::size_t* applied);
   OpResult Revert(const std::string& id);
 
+  // In git/conflict.cpp. `Merge` merges `branch` into HEAD: a fast-forward
+  // when HEAD is behind, a merge commit when nothing conflicts, and otherwise a
+  // stop with MERGE_HEAD on disk for the resolver. Refuses on a dirty tree.
+  //
+  // `ReadConflict` is one conflicted file, parsed for the resolver. The two
+  // resolves rewrite the working-tree file and stage it once no marker is
+  // left. A hunk names the line it starts on as the resolver saw it: the file
+  // is re-read first, and a hunk that moved means the file was edited since,
+  // so the block under the cursor is not the one that would be replaced.
+  OpResult Merge(const model::Branch& branch);
+  model::ConflictFile ReadConflict(const std::string& path) const;
+  OpResult ResolveHunk(const std::string& path, std::size_t hunk, std::size_t begin,
+                       model::Side side);
+  OpResult ResolveFile(const std::string& path, model::Side side);
+  // Stages a conflicted file as it stands, after an editor resolved it.
+  // Refuses while a conflict marker is still in it.
+  OpResult MarkResolved(const std::string& path);
+
   // In git/reflog.cpp. `ResetTo` moves HEAD and its branch to `id`, refusing
   // on a dirty tree or an operation in progress, and refusing rather than
   // overwriting an untracked file the target has.
@@ -246,5 +265,16 @@ class Repository {
 // a rebase writes an entry per commit and is still one action, so its whole
 // run back to where it started counts. Zero for an empty log.
 std::size_t UndoSteps(const std::vector<model::ReflogEntry>& log);
+
+// The conflict blocks in a file's text, in git's marker format, two-way or
+// diff3. Pure, and separate from ReadConflict so it can be tested on a string.
+// A block with no closing marker is left out rather than guessed at.
+// ponytail: assumes the default marker size of 7; a conflict-marker-size
+// attribute would need reading from .gitattributes.
+void ParseConflictMarkers(const std::string& text, model::ConflictFile* out);
+
+// The text with hunk `hunk` replaced by `side`'s lines.
+std::string ResolveConflictText(const model::ConflictFile& file, std::size_t hunk,
+                                model::Side side);
 
 }  // namespace gittop::git
