@@ -81,6 +81,7 @@ enum class Action {
   MarkCommit,
   PasteCommits,
   RevertCommit,
+  Merge,
   CiRef,
   PullCreate,
 

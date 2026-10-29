@@ -53,7 +53,7 @@ Run it in Windows Terminal for full colour. WSL works with the `.deb`.
 
 - **Status**: stage, unstage, discard and commit files.
 - **History**: commit log with a lane graph and a 91-day activity heatmap.
-- **Branches**: ahead/behind counts, checkout, and pruning of deleted upstreams.
+- **Branches**: ahead/behind counts, checkout, merge, and pruning of deleted upstreams.
 - **Graph**: commits over time by day, week or month, plus top authors and hours.
 - **Diff**: unstaged, staged, or any commit's diff.
 - **Stashes**: stash, apply, pop and drop.
@@ -63,9 +63,14 @@ Run it in Windows Terminal for full colour. WSL works with the `.deb`.
 - **Settings**: theme, glyphs, border, animations, sign-in. Changes save immediately.
 
 `W` opens worktrees and submodules. `/` filters whichever list is on screen. `B` rebases onto the
-upstream, and `o` continues or aborts an interrupted rebase, merge or cherry-pick. `b` on a file
-opens blame, `z` undoes the last change to HEAD and `Z` opens the reflog. Press `?` for every key,
-including interactive rebase, cherry-pick, amend and branch/tag management.
+upstream, and `o` continues or aborts an interrupted rebase, merge or cherry-pick. When one of
+those stops at a conflict, a resolver opens: pick ours, theirs or both per block, take a whole
+side, or press `e` to finish in your editor (vim and nvim open on the conflict's line). `b` on a
+file opens blame, `z` undoes the last change to HEAD and `Z` opens the reflog. Press `?` for every
+key, including interactive rebase, cherry-pick, amend and branch/tag management.
+
+[docs/workflows.md](docs/workflows.md) walks through rebasing, cherry-picking, merging and
+resolving conflicts step by step.
 
 ## Push and pull
 
@@ -130,7 +135,7 @@ status also has a glyph and letter. Custom commands run without a shell and supp
 | `g` `G`           | First / last                                                 |
 | `ctrl-u` `ctrl-d` | Page up / down                                               |
 | `/`               | Filter                                                       |
-| `enter`           | Open (diff, CI jobs, PR details, checkout)                   |
+| `enter`           | Open (diff, resolve a conflict, CI jobs, PR details, checkout) |
 | `space` `s` `u`   | Toggle / stage / unstage                                     |
 | `a`               | Stage all                                                    |
 | `d`               | Discard                                                      |
@@ -141,7 +146,7 @@ status also has a glyph and letter. Custom commands run without a shell and supp
 | `h` `l` `d` `w` `m` | Graph: pan, and bucket by day / week / month               |
 | `B` `o`           | Rebase / continue or abort                                   |
 | `f` `p` `P`       | Fetch / pull / push                                          |
-| `x`               | Branches view: prune                                         |
+| `m` `x`           | Branches view: merge into current / prune                    |
 | `b`               | CI view: pick a ref                                          |
 | `n`               | Pulls view: open a PR                                        |
 | `W`               | Worktrees and submodules                                     |

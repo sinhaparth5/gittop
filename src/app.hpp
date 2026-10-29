@@ -27,6 +27,7 @@
 #include "remote/ticker.hpp"
 #include "remote/token.hpp"
 #include "ui/blame_panel.hpp"
+#include "ui/conflict_panel.hpp"
 #include "ui/diff_panel.hpp"
 #include "ui/graph_panel.hpp"
 #include "ui/keymap.hpp"
@@ -60,6 +61,7 @@ class App {
     kRefPicker = 8,
     kPullCreate = 9,
     kReflog = 10,
+    kConflict = 11,
   };
 
   // Where the CI view's ref filter comes from. `Branch` follows the checked-out
@@ -407,6 +409,28 @@ class App {
   void MarkSelectedCommit();
   void PasteMarkedCommits();
   void RevertSelectedCommit();
+  void MergeSelectedBranch();
+
+  // The conflict resolver: one conflicted file at a time, a block at a time.
+  // Every answer rewrites the file on disk and re-reads it, so what is on
+  // screen is never a copy that has drifted from what `git diff` would say.
+  // When the last conflict goes, the overlay closes and says how to finish.
+  void OpenConflict(const std::string& path);
+  void OpenFirstConflict();
+  // After anything that can stop at a conflict: opens the resolver on the
+  // first conflicted file, so the next thing on screen is the way forward.
+  void OpenResolverIfStopped();
+  void ResolveConflictHunk(model::Side side);
+  void ResolveConflictFile(model::Side side);
+  void MarkConflictResolved();
+  void EditConflict();
+  void StepConflictFile(int delta);
+  void AfterResolve(const git::OpResult& result);
+  std::vector<std::string> ConflictedPaths() const;
+
+  // Hands the terminal to argv and takes it back; the exit status, or -1 when
+  // it could not start.
+  int RunEditor(const std::vector<std::string>& argv);
 
   // `z` resets HEAD to before the last action in the reflog, and `Z` lists the
   // reflog to reset or branch from any entry. Both go through one confirm.
@@ -679,6 +703,9 @@ class App {
   // Commit ids marked for a cherry-pick, in the order they were marked. Kept
   // across reloads by id, because a list index means nothing after HEAD moves.
   std::vector<std::string> marked_commits_;
+
+  model::ConflictFile conflict_;
+  int conflict_hunk_ = 0;
 
   // Read on every `Z` rather than cached: every commit, checkout and reset
   // adds an entry, and a stale list would reset to the wrong one.

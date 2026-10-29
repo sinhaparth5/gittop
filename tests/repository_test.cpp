@@ -569,3 +569,132 @@ TEST_CASE("a submodule is listed, and an update clones it at the recorded commit
   CHECK(workspace.submodules.at(0).cloned);
   CHECK(workspace.submodules.at(0).checked_out == workspace.submodules.at(0).recorded);
 }
+
+namespace {
+
+gittop::model::Branch LocalBranch(const char* name) {
+  gittop::model::Branch branch;
+  branch.name = name;
+  return branch;
+}
+
+std::string Slurp(const ScratchDir& dir, const char* file) {
+  std::ifstream in(dir.path() / file, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// main and topic both rewrite README from "hello", so merging topic stops.
+void Diverge(Repository& repo, const ScratchDir& dir) {
+  REQUIRE(repo.CreateBranch("topic", "HEAD").ok);
+  REQUIRE(repo.Checkout(LocalBranch("topic")).ok);
+  CommitFile(repo, dir, "README", "topic\n", "on topic");
+  REQUIRE(repo.Checkout(LocalBranch("main")).ok);
+  CommitFile(repo, dir, "README", "main\n", "on main");
+}
+
+}  // namespace
+
+TEST_CASE("conflict markers parse two-way and diff3, and skip an unclosed block") {
+  gittop::model::ConflictFile file;
+  gittop::git::ParseConflictMarkers(
+      "keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\nmid\n"
+      "<<<<<<< HEAD\r\na\r\n||||||| base\r\nb\r\n=======\r\nc\r\n>>>>>>> x\r\n"
+      "<<<<<<< HEAD\nnever closed\n",
+      &file);
+  REQUIRE(file.hunks.size() == 2);
+  CHECK(file.hunks[0].ours_label == "HEAD");
+  CHECK(file.hunks[0].theirs_label == "topic");
+  CHECK(file.hunks[0].ours == std::vector<std::string>{"ours"});
+  CHECK(file.hunks[0].theirs == std::vector<std::string>{"theirs"});
+  CHECK(file.hunks[1].ours == std::vector<std::string>{"a\r"});
+  CHECK(file.hunks[1].base == std::vector<std::string>{"b\r"});
+  CHECK(file.hunks[1].theirs == std::vector<std::string>{"c\r"});
+  CHECK(file.unclosed);
+
+  CHECK(gittop::git::ResolveConflictText(file, 0, gittop::model::Side::Both).rfind(
+            "keep\nours\ntheirs\nmid\n<<<<<<< HEAD\r\n", 0) == 0);
+}
+
+TEST_CASE("a conflicting merge stops, and resolving a block stages the file") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  Diverge(*repo, dir);
+
+  REQUIRE(repo->Merge(LocalBranch("topic")).ok);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::Merge);
+  const gittop::model::ConflictFile file = repo->ReadConflict("README");
+  REQUIRE(file.hunks.size() == 1);
+  CHECK(file.hunks[0].ours == std::vector<std::string>{"main"});
+  CHECK(file.hunks[0].theirs == std::vector<std::string>{"topic"});
+
+  // A stale view of the file is refused rather than applied to the wrong block.
+  CHECK_FALSE(repo->ResolveHunk("README", 0, file.hunks[0].begin + 1,
+                                gittop::model::Side::Ours).ok);
+  REQUIRE(repo->ResolveHunk("README", 0, file.hunks[0].begin, gittop::model::Side::Both).ok);
+  CHECK(Slurp(dir, "README") == "main\ntopic\n");
+  CHECK(repo->ReadStatus().conflicted == 0);
+
+  REQUIRE(repo->Commit("merge topic").ok);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+  CHECK(Log(dir)[0] == "merge topic");
+}
+
+TEST_CASE("taking one side of a whole file, and marking an edited file resolved") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  Diverge(*repo, dir);
+  REQUIRE(repo->Merge(LocalBranch("topic")).ok);
+
+  CHECK_FALSE(repo->MarkResolved("README").ok);  // markers still in it
+  std::ofstream(dir.path() / "README") << "half\n<<<<<<< HEAD\nedited\n";
+  CHECK_FALSE(repo->MarkResolved("README").ok);  // an unclosed block is not clean
+  REQUIRE(repo->ResolveFile("README", gittop::model::Side::Theirs).ok);
+  CHECK(Slurp(dir, "README") == "topic\n");
+  CHECK(repo->ReadStatus().conflicted == 0);
+}
+
+TEST_CASE("merge fast-forwards when behind, and commits a clean merge") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  REQUIRE(repo->CreateBranch("topic", "HEAD").ok);
+  REQUIRE(repo->Checkout(LocalBranch("topic")).ok);
+  CommitFile(*repo, dir, "a.txt", "a\n", "add a");
+  REQUIRE(repo->Checkout(LocalBranch("main")).ok);
+
+  REQUIRE(repo->Merge(LocalBranch("topic")).ok);
+  CHECK(Log(dir) == std::vector<std::string>{"add a", "first"});
+  CHECK(repo->Merge(LocalBranch("topic")).message.rfind("already up to date", 0) == 0);
+
+  REQUIRE(repo->Checkout(LocalBranch("topic")).ok);
+  CommitFile(*repo, dir, "b.txt", "b\n", "add b");
+  REQUIRE(repo->Checkout(LocalBranch("main")).ok);
+  CommitFile(*repo, dir, "c.txt", "c\n", "add c");
+  REQUIRE(repo->Merge(LocalBranch("topic")).ok);
+  CHECK(Log(dir)[0].rfind("Merge branch 'topic'", 0) == 0);
+  CHECK(std::filesystem::exists(dir.path() / "b.txt"));
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+}
+
+TEST_CASE("a file deleted on one side resolves whole, by deleting or keeping it") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  REQUIRE(repo->CreateBranch("topic", "HEAD").ok);
+  REQUIRE(repo->Checkout(LocalBranch("topic")).ok);
+  CommitFile(*repo, dir, "README", "changed on topic\n", "change");
+  REQUIRE(repo->Checkout(LocalBranch("main")).ok);
+  std::filesystem::remove(dir.path() / "README");
+  REQUIRE(repo->StageAll().ok);
+  REQUIRE(repo->Commit("delete").ok);
+
+  REQUIRE(repo->Merge(LocalBranch("topic")).ok);
+  const gittop::model::ConflictFile file = repo->ReadConflict("README");
+  CHECK_FALSE(file.ours_exists);
+  CHECK(file.theirs_exists);
+  CHECK(file.hunks.empty());
+
+  REQUIRE(repo->ResolveFile("README", gittop::model::Side::Ours).ok);
+  CHECK_FALSE(std::filesystem::exists(dir.path() / "README"));
+  CHECK(repo->ReadStatus().conflicted == 0);
+  REQUIRE(repo->Commit("merge topic").ok);
+  CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
+}

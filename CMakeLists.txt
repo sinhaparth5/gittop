@@ -169,6 +169,7 @@ add_library(gittop_core STATIC
   src/git/askpass.cpp
   src/git/blame.cpp
   src/git/message.cpp
+  src/git/conflict.cpp
   src/git/pick.cpp
   src/git/reflog.cpp
   src/git/workspace.cpp
@@ -188,6 +189,7 @@ add_library(gittop_core STATIC
   src/remote/pulls.cpp
   src/remote/token.cpp
   src/ui/blame_panel.cpp
+  src/ui/conflict_panel.cpp
   src/ui/diff_panel.cpp
   src/ui/glyphs.cpp
   src/ui/graph_panel.cpp

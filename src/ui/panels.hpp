@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <ftxui/dom/elements.hpp>
 #include <string>
@@ -111,8 +112,10 @@ ftxui::Element StatusSidebar(const model::StatusSnapshot& snapshot);
 // captured in string literals, so a rebound key shows up in the hints. `filter`
 // is the live search, echoed on the key row so a list that is hiding rows never
 // looks like a list that has none.
+// `conflicted` swaps the status view's chips for the ones that finish a stopped
+// merge, cherry-pick, revert or rebase.
 ftxui::Element Footer(const std::string& message, bool is_error, float fade, View view,
-                      const Keymap& keys, const std::string& filter);
+                      const Keymap& keys, const std::string& filter, bool conflicted = false);
 
 // Lays out in two columns whenever the terminal is wide enough and too short
 // for one, which is most of them: the single column is forty-odd rows and gets
@@ -129,7 +132,9 @@ ftxui::Element OperationBanner(const model::OperationState& state, const Keymap&
 // The continue-or-abort dialog. Separate from ConfirmPane because it is two
 // destructive answers rather than one, and folding a second verb into a
 // yes/no pane is how `y` ends up meaning different things on different days.
-ftxui::Element OperationPane(const model::OperationState& state);
+// `conflicted` is how many files still need resolving; above zero it offers
+// enter, which opens the resolver on the first.
+ftxui::Element OperationPane(const model::OperationState& state, std::size_t conflicted);
 
 // The search box. Takes the already-rendered input for the same reason the
 // passphrase pane does — not secrecy here, just the one way this file gets a

@@ -857,7 +857,7 @@ Element StatusSidebar(const model::StatusSnapshot& snapshot) {
 }
 
 Element Footer(const std::string& message, bool is_error, float fade, View view,
-               const Keymap& keys, const std::string& filter) {
+               const Keymap& keys, const std::string& filter, bool conflicted) {
   const Theme& t = theme();
 
   // The toast line is always drawn, blank or not, so the list above never
@@ -881,7 +881,12 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
   const std::string move = KeyList(keys, Action::Down) + " " + KeyList(keys, Action::Up);
 
   Elements chips{text(" ")};
-  if (view == View::Status) {
+  if (view == View::Status && conflicted) {
+    chips.push_back(KeyChip(keys, Action::Open, "resolve"));
+    chips.push_back(KeyChip(keys, Action::Operation, "continue/abort"));
+    chips.push_back(KeyChip(keys, Action::Commit, "commit"));
+    chips.push_back(KeyChip(keys, Action::Undo, "undo"));
+  } else if (view == View::Status) {
     chips.push_back(KeyChip(keys, Action::ToggleStage, "stage"));
     chips.push_back(KeyChip(keys, Action::StageAll, "all"));
     chips.push_back(KeyChip(keys, Action::Discard, "discard"));
@@ -947,8 +952,8 @@ Element Footer(const std::string& message, bool is_error, float fade, View view,
   } else if (view == View::Branches) {
     // No move chip, for the history view's reason: five actions is the room.
     chips.push_back(KeyChip(keys, Action::Open, "checkout"));
+    chips.push_back(KeyChip(keys, Action::Merge, "merge"));
     chips.push_back(KeyChip(keys, Action::NewBranch, "new"));
-    chips.push_back(KeyChip(keys, Action::RenameBranch, "rename"));
     chips.push_back(KeyChip(keys, Action::DeleteBranch, "delete"));
     // The only place the prune key is offered, and the only place its effect is
     // visible: a branch reading "gone" here is what it removes the ref for.
@@ -1016,7 +1021,7 @@ Element OperationBanner(const model::OperationState& state, const Keymap& keys) 
   return hbox(std::move(parts)) | bgcolor(t.surface_raised);
 }
 
-Element OperationPane(const model::OperationState& state) {
+Element OperationPane(const model::OperationState& state, std::size_t conflicted) {
   const Theme& t = theme();
   const std::string name = model::OperationName(state.operation);
   const bool continuable = state.operation == model::Operation::Rebase;
@@ -1069,6 +1074,8 @@ Element OperationPane(const model::OperationState& state) {
   rows.push_back(text(""));
   rows.push_back(separator() | color(t.border));
   rows.push_back(hbox({
+      text(" "),
+      conflicted > 0 ? Chip("enter", "resolve " + std::to_string(conflicted)) : text(""),
       text(" "),
       continuable ? Chip("c", "continue") : text(""),
       text(" "),
@@ -1197,6 +1204,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       pair(Action::Reword, Action::DropCommit, "history: reword / drop the commit"),
       pair(Action::MoveDown, Action::MoveUp, "history: move the commit down / up"),
       line(Action::Operation, "continue or abort what is in progress"),
+      row(keys.KeyFor(Action::Open), "status: resolve a conflicted file"),
       line(Action::Undo, "undo the last change to HEAD, after a confirm"),
       line(Action::Reflog, "reflog: reset or branch from where HEAD was"),
       text(""),
@@ -1209,6 +1217,7 @@ Element HelpPane(const Keymap& keys, int width, int height, int scroll) {
       line(Action::DeleteBranch, "branches: delete it, here or on the remote"),
       line(Action::Tag, "history: tag the commit, then offer to push it"),
       pair(Action::MarkCommit, Action::PasteCommits, "history: mark / cherry-pick the marked"),
+      line(Action::Merge, "branches: merge it into the current one"),
       line(Action::RevertCommit, "history: revert the commit"),
       line(Action::CiRef, "CI view: show runs for another ref"),
       line(Action::PullCreate, "pulls view: open one, after a confirm"),

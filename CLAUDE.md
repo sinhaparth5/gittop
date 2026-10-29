@@ -588,6 +588,16 @@ reads `MERGE_HEAD` through `git_repository_mergehead_foreach` and cleans the sta
 It also refuses during a rebase: those commits have to go through `git_rebase_commit`, which
 advances the plan as well as the branch.
 
+**The conflict resolver reads the working-tree file, and the index only for whole-file answers.**
+`git/conflict.cpp` parses the markers in the file on disk, because that is what the user may
+already have edited and what each answer rewrites; `O`/`T` take the index's stage 2 or 3 instead,
+since a binary file or a modify/delete conflict has no markers at all. Every answer re-reads the
+file and refuses a block whose start line moved, which is `HunkPick::header`'s rule again. A file
+is staged when its last marker goes, and **never while an unclosed `<<<<<<<` is left** (that is
+`ConflictFile::unclosed`, and the editor hand-off depends on it). `OpenResolverIfStopped` runs
+after everything that can stop at a conflict, so a new operation of that kind calls it too.
+`docs/design/conflict-resolver.md` has the trade-offs.
+
 **Stash indices renumber.** `stash@{n}` is the only handle libgit2 offers and dropping one shifts
 every entry below it, so every mutation sets `stashes_loaded_ = false` and re-reads rather than
 adjusting the list it has.
