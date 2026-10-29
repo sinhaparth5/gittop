@@ -31,6 +31,16 @@ v1.9.6, and nlohmann/json v3.12.0 come from FetchContent, so the first configure
 spends a few minutes downloading and building them — budget for it rather than assuming the build
 hung. `-Wall -Wextra -Wpedantic` is set on the target, so warnings show up without asking.
 
+```bash
+ctest --test-dir build                              # everything: doctest binary + glyph_literals.py
+./build/gittop_tests -tc="*lane*"                   # doctest cases by name (wildcards ok)
+./build/gittop_tests -sf="*config_test.cpp"         # one test file
+ctest --test-dir build -R glyph_literals            # just the non-ASCII literal check
+```
+
+The tests are on by default (`GITTOP_BUILD_TESTS`); pass `-DGITTOP_BUILD_TESTS=OFF` to skip
+fetching doctest.
+
 libgit2 is built with `USE_HTTPS=OpenSSL-Dynamic` and `USE_SSH=exec`, chosen so that turning the
 transports on in Phase 5 added no build dependency: the first dlopen()s libssl at run time and
 needs no OpenSSL headers, and the second runs the system `ssh` rather than linking libssh2. Do not
@@ -104,10 +114,11 @@ src/
                     owns `AllViews()` and the tab bar, so it is where a new view starts
 ```
 
-`app.cpp` is 3.5k lines and holds every piece of state and every key; `panels.cpp` and
+`app.cpp` is over 5k lines and holds every piece of state and every key; `panels.cpp` and
 `repository.cpp` are the next largest. Nothing here is worth opening blind — the rules below
-name the file that owns each decision, and this repository carries a CodeGraph index, so
-`codegraph explore "<symbol>"` gets to the definition and its callers in one step.
+name the file that owns each decision. `.codegraph/` is gitignored, so a CodeGraph index exists
+only where someone built one locally; when it does, `codegraph explore "<symbol>"` gets to the
+definition and its callers in one step, and otherwise grep for the symbol.
 
 ## Five rules that keep this codebase working
 
