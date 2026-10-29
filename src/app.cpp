@@ -197,13 +197,13 @@ void App::ApplyConfig() {
   // want as replacing every check and arrow with a private-use icon.
   ui::SetProviderLogos(config_.GetBool("theme.logos", false));
 
-  // Square by default: the mainframe look is ruled boxes, and a rounded corner
-  // is the one thing on that screen that reads as a different decade.
-  ui::PanelBorder border = ui::PanelBorder::Light;
-  const std::string wanted_border = config_.Get("theme.border", "light");
+  // Rounded by default, as btop draws its boxes: it reads as one continuous
+  // stroke. mainframe users who want ruled boxes set border = "light".
+  ui::PanelBorder border = ui::PanelBorder::Rounded;
+  const std::string wanted_border = config_.Get("theme.border", "rounded");
   if (!ui::ParsePanelBorder(wanted_border, &border)) {
     complain("unknown theme.border '" + wanted_border + "'");
-    border = ui::PanelBorder::Light;
+    border = ui::PanelBorder::Rounded;
   }
   ui::SetPanelBorder(border);
 
@@ -315,6 +315,7 @@ void App::ApplyConfig() {
 
 void App::Refresh() {
   snapshot_ = repo_.ReadStatus();
+  stat_history_.Record(snapshot_);
   // Read alongside the status because they answer one question together: a pile
   // of conflicted files means something quite different mid-rebase, and the
   // banner that says so has to appear in the same frame as the files do.
@@ -4872,7 +4873,7 @@ int App::Run() {
         // cards is a banner nobody reads before acting.
         body.push_back(ui::OperationBanner(operation_, keys_));
         body.push_back(ui::SummaryRow(VisibleStatus(), bars_,
-                                      width < 84 || compact_));
+                                      width < 84 || compact_, stat_history_));
         {
           // Below this the change list would be narrower than the paths it
           // holds, and a truncated path is worth less than the sidecar it
@@ -4881,7 +4882,12 @@ int App::Run() {
           const int sidebar = ui::StatusSidebarWidth();
           const bool wide = width >= sidebar + 62 && !compact_;
           const int list_width = wide ? width - sidebar : width;
-          Element list = ui::FileList(VisibleStatus(), selected_, list_width, &row_boxes_);
+          // Header, tabs, the cards, the footer and the panel's own frame
+          // take this many rows, two more when the cards stack; the rest is
+          // the panel's, and the clean dashboard sizes its chart to it.
+          const bool stacked = width < 84 || compact_;
+          Element list = ui::FileList(VisibleStatus(), selected_, list_width, &row_boxes_,
+                                      height - (stacked ? 16 : 14) - (operation_.active() ? 2 : 0));
           if (wide) {
             panel = hbox({
                         std::move(list) | flex,
@@ -4901,18 +4907,33 @@ int App::Run() {
           body.push_back(ui::Panel("ACTIVITY", ui::ActivityPanel(history_),
                                    {.focused = false}));
         }
-        panel = ui::Panel("COMMITS",
-                          ui::CommitList(VisibleHistory(), commit_selected_, width,
-                                         &row_boxes_, &marked_commits_)) |
-                flex;
+        {
+          const model::HistorySnapshot& shown = VisibleHistory();
+          std::string note = std::to_string(shown.commits.size()) + (history_.truncated ? "+" : "") +
+                             " commits";
+          if (!marked_commits_.empty()) {
+            note += "  " + std::to_string(marked_commits_.size()) + " marked";
+          }
+          panel = ui::Panel("COMMITS",
+                            ui::CommitList(shown, commit_selected_, width, &row_boxes_,
+                                           &marked_commits_),
+                            {.note = note}) |
+                  flex;
+        }
         break;
       }
 
       case ui::View::Branches:
-        panel = ui::Panel("BRANCHES",
-                          ui::BranchList(VisibleHistory(), branch_selected_, width,
-                                         &row_boxes_)) |
-                flex;
+        {
+          const std::vector<model::Branch>& branches = VisibleHistory().branches;
+          const auto remote = static_cast<std::size_t>(std::count_if(
+              branches.begin(), branches.end(), [](const model::Branch& b) { return b.remote; }));
+          panel = ui::Panel("BRANCHES",
+                            ui::BranchList(VisibleHistory(), branch_selected_, width, &row_boxes_),
+                            {.note = std::to_string(branches.size() - remote) + " local  " +
+                                     std::to_string(remote) + " remote"}) |
+                  flex;
+        }
         break;
 
       case ui::View::Diff: {

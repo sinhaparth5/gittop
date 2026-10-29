@@ -698,3 +698,17 @@ TEST_CASE("a file deleted on one side resolves whole, by deleting or keeping it"
   REQUIRE(repo->Commit("merge topic").ok);
   CHECK(repo->ReadOperation().operation == gittop::model::Operation::None);
 }
+
+TEST_CASE("the status read carries today's commits in the pulse and counts stashes") {
+  ScratchDir dir;
+  std::optional<Repository> repo = Fixture(dir);
+  gittop::model::StatusSnapshot status = repo->ReadStatus();
+  CHECK(status.pulse.back() == 1);
+  CHECK_FALSE(status.pulse_capped);
+  CHECK(status.stashes == 0);
+
+  std::ofstream(dir.path() / "README") << "changed\n";
+  REQUIRE(repo->StashSave("wip", false).ok);
+  status = repo->ReadStatus();
+  CHECK(status.stashes == 1);
+}

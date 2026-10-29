@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <ftxui/dom/elements.hpp>
@@ -20,6 +21,34 @@ struct StatBars {
   float unstaged = 0.0F;
   float untracked = 0.0F;
   float conflicted = 0.0F;
+};
+
+// Each card's count after every change this session, oldest first, for the
+// sparkline under its number. A sample is taken only when a count moves, so
+// the line is the shape of the work rather than of how often the tree was read.
+inline constexpr std::size_t kStatHistory = 32;
+struct StatHistory {
+  std::array<std::vector<int>, 4> series;  // staged, unstaged, untracked, conflicted
+
+  void Record(const model::StatusSnapshot& snapshot) {
+    const std::array<int, 4> now = {static_cast<int>(snapshot.staged),
+                                    static_cast<int>(snapshot.unstaged),
+                                    static_cast<int>(snapshot.untracked),
+                                    static_cast<int>(snapshot.conflicted)};
+    bool moved = series[0].empty();
+    for (std::size_t i = 0; i < now.size() && !moved; ++i) {
+      moved = series[i].back() != now[i];
+    }
+    if (!moved) {
+      return;
+    }
+    for (std::size_t i = 0; i < now.size(); ++i) {
+      series[i].push_back(now[i]);
+      if (series[i].size() > kStatHistory) {
+        series[i].erase(series[i].begin());
+      }
+    }
+  }
 };
 
 enum class View {
@@ -93,12 +122,14 @@ ftxui::Element TabBar(View active, int width, std::vector<ftxui::Box>* tabs = nu
 // `compact` stacks the four cards two-by-two, for terminals too narrow to give
 // each one a readable bar side by side.
 ftxui::Element SummaryRow(const model::StatusSnapshot& snapshot, const StatBars& bars,
-                          bool compact);
+                          bool compact, const StatHistory& history);
 // `width` is the terminal's. The path is truncated against it rather than left
 // to FTXUI, which clips at the panel edge without saying it did — a path that
 // ran out of room and one that happens to end there look identical.
+// `height` is the panel's, and sizes the clean-tree dashboard's chart; the
+// file list scrolls and does not need it.
 ftxui::Element FileList(const model::StatusSnapshot& snapshot, int selected, int width,
-                        std::vector<ftxui::Box>* rows = nullptr);
+                        std::vector<ftxui::Box>* rows = nullptr, int height = 0);
 
 // The Status view's right-hand column: what branch this is and what landed on
 // it recently. Both come out of the status read, so this costs no request and

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -40,6 +41,13 @@ struct StatusEntry {
 // revwalk nobody asked to see.
 inline constexpr std::size_t kRecentCommits = 12;
 
+// The clean-tree dashboard's 14-day pulse: commits reachable from HEAD per UTC
+// day, as the history view's heatmap counts them. Bounded twice, by the window
+// and by kPulseCap commits, so a repository that lands a thousand commits a day
+// still opens instantly and only says the count is a floor.
+inline constexpr std::size_t kPulseDays = 14;
+inline constexpr std::size_t kPulseCap = 500;
+
 struct RecentCommit {
   std::string short_id;
   std::string summary;
@@ -69,6 +77,14 @@ struct StatusSnapshot {
   // Newest first. Empty on an unborn head, which is not the same as a
   // repository whose walk failed — both draw as the empty state.
   std::vector<RecentCommit> recent;
+
+  // Oldest first; the last entry is today.
+  std::array<int, kPulseDays> pulse{};
+  bool pulse_capped = false;
+
+  // How many stashes there are. A handful of reflog entries, so it rides along
+  // with the status read rather than waiting for the stash view.
+  std::size_t stashes = 0;
 
   // Ordered conflicts first, then staged, then unstaged, then untracked.
   std::vector<StatusEntry> entries;

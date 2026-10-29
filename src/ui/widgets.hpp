@@ -112,6 +112,13 @@ ftxui::Element GradientBar(float ratio, Ramp ramp, Swatch trough);
 ftxui::Element Sparkline(const int* values, std::size_t count, int peak, Ramp ramp);
 ftxui::Element Sparkline(const std::vector<int>& values, int peak, Ramp ramp);
 
+// The sparkline grown to `rows` tall and `column` cells wide per value, with a
+// one-cell gap between columns: btop's graph boxes, for a short series that
+// deserves the room. Shaded along the ramp by height, eighth-block precise at
+// each column's top. Zero draws the same floor dot as the sparkline.
+ftxui::Element BarChart(const int* values, std::size_t count, int peak, int rows, int column,
+                        Ramp ramp);
+
 // Placeholder rows for a panel whose data is still in flight. A blank panel and
 // a panel that finished with nothing in it look identical, and the difference
 // is the whole question the user is asking while they wait. `frame` slides the

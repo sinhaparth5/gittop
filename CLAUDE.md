@@ -671,9 +671,11 @@ follows the same shape rather than computing rows from a y offset.
 
 Only the status snapshot is read at startup — plus `ReadOperation`, which is a handful of stat
 calls and has to be in the same frame as the files it explains. The status read also carries
-`ReadTracking` and `ReadRecent`, which feed the Status view's sidecar; both are *bounded*
-(`git_graph_ahead_behind` stops at the merge base, `ReadRecent` abandons the walk after
-`kRecentCommits`) and that bound is the only reason they are allowed there. Calling `ReadHistory`
+`ReadTracking` and `ReadRecent`, which feed the Status view's sidecar and its clean-tree
+dashboard; both are *bounded* (`git_graph_ahead_behind` stops at the merge base, `ReadRecent`
+keeps `kRecentCommits` and then counts the 14-day pulse until a commit is older than
+`kPulseDays` or `kPulseCap` commits have been walked) and that bound is the only reason they are
+allowed there. The stash count rides along too, because the stash reflog is a handful of entries. Calling `ReadHistory`
 to fill the same panel would put a full revwalk on every startup, which is the thing this section
 exists to prevent. History is read on the first switch
 to a view that needs it (`EnsureHistory`) and cached; the diff and the stash list likewise
@@ -850,7 +852,13 @@ published colours and retuning them would make them not those themes — and git
 because a status is drawn as a **glyph and a letter** as well as a colour. That rule is load-bearing,
 not decorative; it is why `Decorate()` returns three things.
 
-`mainframe`, the default since #33, is white on black with red the only strong hue, for conflicts and
+`btop` is the default: black ground, boxes in btop's cpu-box green, a dark red selection bar, and
+btop's meter hues for the statuses. Worst case ΔE 24.6 across the four visions, because the
+yellow sits lighter than the green and the red darker than both. Its accent is a light red that
+is not the text colour, so focus reads by tint as well as by the inverted title. Panels default to
+rounded borders with it.
+
+`mainframe`, the default from #33 until `btop`, is white on black with red the only strong hue, for conflicts and
 danger; the other roles carry a faint mint, amber or slate tint so they read apart at a glance. It
 passes by lightness rather than hue: worst case ΔE 20.1 across the same four visions, and the tints
 were picked to keep that within a point of the 20.8 the plain greys had. Its accent
