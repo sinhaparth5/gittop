@@ -467,21 +467,25 @@ float App::ToastFade() const {
 
 // Without a cap the animation loop repaints as fast as the machine allows, which
 // on an idle terminal easing one bar is a fan spinning up to do nothing. Thirty
-// a second is the rate the 80ms time constant was tuned against, and it is only
-// ever applied to a frame the animation asked for — an input-driven repaint is
-// never delayed, because a keystroke that waits 33ms for a progress bar is a
-// keystroke that feels broken.
+// a second is the rate the 80ms time constant was tuned against.
+//
+// The wait ends the moment the terminal has input. `animation_pending_` cannot
+// tell an animation frame from an input one — it is set by the frame before —
+// so this used to be a plain sleep that every keystroke paid while anything
+// moved. A stalled fetch keeps the spinner turning for as long as the transport
+// timeout, and a touchpad sends a wheel event every few milliseconds: at 33ms a
+// notch, five seconds of scrolling queued half a minute of frames behind it.
 void App::ThrottleFrame() {
   if (!animation_pending_) {
     return;
   }
   animation_pending_ = false;
 
-  constexpr auto kBudget = std::chrono::duration<float>(1.0F / 30.0F);
-  const auto now = std::chrono::steady_clock::now();
-  const auto since = std::chrono::duration<float>(now - last_frame_);
+  constexpr auto kBudget = std::chrono::milliseconds(33);
+  const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - last_frame_);
   if (since < kBudget) {
-    std::this_thread::sleep_for(kBudget - since);
+    platform::WaitForInput(static_cast<int>((kBudget - since).count()));
   }
 }
 
@@ -3159,9 +3163,11 @@ void App::Reload() {
   Note("re-read the repository", false);
 }
 
-void App::ReloadRepository() {
+void App::ReloadRepository(bool history) {
   Refresh();
-  history_loaded_ = false;
+  if (history) {
+    history_loaded_ = false;
+  }
   diff_loaded_ = false;
   stashes_loaded_ = false;
   workspace_loaded_ = false;
@@ -5091,7 +5097,7 @@ int App::Run() {
     // asks whether the interval is up; the answer is usually no.
     // The working tree or .git changed, and has had a moment to settle.
     if (event == kWatched) {
-      ReloadRepository();
+      ReloadRepository(watch_git_changed_.exchange(false));
       return true;
     }
 
@@ -5553,7 +5559,17 @@ int App::Run() {
       auto filter = std::make_shared<git::Repository>(std::move(*own));
       watcher_ = std::make_unique<platform::TreeWatcher>(
           repo_.WorkdirPath(),
-          [filter](const std::string& rel) { return filter->IsWatchNoise(rel); },
+          // The filter is the one place that sees each path, so it is also
+          // where a change under .git/ is noticed. The index is not one: a
+          // status read rewrites it to refresh stat data, so counting it would
+          // make every reload schedule the revwalk it was meant to skip.
+          [this, filter](const std::string& rel) {
+            const bool noise = filter->IsWatchNoise(rel);
+            if (!noise && rel.rfind(".git/", 0) == 0 && rel != ".git/index") {
+              watch_git_changed_ = true;
+            }
+            return noise;
+          },
           [&screen] { screen.PostEvent(kWatched); });
     }
   };

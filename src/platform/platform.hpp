@@ -125,6 +125,12 @@ std::string ConfigDir();
 // several thousand frames nobody will read.
 bool StdoutIsTerminal();
 
+// Waits up to `ms` for the terminal to have input, and returns early the
+// moment it does. This is how the frame cap paces an animation without making
+// a keystroke or a wheel notch queue up behind it — a plain sleep on the UI
+// thread is a sleep the input has to wait out too.
+void WaitForInput(int ms);
+
 // How much colour the console this process is attached to can render, in bits:
 // 0 for none, or 4, 8, 24. **-1 means this platform has nothing to say** and the
 // caller should decide from the environment as it always has.

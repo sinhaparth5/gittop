@@ -3,6 +3,7 @@
 #include <git2.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -608,6 +609,31 @@ void Diverge(Repository& repo, const ScratchDir& dir) {
   CommitFile(repo, dir, "README", "main\n", "on main");
 }
 
+// A commit with a chosen timestamp and an empty tree, written straight through
+// libgit2 because Repository::Commit stamps the current time.
+git_oid CommitAt(git_repository* raw, std::int64_t when, const char* message,
+                 std::vector<const git_commit*> parents) {
+  git_treebuilder* builder = nullptr;
+  REQUIRE(git_treebuilder_new(&builder, raw, nullptr) == 0);
+  git_oid tree_id;
+  REQUIRE(git_treebuilder_write(&tree_id, builder) == 0);
+  git_treebuilder_free(builder);
+  git_tree* tree = nullptr;
+  REQUIRE(git_tree_lookup(&tree, raw, &tree_id) == 0);
+
+  git_signature* sig = nullptr;
+  REQUIRE(git_signature_new(&sig, "T", "t@example.invalid", when, 0) == 0);
+  git_oid id;
+  REQUIRE(git_commit_create(&id, raw, nullptr, sig, sig, nullptr, message, tree, parents.size(),
+                            parents.data()) == 0);
+  // HEAD follows the newest commit written. Detached, because the two sides of
+  // the merge are not each other's parents and no branch could advance to both.
+  REQUIRE(git_repository_set_head_detached(raw, &id) == 0);
+  git_signature_free(sig);
+  git_tree_free(tree);
+  return id;
+}
+
 }  // namespace
 
 TEST_CASE("conflict markers parse two-way and diff3, and skip an unclosed block") {
@@ -727,4 +753,45 @@ TEST_CASE("the status read carries today's commits in the pulse and counts stash
   REQUIRE(repo->StashSave("wip", false).ok);
   status = repo->ReadStatus();
   CHECK(status.stashes == 1);
+}
+
+TEST_CASE("the status sidecar lists the newest commits across a merge, and stops at the cap") {
+  ScratchDir dir;
+  git_repository* raw = nullptr;
+  REQUIRE(git_repository_init(&raw, dir.path().string().c_str(), 0) == 0);
+
+  const auto lookup = [raw](const git_oid& id) {
+    git_commit* commit = nullptr;
+    REQUIRE(git_commit_lookup(&commit, raw, &id) == 0);
+    return commit;
+  };
+  // Two sides of a merge whose timestamps interleave, so newest-first is only
+  // right if the walk weighs both parents rather than following one of them.
+  git_commit* base = lookup(CommitAt(raw, 100, "base", {}));
+  git_commit* side1 = lookup(CommitAt(raw, 200, "side1", {base}));
+  git_commit* main1 = lookup(CommitAt(raw, 150, "main1", {base}));
+  git_commit* side2 = lookup(CommitAt(raw, 400, "side2", {side1}));
+  git_commit* main2 = lookup(CommitAt(raw, 300, "main2", {main1}));
+  git_commit* tip = lookup(CommitAt(raw, 500, "merge", {main2, side2}));
+
+  std::string error;
+  std::optional<Repository> repo = Repository::Discover(dir.path().string(), &error);
+  REQUIRE(repo.has_value());
+  std::vector<std::string> order;
+  for (const auto& commit : repo->ReadStatus().recent) {
+    order.push_back(commit.summary);
+  }
+  CHECK(order == std::vector<std::string>{"merge", "side2", "main2", "side1", "main1", "base"});
+
+  for (int i = 0; i < 20; ++i) {
+    git_commit* next = lookup(CommitAt(raw, 600 + i, "linear", {tip}));
+    git_commit_free(tip);
+    tip = next;
+  }
+  CHECK(repo->ReadStatus().recent.size() == gittop::model::kRecentCommits);
+
+  for (git_commit* c : {base, side1, main1, side2, main2, tip}) {
+    git_commit_free(c);
+  }
+  git_repository_free(raw);
 }

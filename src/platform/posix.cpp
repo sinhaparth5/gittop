@@ -393,6 +393,11 @@ std::string ConfigDir() {
 
 bool StdoutIsTerminal() { return ::isatty(STDOUT_FILENO) == 1; }
 
+void WaitForInput(int ms) {
+  struct pollfd pfd = {STDIN_FILENO, POLLIN, 0};
+  (void)::poll(&pfd, 1, ms);
+}
+
 int ConsoleColorBits() { return -1; }  // TERM and COLORTERM already answer this
 
 // ----------------------------------------------------------------- time

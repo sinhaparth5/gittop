@@ -510,6 +510,17 @@ bool StdoutIsTerminal() {
   return ::GetConsoleMode(handle, &mode) != 0;
 }
 
+void WaitForInput(int ms) {
+  // A console input handle is signalled while it holds unread records, which
+  // is the same question poll() answers on the other side.
+  const HANDLE input = ::GetStdHandle(STD_INPUT_HANDLE);
+  if (input == nullptr || input == INVALID_HANDLE_VALUE) {
+    ::Sleep(static_cast<DWORD>(ms));
+    return;
+  }
+  (void)::WaitForSingleObject(input, static_cast<DWORD>(ms));
+}
+
 int ConsoleColorBits() {
   if (!StdoutIsTerminal()) {
     return 0;  // no console, so no escape sequence has anywhere to land

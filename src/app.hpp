@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <ftxui/dom/elements.hpp>
@@ -154,8 +155,9 @@ class App {
   void EnsureHistory();
   void Reload();
   // The repository half of `r`, without the toast: re-reads the status and
-  // whatever the view on screen shows. What the file watcher calls.
-  void ReloadRepository();
+  // whatever the view on screen shows. What the file watcher calls, with
+  // `history` false when nothing under .git/ changed — see watch_git_changed_.
+  void ReloadRepository(bool history = true);
 
   // Diffs sit on the same lazy terms as the history: read on the first switch
   // to the view and cached, thrown away by anything that could change one.
@@ -550,6 +552,11 @@ class App {
   // `[general] auto_refresh` is off or the platform has no watcher. Reset
   // before the screen goes, for the ticker's reason.
   std::unique_ptr<platform::TreeWatcher> watcher_;
+  // Set from the watcher's thread when a change it reports is under .git/.
+  // Only those can move a ref, so only those are worth the revwalk: a build
+  // writing into the tree used to re-read 400 commits three times a second,
+  // ~80ms of UI thread each, which is a dashboard that stutters while you work.
+  std::atomic<bool> watch_git_changed_{false};
 
   int pipeline_selected_ = 0;
   bool jobs_open_ = false;

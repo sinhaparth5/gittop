@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <queue>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -102,15 +103,65 @@ int MergeHeadCb(const git_oid* oid, void* payload) {
   return 0;
 }
 
+// Newest first from `tip`, until `visit` returns false. This is what
+// GIT_SORT_TIME looks like it does and does not: libgit2 marks every sorted
+// walk "limited", and a limited walk visits everything reachable from the tip
+// before yielding the first commit. On 100k commits that was ~150ms for the
+// status sidecar's twelve rows, paid on every reload the file watcher fired. A
+// heap on commit time yields in the order `git log` does and touches only the
+// commits returned plus their parents.
+template <typename Visit>
+void WalkNewestFirst(git_repository* repo, const git_oid* tip, Visit visit) {
+  struct Item {
+    std::int64_t time;
+    git_oid id;
+  };
+  const auto older = [](const Item& a, const Item& b) { return a.time < b.time; };
+  std::priority_queue<Item, std::vector<Item>, decltype(older)> queue(older);
+  std::unordered_set<std::string> seen;
+
+  const auto enqueue = [&](const git_oid* id) {
+    if (!seen.insert(OidToString(id)).second) {
+      return;
+    }
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repo, id) != 0) {
+      return;
+    }
+    queue.push(Item{static_cast<std::int64_t>(git_commit_time(commit)), *id});
+    git_commit_free(commit);
+  };
+
+  enqueue(tip);
+  while (!queue.empty()) {
+    const Item item = queue.top();
+    queue.pop();
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repo, &item.id) != 0) {
+      continue;
+    }
+    const bool more = visit(item.id, commit);
+    if (more) {
+      const unsigned int parents = git_commit_parentcount(commit);
+      for (unsigned int i = 0; i < parents; ++i) {
+        enqueue(git_commit_parent_id(commit, i));
+      }
+    }
+    git_commit_free(commit);
+    if (!more) {
+      return;
+    }
+  }
+}
+
 // A quarter of weekly commit counts for one branch, for the sparkline beside it.
 //
-// This is a revwalk per branch, which sounds expensive and is not: GIT_SORT_TIME
-// yields newest first, so the walk stops at the first commit older than the
-// window rather than traversing the whole history behind it. On a branch that
-// has been quiet for a year that is one commit. The cap is there for the case
-// GIT_SORT_TIME cannot help with — a repository whose commit timestamps are out
-// of order, where "older than the window" is not a reason to believe the rest
-// are too.
+// This is a walk per branch, which sounds expensive and is not: WalkNewestFirst
+// stops at the first commit older than the window rather than traversing the
+// whole history behind it. On a branch that has been quiet for a year that is
+// one commit. The cap is there for the case time order cannot help with — a
+// repository whose commit timestamps are out of order, where "older than the
+// window" is not a reason to believe the rest are too.
 void ReadVelocity(git_repository* repo, const git_oid* tip, std::int64_t today,
                   model::Branch* branch) {
   constexpr std::size_t kMaxPerBranch = 4000;
@@ -121,39 +172,21 @@ void ReadVelocity(git_repository* repo, const git_oid* tip, std::int64_t today,
   const std::int64_t this_week = today - ((((today + 3) % 7) + 7) % 7);
   const std::int64_t first_week = this_week - ((weeks - 1) * 7);
 
-  git_revwalk* walk = nullptr;
-  if (git_revwalk_new(&walk, repo) != 0) {
-    return;
-  }
-  git_revwalk_sorting(walk, GIT_SORT_TIME);
-  if (git_revwalk_push(walk, tip) != 0) {
-    git_revwalk_free(walk);
-    return;
-  }
-
   branch->velocity_known = true;
 
-  git_oid oid;
   std::size_t seen = 0;
-  while (seen < kMaxPerBranch && git_revwalk_next(&oid, walk) == 0) {
-    ++seen;
-    git_commit* commit = nullptr;
-    if (git_commit_lookup(&commit, repo, &oid) != 0) {
-      continue;
-    }
+  WalkNewestFirst(repo, tip, [&](const git_oid&, git_commit* commit) {
     const std::int64_t day = static_cast<std::int64_t>(git_commit_time(commit)) / kSecondsPerDay;
-    git_commit_free(commit);
-
     if (day < first_week) {
-      break;
+      return false;
     }
     const std::int64_t week = day - ((((day + 3) % 7) + 7) % 7);
     const std::int64_t bucket = (week - first_week) / 7;
     if (bucket >= 0 && bucket < weeks) {
       branch->velocity[static_cast<std::size_t>(bucket)]++;
     }
-  }
-  git_revwalk_free(walk);
+    return ++seen < kMaxPerBranch;
+  });
 
   branch->velocity_max =
       *std::max_element(branch->velocity.begin(), branch->velocity.end());
@@ -223,31 +256,17 @@ void ReadTracking(git_repository* repo, git_reference* head, model::StatusSnapsh
 }
 
 // The newest few commits, and only those: the walk is abandoned the moment the
-// vector is full, so this costs five commit lookups rather than one per commit
-// in the repository. Reusing ReadHistory here would have been the obvious move
-// and is exactly the thing that would put a full revwalk on startup.
+// vector is full, so this costs a dozen commit lookups rather than one per
+// commit in the repository. Reusing ReadHistory here would have been the
+// obvious move and is exactly the thing that would put a full revwalk on
+// startup — and so, it turned out, was GIT_SORT_TIME; see WalkNewestFirst.
 void ReadRecent(git_repository* repo, git_reference* head, model::StatusSnapshot* snap) {
   const git_oid* tip = git_reference_target(head);
   if (tip == nullptr) {
     return;
   }
-  git_revwalk* walk = nullptr;
-  if (git_revwalk_new(&walk, repo) != 0) {
-    return;
-  }
-  git_revwalk_sorting(walk, GIT_SORT_TIME);
-  if (git_revwalk_push(walk, tip) != 0) {
-    git_revwalk_free(walk);
-    return;
-  }
-
   snap->recent.reserve(model::kRecentCommits);
-  git_oid oid;
-  while (snap->recent.size() < model::kRecentCommits && git_revwalk_next(&oid, walk) == 0) {
-    git_commit* commit = nullptr;
-    if (git_commit_lookup(&commit, repo, &oid) != 0) {
-      continue;
-    }
+  WalkNewestFirst(repo, tip, [snap](const git_oid& oid, git_commit* commit) {
     model::RecentCommit entry;
     char short_id[8] = {};
     git_oid_tostr(short_id, sizeof(short_id), &oid);
@@ -260,39 +279,29 @@ void ReadRecent(git_repository* repo, git_reference* head, model::StatusSnapshot
     entry.time = static_cast<std::int64_t>(git_commit_time(commit));
 
     snap->recent.push_back(std::move(entry));
-    git_commit_free(commit);
-  }
+    return snap->recent.size() < model::kRecentCommits;
+  });
 
   // Keep walking for the pulse, from the tip again so the twelve above are
-  // counted too. Time-sorted, so the first commit older than the window ends
+  // counted too. Newest first, so the first commit older than the window ends
   // it; the cap ends it on a repository that is busier than that.
-  constexpr std::int64_t kSecondsPerDay = 86400;
   const std::int64_t today = static_cast<std::int64_t>(std::time(nullptr)) / kSecondsPerDay;
   const std::int64_t first = today - static_cast<std::int64_t>(model::kPulseDays) + 1;
-  git_revwalk_reset(walk);
-  git_revwalk_sorting(walk, GIT_SORT_TIME);
   std::size_t walked = 0;
-  if (git_revwalk_push(walk, tip) == 0) {
-    while (git_revwalk_next(&oid, walk) == 0) {
-      if (++walked > model::kPulseCap) {
-        snap->pulse_capped = true;
-        break;
-      }
-      git_commit* commit = nullptr;
-      if (git_commit_lookup(&commit, repo, &oid) != 0) {
-        continue;
-      }
-      const std::int64_t day = static_cast<std::int64_t>(git_commit_time(commit)) / kSecondsPerDay;
-      git_commit_free(commit);
-      if (day < first) {
-        break;
-      }
-      if (day <= today) {
-        snap->pulse[static_cast<std::size_t>(day - first)]++;
-      }
+  WalkNewestFirst(repo, tip, [&](const git_oid&, git_commit* commit) {
+    if (++walked > model::kPulseCap) {
+      snap->pulse_capped = true;
+      return false;
     }
-  }
-  git_revwalk_free(walk);
+    const std::int64_t day = static_cast<std::int64_t>(git_commit_time(commit)) / kSecondsPerDay;
+    if (day < first) {
+      return false;
+    }
+    if (day <= today) {
+      snap->pulse[static_cast<std::size_t>(day - first)]++;
+    }
+    return true;
+  });
 }
 
 int CountStash(std::size_t, const char*, const git_oid*, void* payload) {
