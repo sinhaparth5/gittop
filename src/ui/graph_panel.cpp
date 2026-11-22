@@ -190,10 +190,21 @@ Element GraphPanel(const model::HistorySnapshot& history, const GraphView& view,
   const std::vector<int> visible(series.values.begin() + first,
                                  series.values.begin() + first + window_size);
   const Ramp ramp = t.staged_ramp;
+  const ftxui::Color paper = t.surface;
 
-  Element plot = canvas(chart_cells * 2, chart_rows * 4, [visible, peak, ramp](Canvas& c) {
+  Element plot = canvas(chart_cells * 2, chart_rows * 4, [visible, peak, ramp, paper](Canvas& c) {
     const int pixel_width = c.width();
     const int pixel_height = c.height();
+
+    // A canvas replaces every screen cell it covers, background included, so
+    // the panel's bgcolor never reaches it and an empty cell shows the
+    // terminal's own default. Invisible where that is black; a purple slab on
+    // Ptyxis's default palette (issue 13).
+    for (int y = 0; y < pixel_height; y += 4) {
+      for (int x = 0; x < pixel_width; x += 2) {
+        c.Style(x, y, [paper](ftxui::Cell& cell) { cell.background_color = paper; });
+      }
+    }
     if (pixel_width <= 0 || pixel_height <= 1 || visible.empty()) {
       return;
     }
