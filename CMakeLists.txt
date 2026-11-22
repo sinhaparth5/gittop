@@ -78,7 +78,7 @@ set(REGEX_BACKEND     "builtin"          CACHE STRING "" FORCE)
 
 FetchContent_Declare(libgit2
   GIT_REPOSITORY https://github.com/libgit2/libgit2.git
-  GIT_TAG        v1.9.6
+  GIT_TAG        v1.9.7
   GIT_SHALLOW    TRUE)
 
 # ---------------------------------------------------------- nlohmann/json

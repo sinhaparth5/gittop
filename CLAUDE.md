@@ -27,7 +27,7 @@ cmake --build build -j
 ```
 
 Needs system libcurl (`libcurl4-openssl-dev`) and zlib — and nothing else. FTXUI v7.0.3, libgit2
-v1.9.6, and nlohmann/json v3.12.0 come from FetchContent, so the first configure in a fresh tree
+v1.9.7, and nlohmann/json v3.12.0 come from FetchContent, so the first configure in a fresh tree
 spends a few minutes downloading and building them — budget for it rather than assuming the build
 hung. `-Wall -Wextra -Wpedantic` is set on the target, so warnings show up without asking.
 
