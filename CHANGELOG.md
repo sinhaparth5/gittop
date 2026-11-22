@@ -17,6 +17,26 @@ published.
 
 ---
 
+## 2026.11.2 — 2026-11-22
+
+Dependency security updates, and the graph chart no longer shows the terminal's own background.
+This also carries everything tagged `v2026.11.1`, which was never published.
+
+### Fixed
+
+- **The graph chart paints its own background.** An empty cell in the chart showed the
+  terminal's default background instead of the panel's, which was invisible on black and a purple
+  slab on Ptyxis's default palette (#13).
+
+### Security
+
+- **libcurl 8.23.0 on Windows**, up from 8.11.1, clearing the open curl advisories against the
+  Windows build. Every protocol but HTTP and HTTPS is now switched off by name, since curl dropped
+  the `HTTP_ONLY` option this used to rely on. Linux builds use the system libcurl and are
+  unaffected.
+- **libgit2 1.9.7**, up from 1.9.6, for GHSA-xqj4-2j5v-rr75. gittop was not exposed: the injection
+  is in the libssh2 transport, and gittop uses the `exec` transport, which already had the fix.
+
 ## 2026.11.0 — 2026-11-22
 
 Faster on large repositories, and no more input lag while scrolling.
