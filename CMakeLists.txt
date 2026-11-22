@@ -103,15 +103,21 @@ FetchContent_Declare(nlohmann_json
 # Windows has no system libcurl, so there it is fetched — and the objection
 # above dissolves rather than being accepted, because Schannel *is* the
 # platform's TLS backend and verifies against the Windows certificate store.
-# There is no CA bundle to locate and none is shipped. HTTP_ONLY drops every
-# protocol gittop does not speak, which is all of them but HTTP and HTTPS.
+# There is no CA bundle to locate and none is shipped. Every protocol gittop
+# does not speak is disabled, which is all of them but HTTP and HTTPS: each one
+# left in is attack surface a security advisory can land on. curl dropped its
+# HTTP_ONLY switch after 8.11, and setting it now is silently ignored, so the
+# list is spelled out.
 if(WIN32)
   set(BUILD_CURL_EXE      OFF CACHE BOOL "" FORCE)
   set(BUILD_LIBCURL_DOCS  OFF CACHE BOOL "" FORCE)
   set(BUILD_MISC_DOCS     OFF CACHE BOOL "" FORCE)
   set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
   set(ENABLE_CURL_MANUAL  OFF CACHE BOOL "" FORCE)
-  set(HTTP_ONLY           ON  CACHE BOOL "" FORCE)
+  foreach(proto DICT FILE FTP GOPHER IMAP IPFS LDAP LDAPS MQTT POP3 RTSP SMTP
+                TELNET TFTP WEBSOCKETS)
+    set(CURL_DISABLE_${proto} ON CACHE BOOL "" FORCE)
+  endforeach()
   set(CURL_USE_SCHANNEL   ON  CACHE BOOL "" FORCE)
   set(CURL_USE_OPENSSL    OFF CACHE BOOL "" FORCE)
   set(CURL_USE_LIBPSL     OFF CACHE BOOL "" FORCE)
@@ -124,7 +130,7 @@ if(WIN32)
 
   FetchContent_Declare(curl
     GIT_REPOSITORY https://github.com/curl/curl.git
-    GIT_TAG        curl-8_11_1
+    GIT_TAG        curl-8_23_0
     GIT_SHALLOW    TRUE)
 
   FetchContent_MakeAvailable(ftxui libgit2 nlohmann_json curl)
