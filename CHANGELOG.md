@@ -17,6 +17,21 @@ published.
 
 ---
 
+## 2026.11.0 — 2026-11-22
+
+Faster on large repositories, and no more input lag while scrolling.
+
+### Fixed
+
+- **Scrolling and keys no longer lag behind animations.** The frame cap waited with a plain sleep,
+  so a fast mouse wheel or touchpad queued up behind it; it now wakes the moment input arrives.
+- **Saving a file no longer re-reads the whole history.** The file watcher only drops the history
+  cache when something in `.git/` changes, so an automatic reload on a 100,000-commit repository
+  went from 314 ms to 7 ms.
+- **The status sidecar, the pulse and the branch sparklines read only the commits they show.** A
+  time-sorted walk in libgit2 reads all of history before returning its first commit; opening
+  history on a 100,000-commit repository went from 1.25 s to 0.02 s.
+
 ## 2026.10.2 — 2026-10-29
 
 Merge from the branch list, a conflict resolver, and a new default look modelled on btop.
